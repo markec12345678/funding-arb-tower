@@ -343,3 +343,88 @@ Stage Summary:
 - Deliverable at end of paper period: journal.jsonl analysis + final BACKTEST ↔ PAPER
   comparison report (per user's metric table), reviewed number-by-number with user.
 - Until then: verify-only health checks; no interventions of any kind.
+
+---
+Task ID: PHASE-3-GAP-MAP
+Agent: Z.ai Code (lead)
+Task: User delivered the post-baseline development ladder (P0: partial-fill recovery,
+risk guardian, hedge drift, reconciliation; P1: funding persistence, execution quality,
+venue health, capital allocator; P2: more venues, AI/ML; vision = "Funding Arb Execution
+& Research Engine") with explicit instruction: implement NOTHING now — paper baseline
+first, first big upgrade afterwards = Partial-Fill + One-Leg Recovery. This task:
+READ-ONLY gap analysis mapping the ladder onto the existing codebase. Zero changes.
+
+Work Log:
+- Health check first: runner PID 12976 at 27+ min, supervisor ticking (last_check age
+  1s, respawns frozen at 4), cycle 15:01 on schedule, RVN still open. Machine healthy.
+- Read-only code audit of the 8 ladder items (greps + targeted reads of
+  pure_futures_executor.py / pure_futures_watcher.py / run_cash_and_carry.py /
+  cross_venue_executor.py / scan_pure_futures_spreads.py):
+
+  1. PARTIAL-FILL / ONE-LEG RECOVERY — PARTIAL FOUNDATION:
+     EXISTS: _exec_qty() extracts actual fill qty from every venue response;
+     sequential mode auto-sizes short leg to actual long fill; parallel mode records
+     long_qty + short_qty separately (ledger KNOWS about mismatch); leg-failure path
+     = best-effort rollback + alert-on-naked (P0 hardening).
+     MISSING vs user spec: no PAIR_PENDING→LEG_A_FILLED→LEG_B_PARTIAL→REPAIR state
+     machine; no retry/partial-repair; parallel entry mismatch (long $5k/short $3.7k)
+     records min() but leaves $1.3k excess unhedged until watcher acts; autoRebalance
+     defaults to FALSE (alert-only). Confirms user's P0 #1 priority as correct.
+
+  2. GLOBAL RISK GUARDIAN — GREENFIELD (pattern exists locally):
+     run_cash_and_carry.py has its OWN maxDrawdownKillSwitchPct (15% NAV), kill state,
+     violent-close panic path — but per-strategy only. Pure futures runner has NO
+     daily-loss/DD/exposure/consecutive-loss/kill-switch. Guardian-as-final-gate
+     architecture (scanner→strategy→edge→execution→GUARDIAN→orders) = to build.
+
+  3. HEDGE DRIFT / REBALANCE — STRONGEST EXISTING PIECE:
+     Watcher check_rebalance detects notional skew; rebalance_pure_futures_pair trims
+     oversized leg on QUANTITY mismatch (partial liquidation/ADL — real delta
+     exposure); single-leg-liquidation detection closes the other leg immediately;
+     per-leg liquidation-distance early warning exists.
+     DESIGN DECISION documented in code: pure mark-price drift with equal quantities
+     is deliberately NOT traded away (delta stays 1:1 in coin terms; skew nets out)
+     — user's $10k/$9.74k example is exactly this case. Gap = only margin-side
+     rebalancing if ever wanted.
+
+  4. RECONCILIATION — DATA-INTEGRITY ONLY:
+     EXISTS: atomic+locked ledgers, corrupt-ledger quarantine (P0 hardening).
+     MISSING: exchange-vs-ledger position/order/balance/funding verification on
+     restart + RECONCILIATION_REQUIRED state blocking new entries. Greenfield.
+
+  5. FUNDING PERSISTENCE / REGIME — GREENFIELD in live path:
+     Live scanner uses current rates only. 24h mean/median/std/z-score/spike-reject
+     does not exist anywhere in the live decision chain (history exists only in
+     backtest funding_cache). Note: paper journal is already accumulating the raw
+     per-cycle funding data this model would train/validate on.
+
+  6. EXECUTION QUALITY ANALYTICS — GREENFIELD:
+     Journal stores candidate-at-signal + result, but no submit/ack/fill timestamps,
+     no slippage vs expected fill, no spread-at-fill. The paper journal's per-attempt
+     candidate snapshots (edge/fees/depth at signal time) are the seed dataset.
+
+  7. VENUE HEALTH SCORE — GREENFIELD, data pre-accumulating:
+     Stale-price + depth rejections are already logged per attempt in the journal
+     with venue attribution — the paper period is literally building the per-venue
+     reliability dataset this score would consume.
+
+  8. CAPITAL ALLOCATOR — GREENFIELD:
+     Current: maxConcurrentPairs slots, candidates sorted by adjusted edge, fixed
+     trade_usd. No opportunity scoring (edge×liquidity×capacity×risk×persistence).
+
+- Cross-cutting insight recorded: items 5-7 all FEED ON the exact data the current
+  paper period is collecting — the disciplined wait is simultaneously the data
+  acquisition phase for the P1 analytics layer. No other action needed for that.
+
+Stage Summary:
+- Roadmap locked in worklog (user ladder + vision). NOTHING implemented, NOTHING
+  committed — discipline held (working tree clean, no code changes in this stage).
+- Gap map: item 3 (drift/qty-rebalance) mostly exists; item 1 (partial-fill) has the
+  accounting foundation but lacks the repair state machine; item 2 (guardian) has a
+  local pattern to generalize; items 4-8 greenfield, of which 5-7 will already have
+  their datasets from the paper journal.
+- Confirmed sequencing with user: paper baseline 3-7 days → FAZA 2 funnel analysis →
+  FAZA 3 first upgrade = Partial-Fill + One-Leg Recovery (not AI, not new venues).
+- Interaction with A/B/C decision recorded: decision C would retire the roadmap's
+  execution upgrades as moot; decision B points exactly at P0 items; decision A makes
+  P0 items prerequisites for real capital.
