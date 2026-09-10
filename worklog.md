@@ -726,3 +726,29 @@ Stage Summary:
 - User's two-repo architecture: APPROVED as correct — with the 7 guardrails and the 3 roadmap adjustments above it is textbook experiment isolation.
 - Key confirmation for the user's self-assessment: "missing = production-execution layer, not research engine" is TRUE against both the external references and the local GAP-MAP/code audit.
 - Lab scaffolding (repo structure, failure-injection harness, constraints-pinned README) is offered but NOT started — per the user's own rule, and to keep this session read-only.
+
+---
+Task ID: phase3-lab-foundation
+Agent: main (Z.ai Code)
+Task: Build the Phase 3 Laboratory foundation in /home/z/bench-check/phase3-lab per user's approved architecture: state machine, failure-injection harness, deterministic fake exchange, invariants, 50-100 corrupted-scenario test gate. funding-arb stays completely locked.
+
+Work Log:
+- Read prior worklog sections (benchmark-factcheck, lab-architecture-review) — the 7 guardrails and frozen port boundary were the design inputs.
+- Built the lab as a standalone Python package (stdlib only, zero deps, zero keys, no imports from funding-arb):
+  * types.py — Order/Fill/Reject/PairSpec/Policy; integer Decimal quantities; logical-tick timestamps only.
+  * states.py — the user's exact 8 states (PAIR_PENDING, LEG_A_FILLED, LEG_B_FILLED, LEG_B_PARTIAL, REPAIR, HEDGED, EMERGENCY_UNWIND, UNWOUND), 21 guarded edges, evidence requirement on PAIR_PENDING→UNWOUND; documented leg normalisation (A = first fully filled leg).
+  * audit.py — append-only JSONL journal; fold() is the SINGLE state derivation (live engine and replay share it — divergence impossible by construction); per-order fill-ts monotonicity.
+  * exchange/fake.py — deterministic fake exchange: scripted fills/partials/rejects per leg per phase, disconnect windows, constant-lag stale positions, late extra fills (only on FULL-completed entry orders — post-UNWOUND fills impossible by construction), funding sign flips, aggressive (market) unwind escalation; ground truth (true_positions) strictly separated from the API view (get_positions); query_fills for restart recovery (fetch_my_trades pattern); idempotent place by order_id; chaos_script(seed) generator.
+  * engine.py — event-sourced PairEngine: write-ahead intents, simultaneous two-leg IOC entry, LEG_B_FILLED confirm loop with bounded stale-tolerant reconciliation, repair policy (attempt 1 top-up smaller leg, attempt ≥2 trim larger leg, abandon on flip/single-leg/dust/budget), emergency unwind with aggressive escalation, close_pair, restart() = replay + fill-gap recovery + resume with journaled budgets (repair attempts persist across restarts — tested).
+  * invariants.py — I1 (HEDGED verified against venue ground truth), I2 (no PENDING→UNWOUND without per-order reject/cancel evidence + zero fills), I3 (fill shape + per-order monotonic ts), I4 (REPAIR entries ⟺ repair_entered audit events), I5 (file round-trip replay == live status + fold valid at ANY prefix) + terminal-safe check.
+  * scenarios.py — harness with kill/revive restarts; 56-case explicit corrupted matrix (all failure families from user's spec + fraction/length/tick variants + combos); 24 seeded chaos scenarios; per-scenario expected terminal state (HEDGED/UNWOUND) where deterministic.
+- Bugs found & fixed during bring-up (all by test failure, root-caused): (1) intent events lacked top-level ts (nested in order dict) → fold monotonicity crash; (2) global fill-ts monotonicity invalid for late-recovered fills → changed I3 semantics to per-order monotonic (documented); (3) abandoned repairs entered REPAIR without repair_entered audit → restructured into _resolve_mismatch (decide BEFORE entering REPAIR state), keeping I4 exact; (4) stale journal object references after engine restarts → checker/harness re-load from file; (5) get_positions tuple unpack on initial snapshot.
+- Test results: 20 unit/integration tests OK + 80/80 corrupted scenarios PASS (56 explicit + 24 chaos) in ~1.4 s. Strongest assertions verified: restart-equivalence (normalized audit trails identical modulo discovery timestamps and restart markers), triple-restart budget persistence (repair_attempts=2 across 3 kills), replay-valid-at-every-prefix, determinism (identical journals on identical seeds).
+- Scope boundaries documented in README (v0.2 candidates): external interference/ADL → ReconciliationConflict, mark-price drift rebalance, multi-pair portfolio, fee-aware topup-vs-trim cost model.
+- Git: initialized /home/z/bench-check/phase3-lab as its own repo, commit 3508a95 (1830 lines). run_tests.sh = the foundation gate.
+- funding-arb verification after all work: working tree CLEAN at 0373f5d, engine zero changes since 15d8e58, runner PID 12976 alive 3h53m, journal growing (67 lines). Experiment fully unpolluted.
+
+Stage Summary:
+- The Phase 3 Laboratory foundation is BUILT and GREEN: 8-state machine + event-sourced recovery engine + deterministic failure-injection exchange + I1-I5 invariant checker + 80-scenario corruption gate, all passing.
+- This is exactly the user's proposed order (state machine → harness → fake exchange → invariants → tests) with nothing production-facing started and nothing touching funding-arb.
+- Next lab steps (only when user asks): Risk Guardian module (global kill-switch conditions from frytegg reference), Reconciliation loop (boot-time exchange-vs-local), then the ladder per README. funding-arb timeline unchanged: daily verify-only checks, Day 3 interim, Day 5-7 final A/B/C.
