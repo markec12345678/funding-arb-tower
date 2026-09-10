@@ -1,0 +1,927 @@
+     1→#!/usr/bin/env python3
+     2→"""Pure futures cross-venue executor — perp + perp funding rate spread arbitrage executor.
+     3→
+     4→MVP scope:
+     5→  - open: long_venue open_long + short_venue open_short
+     6→  - close: short leg close_short + long leg close_long
+     7→  - dry-run / live share an independent ledger: scripts/data/pure-futures/positions.json
+     8→  - Best-effort rollback on leg failure; naked state if rollback fails, requires manual handling.
+     9→
+    10→Note: Cross-exchange execution has no true atomicity. This module only handles engineering-level
+    11→two-leg rollback and recording; it does not address cross-venue margin migration,
+    12→liquidation monitoring, or funding period mismatch (Phase 2 risk controls)."""
+    13→
+    14→from __future__ import annotations
+    15→
+    16→import json
+    17→import os
+    18→import sys
+    19→import tempfile
+    20→import time
+    21→import uuid
+    22→from concurrent.futures import ThreadPoolExecutor, as_completed
+    23→from pathlib import Path
+    24→from typing import Any
+    25→
+    26→SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+    27→if str(SCRIPTS_DIR) not in sys.path:
+    28→    sys.path.insert(0, str(SCRIPTS_DIR))
+    29→
+    30→from core.file_lock import lock_exclusive, unlock  # noqa: E402
+    31→from core.notify import send_notification  # noqa: E402
+    32→from execution.cross_venue_executor import (  # noqa: E402
+    33→    CrossVenueResult,
+    34→    _exec_qty,
+    35→    _filled,
+    36→    _floor_qty,
+    37→    _leg_market,
+    38→)
+    39→from venues import get_venue  # noqa: E402
+    40→
+    41→POSITIONS_PATH = SCRIPTS_DIR / "data" / "pure-futures" / "positions.json"
+    42→MAX_MARK_PRICE_SPREAD_PCT = 1.0
+    43→MARGIN_BUFFER = 1.05
+    44→
+    45→
+    46→def load_pure_futures_positions(path: Path = POSITIONS_PATH) -> list[dict[str, Any]]:
+    47→    if not path.exists():
+    48→        return []
+    49→    try:
+    50→        data = json.loads(path.read_text(encoding="utf-8"))
+    51→        return data if isinstance(data, list) else []
+    52→    except Exception:
+    53→        return []
+    54→
+    55→
+    56→def _save_positions(
+    57→    positions: list[dict[str, Any]], path: Path = POSITIONS_PATH
+    58→) -> None:
+    59→    """Atomic write: write to temp file then rename (crash-safe)."""
+    60→    path.parent.mkdir(parents=True, exist_ok=True)
+    61→    content = json.dumps(positions, ensure_ascii=False, separators=(",", ":"))
+    62→    fd, tmp_path = tempfile.mkstemp(
+    63→        dir=str(path.parent), prefix=".positions-", suffix=".tmp"
+    64→    )
+    65→    try:
+    66→        with os.fdopen(fd, "w", encoding="utf-8") as f:
+    67→            f.write(content)
+    68→            f.flush()
+    69→        os.replace(tmp_path, str(path))
+    70→    except BaseException:
+    71→        try:
+    72→            os.unlink(tmp_path)
+    73→        except OSError:
+    74→            pass
+    75→        raise
+    76→
+    77→
+    78→def _with_position_lock(path: Path):
+    79→    """Acquire exclusive lock on position file for safe concurrent access."""
+    80→    path.parent.mkdir(parents=True, exist_ok=True)
+    81→    lock_path = path.with_suffix(".lock")
+    82→    lock_fd = open(lock_path, "w")
+    83→    try:
+    84→        lock_exclusive(lock_fd)
+    85→    except BaseException:
+    86→        lock_fd.close()
+    87→        raise
+    88→    return lock_fd
+    89→
+    90→
+    91→def _record_position(record: dict[str, Any], path: Path = POSITIONS_PATH) -> None:
+    92→    lock_fd = _with_position_lock(path)
+    93→    try:
+    94→        positions = load_pure_futures_positions(path)
+    95→        positions.append(record)
+    96→        _save_positions(positions, path)
+    97→    finally:
+    98→        unlock(lock_fd)
+    99→        lock_fd.close()
+   100→
+   101→
+   102→def _mark_closed(
+   103→    position_id: str, close_info: dict[str, Any], path: Path = POSITIONS_PATH
+   104→) -> bool:
+   105→    lock_fd = _with_position_lock(path)
+   106→    try:
+   107→        positions = load_pure_futures_positions(path)
+   108→        for p in positions:
+   109→            if p.get("id") == position_id and p.get("status") == "open":
+   110→                p["status"] = "closed"
+   111→                p["closed_at"] = int(time.time() * 1000)
+   112→                p["close_info"] = close_info
+   113→                _save_positions(positions, path)
+   114→                return True
+   115→        return False
+   116→    finally:
+   117→        unlock(lock_fd)
+   118→        lock_fd.close()
+   119→
+   120→
+   121→def _get_open_position(
+   122→    position_id: str, path: Path = POSITIONS_PATH
+   123→) -> dict[str, Any] | None:
+   124→    for p in load_pure_futures_positions(path):
+   125→        if p.get("id") == position_id and p.get("status") == "open":
+   126→            return p
+   127→    return None
+   128→
+   129→
+   130→def _update_position(
+   131→    position_id: str, updates: dict[str, Any], path: Path = POSITIONS_PATH
+   132→) -> bool:
+   133→    lock_fd = _with_position_lock(path)
+   134→    try:
+   135→        positions = load_pure_futures_positions(path)
+   136→        for p in positions:
+   137→            if p.get("id") == position_id and p.get("status") == "open":
+   138→                p.update(updates)
+   139→                _save_positions(positions, path)
+   140→                return True
+   141→        return False
+   142→    finally:
+   143→        unlock(lock_fd)
+   144→        lock_fd.close()
+   145→
+   146→
+   147→def _venue(venue_id: str, injected: Any = None):
+   148→    return injected or get_venue({"venue": {"type": venue_id}})
+   149→
+   150→
+   151→def _check_futures_margin(
+   152→    venue: Any, venue_id: str, quote: str, required_usd: float, logs: list[str]
+   153→) -> bool:
+   154→    """Verify futures USDT >= required; if insufficient, attempt earn->spot->futures chain.
+   155→
+   156→    Chain: futures low -> transfer from spot -> spot low -> redeem from earn -> transfer again.
+   157→    Returns False if margin is confirmed insufficient (should abort opening).
+   158→    On balance API errors, skip verification (don't block trades on transient API failures).
+   159→    """
+   160→    try:
+   161→        balances = venue.fetch_usdt_account_balances()
+   162→    except Exception as e:
+   163→        logs.append(f"{venue_id}: margin query failed, skipping check ({e})")
+   164→        return True
+   165→    futures_avail = float(balances.get("futures", 0) or 0)
+   166→    if futures_avail >= required_usd:
+   167→        return True
+   168→    shortfall = required_usd - futures_avail
+   169→    spot_avail = float(balances.get("spot", 0) or 0)
+   170→
+   171→    # Step 1: earn → spot (Bitget only, only when spot is insufficient)
+   172→    if spot_avail < shortfall and venue_id == "bitget":
+   173→        earn_shortfall = shortfall - spot_avail
+   174→        earn_redeemed = _redeem_bitget_earn(quote, earn_shortfall, logs)
+   175→        if earn_redeemed > 0:
+   176→            import time as _t
+   177→
+   178→            _t.sleep(1.0)
+   179→            spot_avail += earn_redeemed
+   180→
+   181→    # Step 2: spot → futures
+   182→    if spot_avail >= shortfall:
+   183→        try:
+   184→            if venue.transfer_asset(quote, shortfall, "spot", "futures"):
+   185→                logs.append(f"{venue_id}: spot->futures transfer {shortfall:.2f} {quote}")
+   186→                return True
+   187→        except Exception as e:
+   188→            logs.append(f"{venue_id}: transfer failed ({e})")
+   189→    logs.append(
+   190→        f"{venue_id}: insufficient margin futures={futures_avail:.2f} "
+   191→        f"spot={spot_avail:.2f} need {required_usd:.2f}"
+   192→    )
+   193→    return False
+   194→
+   195→
+   196→_EARN_PRODUCTS = {"USDT": "964334561256718336"}
+   197→_MIN_REDEEM_USDT = 1.0
+   198→
+   199→
+   200→def _redeem_bitget_earn(coin: str, amount: float, logs: list[str]) -> float:
+   201→    """Redeem from Bitget flexible earn. Returns redeemed amount on success, 0 on failure."""
+   202→    pid = _EARN_PRODUCTS.get(coin)
+   203→    if not pid:
+   204→        return 0.0
+   205→    if amount < _MIN_REDEEM_USDT:
+   206→        return 0.0
+   207→    try:
+   208→        from venues.bitget import _api_call as _bitget_api
+   209→
+   210→        # Query earn balance
+   211→        data = _bitget_api("GET", "/api/v2/earn/account/assets")
+   212→        earn_bal = 0.0
+   213→        for a in data.get("data", []):
+   214→            if a.get("coin") == coin:
+   215→                earn_bal = float(a.get("amount", "0"))
+   216→                break
+   217→        if earn_bal < _MIN_REDEEM_USDT:
+   218→            logs.append(f"bitget earn: {coin} earn balance {earn_bal:.2f}, no need to redeem")
+   219→            return 0.0
+   220→        redeem_amt = min(amount, earn_bal)
+   221→        # Redeem
+   222→        result = _bitget_api(
+   223→            "POST",
+   224→            "/api/v2/earn/savings/redeem",
+   225→            body={
+   226→                "productId": pid,
+   227→                "periodType": "flexible",
+   228→                "amount": f"{redeem_amt:.2f}",
+   229→            },
+   230→        )
+   231→        if result.get("code") == "00000":
+   232→            logs.append(f"bitget earn: redeemed {redeem_amt:.2f} {coin} to spot")
+   233→            return redeem_amt
+   234→        else:
+   235→            logs.append(f"bitget earn: redeem failed {result.get('msg', '')}")
+   236→            return 0.0
+   237→    except Exception as e:
+   238→        logs.append(f"bitget earn: redeem exception ({e})")
+   239→        return 0.0
+   240→
+   241→
+   242→def _make_futures_trade(
+   243→    base: str, typ: str, qty: float, px: float, qprec: int, reason: str
+   244→) -> dict[str, Any]:
+   245→    return {
+   246→        "symbol": base,
+   247→        "type": typ,
+   248→        "amount_base": qty,
+   249→        "amount_usdt": round(qty * px, 4),
+   250→        "quantity_precision": qprec,
+   251→        "reason": reason,
+   252→    }
+   253→
+   254→
+   255→def open_pure_futures_pair(
+   256→    base: str,
+   257→    long_venue_id: str,
+   258→    short_venue_id: str,
+   259→    trade_usd: float,
+   260→    *,
+   261→    dry_run: bool = True,
+   262→    quote: str = "USDT",
+   263→    direction: str = "forward",
+   264→    max_mark_spread_pct: float = MAX_MARK_PRICE_SPREAD_PCT,
+   265→    config: dict[str, Any] | None = None,
+   266→    long_venue: Any = None,
+   267→    short_venue: Any = None,
+   268→    positions_path: Path = POSITIONS_PATH,
+   269→    capital_buffer_pct: float = 0.0,
+   270→) -> CrossVenueResult:
+   271→    """Open a pure futures funding-spread pair: long perp on one venue, short perp on another.
+   272→
+   273→    capital_buffer_pct: additional margin reservation recommended by settle-mismatch planner
+   274→    (% of notional), factored into pre-open balance check.
+   275→    """
+   276→    logs: list[str] = []
+   277→    executed: list[dict[str, Any]] = []
+   278→    lv = _venue(long_venue_id, long_venue)
+   279→    sv = _venue(short_venue_id, short_venue)
+   280→
+   281→    long_mkt = _leg_market(lv, base, quote, futures=True)
+   282→    short_mkt = _leg_market(sv, base, quote, futures=True)
+   283→    long_px = float(long_mkt.get("price") or 0.0)
+   284→    short_px = float(short_mkt.get("price") or 0.0)
+   285→    if long_px <= 0 or short_px <= 0:
+   286→        return CrossVenueResult(
+   287→            False, "aborted", logs=[f"perp price unavailable long={long_px} short={short_px}"]
+   288→        )
+   289→
+   290→    mark_spread_pct = abs(long_px - short_px) / max(long_px, short_px) * 100.0
+   291→    if mark_spread_pct > max_mark_spread_pct:
+   292→        return CrossVenueResult(
+   293→            False,
+   294→            "aborted",
+   295→            logs=[
+   296→                f"Inter-venue perp mark spread {mark_spread_pct:.2f}% > {max_mark_spread_pct}%, rejecting open"
+   297→            ],
+   298→        )
+   299→
+   300→    qty_prec = min(
+   301→        int(long_mkt["quantity_precision"]), int(short_mkt["quantity_precision"])
+   302→    )
+   303→    ref_px = max(long_px, short_px)
+   304→    base_amount = _floor_qty(trade_usd / ref_px, qty_prec)
+   305→    if base_amount <= 0:
+   306→        return CrossVenueResult(
+   307→            False, "aborted", logs=["Quantity floored to 0, trade_usd too small"]
+   308→        )
+   309→    for leg_name, mkt in (("long", long_mkt), ("short", short_mkt)):
+   310→        if trade_usd < mkt["min_trade_usdt"] or base_amount < mkt["min_trade_base"]:
+   311→            return CrossVenueResult(
+   312→                False,
+   313→                "aborted",
+   314→                logs=[
+   315→                    f"{leg_name} leg below minimum: trade_usd={trade_usd} "
+   316→                    f"(min {mkt['min_trade_usdt']}), base={base_amount} (min {mkt['min_trade_base']})"
+   317→                ],
+   318→            )
+   319→
+   320→    position_id = f"pf-{base.upper()}-{long_venue_id}-{short_venue_id}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+   321→    reason = (
+   322→        f"Pure-futures spread open {base}: long@{long_venue_id} short@{short_venue_id}"
+   323→    )
+   324→    long_trade = _make_futures_trade(
+   325→        base, "open_long", base_amount, long_px, qty_prec, reason
+   326→    )
+   327→    short_trade = _make_futures_trade(
+   328→        base, "open_short", base_amount, short_px, qty_prec, reason
+   329→    )
+   330→    long_market = {base: long_mkt}
+   331→    short_market = {base: short_mkt}
+   332→
+   333→    if dry_run:
+   334→        executed.extend(lv.execute_trades([long_trade], long_market, dry_run=True))
+   335→        executed.extend(sv.execute_trades([short_trade], short_market, dry_run=True))
+   336→        _record_position(
+   337→            {
+   338→                "id": position_id,
+   339→                "status": "open",
+   340→                "strategy": "pure_futures_spread",
+   341→                "dry_run": True,
+   342→                "base": base,
+   343→                "direction": direction,
+   344→                "quote": quote,
+   345→                "long_venue": long_venue_id,
+   346→                "short_venue": short_venue_id,
+   347→                "qty": base_amount,
+   348→                "long_price": long_px,
+   349→                "short_price": short_px,
+   350→                "trade_usd": trade_usd,
+   351→                "mark_spread_pct": round(mark_spread_pct, 6),
+   352→                "opened_at": int(time.time() * 1000),
+   353→            },
+   354→            positions_path,
+   355→        )
+   356→        logs.append(
+   357→            f"[DRY-RUN] open pure-futures {base} qty={base_amount} long@{long_venue_id} short@{short_venue_id}"
+   358→        )
+   359→        return CrossVenueResult(True, "simulated", position_id, executed, logs)
+   360→
+   361→    # Order book depth pre-check: skip if insufficient depth within deviation window
+   362→    # (small-cap slippage can eat multiple periods of spread profit).
+   363→    # Only enabled when config contains pureFuturesArbitrage (injected venue tests skip network).
+   364→    pfa_cfg = (config or {}).get("pureFuturesArbitrage") or {}
+   365→    if pfa_cfg and bool(pfa_cfg.get("depthCheckEnabled", True)):
+   366→        from market.futures_depth import check_pair_depth
+   367→
+   368→        depth_ok, depth_detail = check_pair_depth(
+   369→            long_venue_id,
+   370→            short_venue_id,
+   371→            base,
+   372→            trade_usd,
+   373→            quote=quote,
+   374→            max_dev_pct=float(pfa_cfg.get("depthMaxDevPct", 0.3)),
+   375→            min_multiple=float(pfa_cfg.get("depthMinMultiple", 3.0)),
+   376→            fail_open=bool(pfa_cfg.get("depthCheckFailOpen", True)),
+   377→        )
+   378→        logs.append(f"depth check: {depth_detail}")
+   379→        if not depth_ok:
+   380→            return CrossVenueResult(False, "aborted", logs=logs)
+   381→
+   382→    margin_usd = (
+   383→        trade_usd * MARGIN_BUFFER + trade_usd * max(capital_buffer_pct, 0.0) / 100.0
+   384→    )
+   385→    ok_long = _check_futures_margin(lv, long_venue_id, quote, margin_usd, logs)
+   386→    ok_short = _check_futures_margin(sv, short_venue_id, quote, margin_usd, logs)
+   387→    if not (ok_long and ok_short):
+   388→        # Abort before first order to avoid single-leg fill and rollback
+   389→        return CrossVenueResult(False, "aborted", "", executed, logs)
+   390→    for venue, mkt in ((lv, long_mkt), (sv, short_mkt)):
+   391→        try:
+   392→            venue.initialize_futures_symbol(mkt["pair"])
+   393→        except Exception:
+   394→            pass
+   395→
+   396→    parallel_legs = bool((config or {}).get("parallelLegs", True))
+   397→
+   398→    if parallel_legs:
+   399→        # Submit both legs in parallel — saves ~400ms vs sequential.
+   400→        # Accept tiny qty mismatch (handled by post-fill rebalance if needed).
+   401→        target_qty = _floor_qty(base_amount, qty_prec)
+   402→        short_trade["amount_base"] = target_qty
+   403→        short_trade["amount_usdt"] = round(target_qty * short_px, 4)
+   404→
+   405→        def _submit_long() -> tuple[str, list[dict[str, Any]]]:
+   406→            return "long", lv.execute_trades([long_trade], long_market, dry_run=False)
+   407→
+   408→        def _submit_short() -> tuple[str, list[dict[str, Any]]]:
+   409→            return "short", sv.execute_trades(
+   410→                [short_trade], short_market, dry_run=False
+   411→            )
+   412→
+   413→        leg_results: dict[str, list[dict[str, Any]]] = {}
+   414→        with ThreadPoolExecutor(max_workers=2) as pool:
+   415→            f_long = pool.submit(_submit_long)
+   416→            f_short = pool.submit(_submit_short)
+   417→            for fut in as_completed([f_long, f_short]):
+   418→                try:
+   419→                    leg, res = fut.result()
+   420→                    leg_results[leg] = res
+   421→                except Exception as e:
+   422→                    logs.append(f"Parallel order exception: {e}")
+   423→
+   424→        res_long = leg_results.get("long", [])
+   425→        res_short = leg_results.get("short", [])
+   426→        executed.extend(res_long)
+   427→        executed.extend(res_short)
+   428→
+   429→        long_ok = _filled(res_long)
+   430→        short_ok = _filled(res_short)
+   431→
+   432→        if long_ok and short_ok:
+   433→            exec_qty = _floor_qty(_exec_qty(res_long, target_qty), qty_prec)
+   434→            short_qty = _exec_qty(res_short, target_qty)
+   435→            logs.append(f"Parallel both legs filled: long={exec_qty} short={short_qty} {base}")
+   436→            _record_position(
+   437→                {
+   438→                    "id": position_id,
+   439→                    "status": "open",
+   440→                    "strategy": "pure_futures_spread",
+   441→                    "dry_run": False,
+   442→                    "base": base,
+   443→                    "direction": direction,
+   444→                    "quote": quote,
+   445→                    "long_venue": long_venue_id,
+   446→                    "short_venue": short_venue_id,
+   447→                    "qty": min(exec_qty, short_qty),
+   448→                    "long_qty": exec_qty,
+   449→                    "short_qty": short_qty,
+   450→                    "long_price": res_long[0].get("exec_price", long_px),
+   451→                    "short_price": res_short[0].get("exec_price", short_px),
+   452→                    "trade_usd": trade_usd,
+   453→                    "mark_spread_pct": round(mark_spread_pct, 6),
+   454→                    "opened_at": int(time.time() * 1000),
+   455→                    "parallel_legs": True,
+   456→                },
+   457→                positions_path,
+   458→            )
+   459→            return CrossVenueResult(True, "filled", position_id, executed, logs)
+   460→        elif long_ok and not short_ok:
+   461→            logs.append("Parallel mode: long filled but short failed, rolling back long")
+   462→            rollback = _make_futures_trade(
+   463→                base,
+   464→                "close_long",
+   465→                target_qty,
+   466→                long_px,
+   467→                qty_prec,
+   468→                "ROLLBACK: parallel-legs short failed",
+   469→            )
+   470→            res_rb = lv.execute_trades([rollback], long_market, dry_run=False)
+   471→            executed.extend(res_rb)
+   472→            if _filled(res_rb):
+   473→                logs.append("Rollback succeeded, no naked position")
+   474→                return CrossVenueResult(False, "rolled_back", "", executed, logs)
+   475→            logs.append("Rollback failed! Long leg naked, requires manual handling")
+   476→            send_notification(
+   477→                "NAKED PURE FUTURES POSITION",
+   478→                f"Pure-futures parallel rollback failed: {long_venue_id} long {target_qty} {base} unhedged",
+   479→                config,
+   480→            )
+   481→            return CrossVenueResult(False, "naked", "", executed, logs)
+   482→        elif short_ok and not long_ok:
+   483→            logs.append("Parallel mode: short filled but long failed, rolling back short")
+   484→            rollback = _make_futures_trade(
+   485→                base,
+   486→                "close_short",
+   487→                target_qty,
+   488→                short_px,
+   489→                qty_prec,
+   490→                "ROLLBACK: parallel-legs long failed",
+   491→            )
+   492→            res_rb = sv.execute_trades([rollback], short_market, dry_run=False)
+   493→            executed.extend(res_rb)
+   494→            if _filled(res_rb):
+   495→                logs.append("Rollback succeeded, no naked position")
+   496→                return CrossVenueResult(False, "rolled_back", "", executed, logs)
+   497→            logs.append("Rollback failed! Short leg naked, requires manual handling")
+   498→            send_notification(
+   499→                "NAKED PURE FUTURES POSITION",
+   500→                f"Pure-futures parallel rollback failed: {short_venue_id} short {target_qty} {base} unhedged",
+   501→                config,
+   502→            )
+   503→            return CrossVenueResult(False, "naked", "", executed, logs)
+   504→        else:
+   505→            logs.append("Parallel mode: both legs unfilled")
+   506→            return CrossVenueResult(False, "aborted", "", executed, logs)
+   507→
+   508→    # === Original sequential logic follows ===
+   509→    res_long = lv.execute_trades([long_trade], long_market, dry_run=False)
+   510→    executed.extend(res_long)
+   511→    if not _filled(res_long):
+   512→        logs.append(
+   513→            f"Long leg failed: {res_long[0].get('error') if res_long else 'no result'}"
+   514→        )
+   515→        return CrossVenueResult(False, "aborted", "", executed, logs)
+   516→    exec_qty = _floor_qty(_exec_qty(res_long, base_amount), qty_prec)
+   517→    logs.append(f"Long leg filled {long_venue_id} open_long {exec_qty} {base}")
+   518→
+   519→    short_trade["amount_base"] = exec_qty
+   520→    short_trade["amount_usdt"] = round(exec_qty * short_px, 4)
+   521→    res_short = sv.execute_trades([short_trade], short_market, dry_run=False)
+   522→    executed.extend(res_short)
+   523→    if _filled(res_short):
+   524→        short_qty = _exec_qty(res_short, exec_qty)
+   525→        logs.append(f"Short leg filled {short_venue_id} open_short {short_qty} {base}")
+   526→        _record_position(
+   527→            {
+   528→                "id": position_id,
+   529→                "status": "open",
+   530→                "strategy": "pure_futures_spread",
+   531→                "dry_run": False,
+   532→                "base": base,
+   533→                "direction": direction,
+   534→                "quote": quote,
+   535→                "long_venue": long_venue_id,
+   536→                "short_venue": short_venue_id,
+   537→                "qty": min(exec_qty, short_qty),
+   538→                "long_qty": exec_qty,
+   539→                "short_qty": short_qty,
+   540→                "long_price": res_long[0].get("exec_price", long_px),
+   541→                "short_price": res_short[0].get("exec_price", short_px),
+   542→                "trade_usd": trade_usd,
+   543→                "mark_spread_pct": round(mark_spread_pct, 6),
+   544→                "opened_at": int(time.time() * 1000),
+   545→            },
+   546→            positions_path,
+   547→        )
+   548→        return CrossVenueResult(True, "filled", position_id, executed, logs)
+   549→
+   550→    # Short leg failed → close long leg.
+   551→    logs.append(
+   552→        f"Short leg failed: {res_short[0].get('error') if res_short else 'no result'}, rolling back long leg"
+   553→    )
+   554→    rollback = _make_futures_trade(
+   555→        base,
+   556→        "close_long",
+   557→        exec_qty,
+   558→        long_px,
+   559→        qty_prec,
+   560→        "ROLLBACK: pure-futures short leg failed",
+   561→    )
+   562→    send_notification(
+   563→        "Pure Futures Leg Failure",
+   564→        f"{short_venue_id} open_short {base} failed; rolling back {long_venue_id} close_long {exec_qty}",
+   565→        config,
+   566→    )
+   567→    res_rb = lv.execute_trades([rollback], long_market, dry_run=False)
+   568→    executed.extend(res_rb)
+   569→    if _filled(res_rb):
+   570→        logs.append("Rollback succeeded, no naked position")
+   571→        return CrossVenueResult(False, "rolled_back", "", executed, logs)
+   572→
+   573→    logs.append("Rollback failed! Long leg naked, requires manual handling")
+   574→    send_notification(
+   575→        "NAKED PURE FUTURES POSITION",
+   576→        f"Pure-futures rollback failed: {long_venue_id} long {exec_qty} {base} unhedged",
+   577→        config,
+   578→    )
+   579→    return CrossVenueResult(False, "naked", "", executed, logs)
+   580→
+   581→
+   582→def close_pure_futures_pair(
+   583→    position_id: str,
+   584→    *,
+   585→    dry_run: bool | None = None,
+   586→    quote: str = "USDT",
+   587→    config: dict[str, Any] | None = None,
+   588→    long_venue: Any = None,
+   589→    short_venue: Any = None,
+   590→    positions_path: Path = POSITIONS_PATH,
+   591→    warn_spread_widen_pct: float = 0.5,
+   592→) -> CrossVenueResult:
+   593→    """Close an open pure futures pair. Short leg first; rollback by reopening short if long close fails."""
+   594→    pos = _get_open_position(position_id, positions_path)
+   595→    if pos is None:
+   596→        return CrossVenueResult(
+   597→            False, "aborted", logs=[f"open position not found {position_id}"]
+   598→        )
+   599→    base = str(pos["base"])
+   600→    long_id = str(pos["long_venue"])
+   601→    short_id = str(pos["short_venue"])
+   602→    if dry_run is None:
+   603→        dry_run = bool(pos.get("dry_run", True))
+   604→
+   605→    lv = _venue(long_id, long_venue)
+   606→    sv = _venue(short_id, short_venue)
+   607→    long_mkt = _leg_market(lv, base, quote, futures=True)
+   608→    short_mkt = _leg_market(sv, base, quote, futures=True)
+   609→    long_px = float(long_mkt.get("price") or pos.get("long_price") or 0.0)
+   610→    short_px = float(short_mkt.get("price") or pos.get("short_price") or 0.0)
+   611→    qty = float(
+   612→        pos.get("qty")
+   613→        or min(float(pos.get("long_qty", 0)), float(pos.get("short_qty", 0)))
+   614→    )
+   615→    qty_prec = min(
+   616→        int(long_mkt["quantity_precision"]), int(short_mkt["quantity_precision"])
+   617→    )
+   618→    qty = _floor_qty(qty, qty_prec)
+   619→    if qty <= 0:
+   620→        return CrossVenueResult(False, "aborted", position_id, logs=["invalid position quantity"])
+   621→
+   622→    # Pre-close spread check (warning only; does not block close)
+   623→    open_mark_spread = float(pos.get("mark_spread_pct", 0.0))
+   624→    close_mark_spread = round(
+   625→        abs(long_px - short_px) / max(long_px, short_px) * 100.0, 6
+   626→    )
+   627→    logs: list[str] = []
+   628→    if open_mark_spread > 0 and warn_spread_widen_pct > 0:
+   629→        spread_widen = round(close_mark_spread - open_mark_spread, 4)
+   630→        if spread_widen > warn_spread_widen_pct:
+   631→            logs.append(
+   632→                f"WARN spread widened: entry {open_mark_spread:.2f}% → close {close_mark_spread:.2f}% "
+   633→                f"(widened {spread_widen:.2f}%, threshold {warn_spread_widen_pct}%)",
+   634→            )
+   635→    # ---------- end spread check ----------
+   636→
+   637→    reason = f"Pure-futures spread close {position_id}"
+   638→    short_close = _make_futures_trade(
+   639→        base, "close_short", qty, short_px, qty_prec, reason
+   640→    )
+   641→    long_close = _make_futures_trade(base, "close_long", qty, long_px, qty_prec, reason)
+   642→    short_market = {base: short_mkt}
+   643→    long_market = {base: long_mkt}
+   644→    executed: list[dict[str, Any]] = []
+   645→
+   646→    if dry_run:
+   647→        executed.extend(sv.execute_trades([short_close], short_market, dry_run=True))
+   648→        executed.extend(lv.execute_trades([long_close], long_market, dry_run=True))
+   649→        _mark_closed(
+   650→            position_id,
+   651→            {
+   652→                "dry_run": True,
+   653→                "open_mark_spread": open_mark_spread,
+   654→                "close_mark_spread": close_mark_spread,
+   655→            },
+   656→            positions_path,
+   657→        )
+   658→        logs.append(f"[DRY-RUN] close pure-futures {base} qty={qty}")
+   659→        return CrossVenueResult(True, "simulated", position_id, executed, logs)
+   660→
+   661→    res_short = sv.execute_trades([short_close], short_market, dry_run=False)
+   662→    executed.extend(res_short)
+   663→    if not _filled(res_short):
+   664→        logs.append(
+   665→            f"Short close failed: {res_short[0].get('error') if res_short else 'no result'}"
+   666→        )
+   667→        return CrossVenueResult(False, "aborted", position_id, executed, logs)
+   668→    closed_short_qty = _exec_qty(res_short, qty)
+   669→    logs.append(f"Short leg closed {short_id} close_short {closed_short_qty} {base}")
+   670→
+   671→    long_close["amount_base"] = _floor_qty(closed_short_qty, qty_prec)
+   672→    res_long = lv.execute_trades([long_close], long_market, dry_run=False)
+   673→    executed.extend(res_long)
+   674→    if _filled(res_long):
+   675→        logs.append(
+   676→            f"Long leg closed {long_id} close_long {long_close['amount_base']} {base}"
+   677→        )
+   678→        _mark_closed(
+   679→            position_id,
+   680→            {
+   681→                "short_price": res_short[0].get("exec_price"),
+   682→                "long_price": res_long[0].get("exec_price"),
+   683→                "open_mark_spread": open_mark_spread,
+   684→                "close_mark_spread": close_mark_spread,
+   685→            },
+   686→            positions_path,
+   687→        )
+   688→        return CrossVenueResult(True, "filled", position_id, executed, logs)
+   689→
+   690→    # Long close failed → re-open short to restore hedge.
+   691→    logs.append("Long close failed; re-opening short to restore hedge")
+   692→    reopen = _make_futures_trade(
+   693→        base,
+   694→        "open_short",
+   695→        closed_short_qty,
+   696→        short_px,
+   697→        qty_prec,
+   698→        "ROLLBACK: pure-futures long close failed",
+   699→    )
+   700→    send_notification(
+   701→        "Pure Futures Close Rollback",
+   702→        f"{long_id} close_long {base} failed; re-opening {short_id} open_short {closed_short_qty}",
+   703→        config,
+   704→    )
+   705→    res_rb = sv.execute_trades([reopen], short_market, dry_run=False)
+   706→    executed.extend(res_rb)
+   707→    if _filled(res_rb):
+   708→        logs.append("Re-hedged; position remains open")
+   709→        return CrossVenueResult(False, "rolled_back", position_id, executed, logs)
+   710→
+   711→    logs.append("Re-hedge failed! Long leg is naked and requires manual handling")
+   712→    send_notification(
+   713→        "NAKED PURE FUTURES POSITION",
+   714→        f"Pure-futures close rollback failed: {long_id} long {base} exposure unhedged",
+   715→        config,
+   716→    )
+   717→    return CrossVenueResult(False, "naked", position_id, executed, logs)
+   718→
+   719→
+   720→def close_pure_futures_leg(
+   721→    position_id: str,
+   722→    leg: str,
+   723→    *,
+   724→    quote: str = "USDT",
+   725→    config: dict[str, Any] | None = None,
+   726→    long_venue: Any = None,
+   727→    short_venue: Any = None,
+   728→    positions_path: Path = POSITIONS_PATH,
+   729→    close_reason: str = "single_leg_close",
+   730→) -> CrossVenueResult:
+   731→    """Close only the specified leg (emergency handling when the other leg has been liquidated/disappeared).
+   732→
+   733→    Placing a close order on a disappeared leg opens a new opposite position, so when both-leg
+   734→    state is abnormal, only submit orders for the leg that is still alive. leg ∈ {"long", "short"}.
+   735→    """
+   736→    if leg not in ("long", "short"):
+   737→        return CrossVenueResult(False, "aborted", logs=[f"invalid leg={leg!r}"])
+   738→    pos = _get_open_position(position_id, positions_path)
+   739→    if pos is None:
+   740→        return CrossVenueResult(
+   741→            False, "aborted", logs=[f"open position not found {position_id}"]
+   742→        )
+   743→    base = str(pos["base"])
+   744→    venue_id = str(pos[f"{leg}_venue"])
+   745→    v = _venue(venue_id, long_venue if leg == "long" else short_venue)
+   746→    mkt = _leg_market(v, base, quote, futures=True)
+   747→    px = float(mkt.get("price") or pos.get(f"{leg}_price") or 0.0)
+   748→    qty = float(pos.get(f"{leg}_qty", 0) or pos.get("qty", 0))
+   749→    qprec = int(mkt["quantity_precision"])
+   750→    qty = _floor_qty(qty, qprec)
+   751→    if qty <= 0:
+   752→        return CrossVenueResult(False, "aborted", position_id, logs=["invalid leg quantity"])
+   753→
+   754→    trade = _make_futures_trade(
+   755→        base, f"close_{leg}", qty, px, qprec, f"{close_reason} {position_id}"
+   756→    )
+   757→    res = v.execute_trades([trade], {base: mkt}, dry_run=False)
+   758→    logs: list[str] = []
+   759→    if not _filled(res):
+   760→        logs.append(
+   761→            f"{venue_id} close_{leg} failed: "
+   762→            f"{res[0].get('error') if res else 'no result'}"
+   763→        )
+   764→        send_notification(
+   765→            "Single Leg Close Failed",
+   766→            f"Position {position_id} {base}: close_{leg}@{venue_id} failed, "
+   767→            f"exposure remains unhedged",
+   768→            config,
+   769→        )
+   770→        return CrossVenueResult(False, "naked", position_id, res, logs)
+   771→    logs.append(f"{venue_id} close_{leg} {qty} {base} closed (other leg disappeared)")
+   772→    _mark_closed(
+   773→        position_id,
+   774→        {
+   775→            "single_leg": leg,
+   776→            "reason": close_reason,
+   777→            f"{leg}_price": res[0].get("exec_price"),
+   778→        },
+   779→        positions_path,
+   780→    )
+   781→    return CrossVenueResult(True, "filled", position_id, res, logs)
+   782→
+   783→
+   784→def _leg_qty_from_venue(
+   785→    venue: Any, base: str, side: str, quote: str = "USDT"
+   786→) -> float | None:
+   787→    """Read the actual position quantity for a leg from the exchange API; return None on failure or when not found."""
+   788→    try:
+   789→        positions = venue.fetch_futures_positions(quote)
+   790→    except Exception:
+   791→        return None
+   792→    base_u = base.upper()
+   793→    for p in positions:
+   794→        sym = str(p.get("symbol", "")).upper()
+   795→        p_side = str(p.get("side", "")).lower()
+   796→        if sym.startswith(base_u) and p_side == side:
+   797→            return abs(float(p.get("qty", 0) or p.get("amount", 0)))
+   798→    return None
+   799→
+   800→
+   801→def rebalance_pure_futures_pair(
+   802→    position_id: str,
+   803→    *,
+   804→    dry_run: bool | None = None,
+   805→    quote: str = "USDT",
+   806→    config: dict[str, Any] | None = None,
+   807→    long_venue: Any = None,
+   808→    short_venue: Any = None,
+   809→    positions_path: Path = POSITIONS_PATH,
+   810→    long_qty: float | None = None,
+   811→    short_qty: float | None = None,
+   812→) -> CrossVenueResult:
+   813→    """When the two legs have mismatched quantities (partial liquidation/ADL), reduce the larger leg to restore delta neutrality.
+   814→
+   815→    Only trim the oversized leg: partially close the larger leg until it matches the smaller one.
+   816→    Do not add to the smaller leg（avoiding extra margin requirements and amplifying slippage/exposure risk）。
+   817→
+   818→    long_qty / short_qty can be injected explicitly (for tests or when an upper layer has already queried);
+   819→    otherwise live mode reads from the exchange API, while dry-run uses the position record.
+   820→    """
+   821→    pos = _get_open_position(position_id, positions_path)
+   822→    if pos is None:
+   823→        return CrossVenueResult(
+   824→            False, "aborted", logs=[f"open position not found {position_id}"]
+   825→        )
+   826→    base = str(pos["base"])
+   827→    long_id = str(pos["long_venue"])
+   828→    short_id = str(pos["short_venue"])
+   829→    if dry_run is None:
+   830→        dry_run = bool(pos.get("dry_run", True))
+   831→
+   832→    lv = _venue(long_id, long_venue)
+   833→    sv = _venue(short_id, short_venue)
+   834→    long_mkt = _leg_market(lv, base, quote, futures=True)
+   835→    short_mkt = _leg_market(sv, base, quote, futures=True)
+   836→    qty_prec = min(
+   837→        int(long_mkt["quantity_precision"]), int(short_mkt["quantity_precision"])
+   838→    )
+   839→
+   840→    rec_lq = float(pos.get("long_qty", 0) or pos.get("qty", 0))
+   841→    rec_sq = float(pos.get("short_qty", 0) or pos.get("qty", 0))
+   842→    lq = long_qty if long_qty is not None else rec_lq
+   843→    sq = short_qty if short_qty is not None else rec_sq
+   844→    if not dry_run:
+   845→        if long_qty is None:
+   846→            api_lq = _leg_qty_from_venue(lv, base, "long", quote)
+   847→            if api_lq is not None:
+   848→                lq = api_lq
+   849→        if short_qty is None:
+   850→            api_sq = _leg_qty_from_venue(sv, base, "short", quote)
+   851→            if api_sq is not None:
+   852→                sq = api_sq
+   853→
+   854→    logs: list[str] = [f"leg qty: long={lq} short={sq}"]
+   855→    executed: list[dict[str, Any]] = []
+   856→
+   857→    if lq <= 0 or sq <= 0:
+   858→        # One leg has completely disappeared; rebalance is not meaningful, use emergency close instead
+   859→        return CrossVenueResult(
+   860→            False,
+   861→            "aborted",
+   862→            position_id,
+   863→            executed,
+   864→            logs + ["One leg quantity is 0; handle with close/emergency close"],
+   865→        )
+   866→
+   867→    trim_qty = _floor_qty(abs(lq - sq), qty_prec)
+   868→    if trim_qty <= 0:
+   869→        return CrossVenueResult(
+   870→            True, "balanced", position_id, executed, logs + ["Both leg quantities match; no rebalance needed"]
+   871→        )
+   872→
+   873→    if lq > sq:
+   874→        trim_venue, trim_id, trim_mkt = lv, long_id, long_mkt
+   875→        trade_type = "close_long"
+   876→    else:
+   877→        trim_venue, trim_id, trim_mkt = sv, short_id, short_mkt
+   878→        trade_type = "close_short"
+   879→    px = float(trim_mkt.get("price") or 0.0)
+   880→    trade = _make_futures_trade(
+   881→        base,
+   882→        trade_type,
+   883→        trim_qty,
+   884→        px,
+   885→        qty_prec,
+   886→        f"REBALANCE: trim oversized leg {position_id}",
+   887→    )
+   888→    market = {base: trim_mkt}
+   889→
+   890→    if dry_run:
+   891→        executed.extend(trim_venue.execute_trades([trade], market, dry_run=True))
+   892→        logs.append(f"[DRY-RUN] rebalance {trim_id} {trade_type} {trim_qty} {base}")
+   893→        return CrossVenueResult(True, "simulated", position_id, executed, logs)
+   894→
+   895→    res = trim_venue.execute_trades([trade], market, dry_run=False)
+   896→    executed.extend(res)
+   897→    if not _filled(res):
+   898→        logs.append(f"Rebalance failed: {res[0].get('error') if res else 'no result'}")
+   899→        send_notification(
+   900→            "Pure Futures Rebalance Failed",
+   901→            f"Position {position_id} {base}: {trim_id} {trade_type} {trim_qty} failed; "
+   902→            f"legs remain skewed (long={lq} short={sq})",
+   903→            config,
+   904→        )
+   905→        return CrossVenueResult(False, "aborted", position_id, executed, logs)
+   906→
+   907→    trimmed = _exec_qty(res, trim_qty)
+   908→    new_qty = _floor_qty(min(lq, sq), qty_prec)
+   909→    logs.append(f"Rebalance filled {trim_id} {trade_type} {trimmed} {base} → qty={new_qty}")
+   910→    _update_position(
+   911→        position_id,
+   912→        {
+   913→            "qty": new_qty,
+   914→            "long_qty": new_qty,
+   915→            "short_qty": new_qty,
+   916→            "last_rebalance": {
+   917→                "ts": int(time.time() * 1000),
+   918→                "venue": trim_id,
+   919→                "type": trade_type,
+   920→                "trim_qty": trimmed,
+   921→                "before": {"long_qty": lq, "short_qty": sq},
+   922→            },
+   923→        },
+   924→        positions_path,
+   925→    )
+   926→    return CrossVenueResult(True, "filled", position_id, executed, logs)
+   927→
