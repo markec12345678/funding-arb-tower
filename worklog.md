@@ -309,3 +309,37 @@ Stage Summary:
   slippage/net PnL/maxDD/avg hold) + decision framework A/B/C locked in user's plan.
 - No live trading; no strategy changes; no new features. Next action = wait 3-7 days,
   then produce the comparison report from journal + backtest analysis.
+
+---
+Task ID: PHASE-2-BASELINE-LOCK
+Agent: Z.ai Code (lead)
+Task: User-confirmed baseline lock for the paper period. Discipline instructions from
+user: no new features, no threshold changes, no venue additions, no commits — system
+collects data until the 3-7 day BACKTEST ↔ PAPER report.
+
+Work Log:
+- User confirmed Day 0 status as the locked baseline (paper day 0 = 14:36 UTC):
+  13,700 scan rows → 60 fee-gate candidates → 14 execution attempts → 13 rejected
+  → 1 paper position (RVN). User framing adopted as project canon:
+  SIGNAL EDGE → FEE-ADJUSTED EDGE → EXECUTABLE EDGE — only the third must be proven.
+- Rejection-as-information principle locked: depth gate rejecting KR200 is DATA, not
+  a defect to "fix". No threshold optimization to manufacture more trades.
+- Per-position evaluation chain defined for every closed paper position (RVN first):
+  entry funding edge → entry fee → actual paper entry → edge over time → exit trigger
+  → exit edge → net PnL. The key question per position: was the entry edge actually
+  realizable through to the exit.
+- Decision framework re-confirmed: A (net PnL > 0 after friction) → minimal live test;
+  B (signal positive, execution eats edge) → improve execution layer only;
+  C (no net edge from executable signals either) → close strategy as unproven, stop
+  feature development.
+- Final health check at lock time (~14:52 UTC): runner PID 12976 unchanged (15+ min,
+  no respawn), supervisor ticking (last_check advancing every 20s), journal appending
+  (22→24 entries, cycle 14:51 arrived on schedule), RVN position still open.
+- ZERO code changes, ZERO commits made at this stage. Working tree remains clean.
+
+Stage Summary:
+- BASELINE LOCKED (user-confirmed): Day 0 funnel numbers + evaluation chain + A/B/C
+  decision framework recorded above; nothing modified or added.
+- Deliverable at end of paper period: journal.jsonl analysis + final BACKTEST ↔ PAPER
+  comparison report (per user's metric table), reviewed number-by-number with user.
+- Until then: verify-only health checks; no interventions of any kind.
