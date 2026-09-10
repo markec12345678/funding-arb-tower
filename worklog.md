@@ -970,3 +970,117 @@ Stage Summary:
   done — next rungs (only when the user asks): funding regime model, venue
   health, execution-quality analytics, allocator. funding-arb timeline
   unchanged: daily verify-only checks, Day 3 interim, Day 5-7 A/B/C.
+
+---
+Task ID: phase3-lab-cross-layer-gate
+Agent: main (Z.ai Code)
+Task: User directive after accepting Risk Guardian (23/23): do NOT start the
+next module (regime model). Build instead the FORMAL PHASE-3 SAFETY GATE —
+cross-layer certification of the seams: recon->guardian, stale->recon->
+guardian, external reduction->recon->guardian, late fill->recon->guardian,
+single-leg->guardian->engine, venue outage->guardian->engine,
+flatten->execution->recon->HEALTHY, restart mid-cycle, repeated whole cycle,
+audit replay after the whole cycle. Ladder: FOUNDATION 80/80 ->
+RECONCILIATION 19/19 -> RISK GUARDIAN 23/23 -> CROSS-LAYER -> PORT CANDIDATE,
+porting BLOCKED by Phase-2 A/B/C. funding-arb stays locked.
+
+Work Log:
+- Read the full v0.3 lab before writing anything (risk_scenarios harness,
+  risk_guardian ladder + composition rule, reconciliation pipeline, engine,
+  invariants, audit fold, fake exchange, contracts) and re-ran the full gate
+  (93 tests + 80/80 + 19/19 + 23/23, ~3 s) to confirm the green baseline.
+- invariants.py: new check_cross_layer_invariants — X1 cycle closure (a
+  risk-executed unwind that completes ends with the LAST recon_result
+  classifying HEALTHY, recorded at/after the last risk_ transition), X2
+  truth-before-risk-action (every risk_ transition preceded by a recon result
+  satisfying flatten_execution_permitted — the recon side of G4), X3 TOTAL
+  audit replay (closed event-type set; fold valid at EVERY prefix — I5
+  strengthened from 12 samples to total; every recon_result/risk_decision
+  round-trips to_event->from_event->to_event as identity; file reload folds
+  to the live status), X4 fail-closed seam (while the standing recon result
+  is EXTERNAL_REDUCTION / decided ESCALATE_CONFLICT, every guardian verdict
+  is ESCALATE — P0 dominance across the module seam, guardian-side mirror of
+  R4), X5 documented as the live harness probes (repeat-cycle, twin,
+  re-derivation from file), like R6/G6 before them.
+- cross_layer_scenarios.py (~570 lines): full-stack harness modeled on the
+  risk harness with three new probes — (a) repeat-cycle: re-run the ENTIRE
+  loop on the converged world, assert observations only (zero mutations,
+  zero orders, zero new decisions); (b) twin: for restart scenarios run the
+  uninterrupted equivalent and compare semantic facts (state, ledger, venue
+  truth, final verdict, final classification); (c) re-derivation: rebuild a
+  FRESH process (Journal + Reconciler + RiskGuardian) from the journal FILE
+  alone on a copy and assert it reaches the same classification and the same
+  standing decision signature, appending nothing but one observation. Also
+  fixed locally the journal-instance rebinding class of bug: after a restart
+  the local `j` reference is rebound to engine.j as well (the risk harness
+  left it stale, making its post-restart purity journal-count checks
+  vacuous); all probes now measure the LIVE journal. 13-scenario matrix maps
+  every architecture-review call-out: CL01 one-leg deferred FLATTEN (verdict
+  STANDS during RECONFIRM — expect_verdict_precedes_execution — executes
+  only after ledger sync), CL02/CL02b stale view (BLOCK while blind, zero
+  mutations; the external reduction that happened WHILE blind discovered
+  only when truth returns), CL03 ADL -> ESCALATE -> reconvergence -> ALLOW,
+  CL04/CL04b late fill (0.9 -> LATE_FILL sync -> SINGLE_LEG -> FLATTEN
+  executes; 0.2 -> guardian SILENT, engine repairs, HEDGED — composition by
+  NOT acting), CL05 venue outage (BLOCK, engine untouched, escalation past
+  budget, heal), CL06/CL06b cycle closure (daily loss latched final FLATTEN;
+  liquidation unlatched final ALLOW), CL07 restart mid-flatten + TWIN
+  equivalence, CL08/CL08b repeated cycle (post-flatten + calm), CL09 audit
+  replay + re-derivation over the richest journal (external reduction +
+  kill/revive: every event family in one file).
+- certify.py (~200 lines): THE FORMAL PHASE-3 SAFETY GATE — runs unit tests
+  programmatically, then every rung's scenarios into EXPLICIT journals,
+  counts the passes AND audits every journal retroactively against X1..X4
+  (135 journals: 80 foundation + 19 recon + 23 risk + 13 cross-layer —
+  audit replay and the seam invariants are not a new-suite privilege, they
+  hold on ALL Phase-3 evidence including journals that predate the X
+  judges). Prints the certification ladder and the three-line status
+  (foundation COMPLETE / cross-layer certification COMPLETE / port BLOCKED
+  BY PHASE-2 A/B/C); exit 0 only when everything is green.
+- tests/test_cross_layer.py: 13 tests. Every X judge proven to BITE on
+  tampered REAL journals (not toys): a gated VENUE_UNAVAILABLE recon
+  injected before CL06's risk_ transition fires X2 exactly; a trailing
+  non-HEALTHy reading fires X1; CL03's ESCALATE verdict downgraded to ALLOW
+  fires X4; unknown event type / illegal prefix transition / non-round-
+  tripping decision fire X3; stripping all recon_results fires X2 (engine
+  acted with no truth ever established). Plus matrix-shape pins (13
+  scenarios, the call-out coverage map, probes actually exercised).
+- run_tests.sh + Makefile: + cross_layer_scenarios + certify rungs.
+- README rewritten to v0.4: new Cross-Layer Safety Gate section (the ladder,
+  the seam matrix table), X-column added to the invariants table, cross-layer
+  failure-injection catalog entry, Running section updated (106 tests, the
+  certify command), module ladder marks cross-layer DONE and restates the
+  three-line status.
+- NEGATIVE verification of the gate itself (then reverted): tampering
+  flatten_execution_permitted to always-True (the blind-execution
+  anti-pattern) makes CL01 fail with exactly the deferred-execution message
+  and drops the suite to 12/13 — the certification genuinely detects a seam
+  regression, it is not a rubber stamp.
+- Full gate green: 106 unit/integration tests (93+13), 80/80, 19/19, 23/23,
+  13/13, 135-journal retroactive X-audit clean, ~6.6 s total. Git 9723f14
+  pushed to github.com/markec12345678/phase3-lab (remote verified).
+- funding-arb verify-only check after all work: working tree CLEAN at
+  0373f5d, runner PID 12976 alive 5h51m (watchdog respawns=4, meta fresh),
+  paper_runner.log live; phase2_report.py read-only: day 0.245 INTERIM,
+  73 cycles / 612 cand / 6 entered / 4 exited, closed net -0.55 USD
+  (funding +7.57, fees -4.35, price -3.77), integrity 0 parse errors /
+  0 branch resets / supervisor alive. Zero changes to the locked repo.
+
+Stage Summary:
+- The Phase-3 execution-safety layer is now CERTIFIED as a whole, not just
+  implemented module-by-module: the user's certification ladder is a real,
+  runnable gate (`python3 -m phase3_lab.certify`) whose PORT CANDIDATE rung
+  explicitly states it is blocked by the Phase-2 A/B/C decision.
+- The certificate's substance: every dangerous seam combination the
+  architecture review called out has a dedicated scenario with a dedicated
+  assertion (deferred execution, blind-window discipline, cycle closure,
+  twin restart equivalence, cycle-level idempotency, re-derivation from
+  file), and the X invariants hold retroactively over all 135 journals the
+  rungs produce — including evidence that predates the judges.
+- Golden contract UNCHANGED at v1.1.0: the gate added judges and scenarios,
+  not wire types — the port boundary did not move.
+- Module ladder state: foundation, reconciliation, risk guardian and the
+  cross-layer certification are DONE; the next rungs (funding regime model,
+  venue health, execution-quality analytics, allocator) are capability
+  modules that start only when the user asks. funding-arb timeline
+  unchanged: daily verify-only checks, Day 3 interim, Day 5-7 A/B/C.

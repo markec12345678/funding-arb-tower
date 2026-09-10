@@ -1,0 +1,566 @@
+     1→     1→"""Risk Guardian — the global Risk Decision Engine.
+     2→     2→
+     3→     3→Architecture position (user-pinned):
+     4→     4→
+     5→     5→    exchange truth
+     6→     6→          |
+     7→     7→    reconciliation            (what actually happened?)
+     8→     8→          |
+     9→     9→    actual state
+    10→    10→          |
+    11→    11→    RISK GUARDIAN             <- THIS MODULE (is the state still allowed?)
+    12→    12→          |
+    13→    13→    RiskDecision
+    14→    14→          |
+    15→    15→    engine execution          (what do we do? — engine's OWN bounded machinery)
+    16→    16→          |
+    17→    17→    audit / fold              (what was actually executed?)
+    18→    18→
+    19→    19→Design rules (user-pinned, v1 — fully deterministic):
+    20→    20→- No AI, no heuristics, no "maybe": every verdict is a pure function of the
+    21→    21→  measured ACTUAL state and the RiskLimits.
+    22→    22→- ALL TEN limits are evaluated on EVERY pass and journaled with the decision
+    23→    23→  (G2 completeness) — a green decision is provably a checked decision.
+    24→    24→- Rule priority is EXPLICIT (the ladder below). The verdict is the FIRST fired
+    25→    25→  rule in ladder order; a lower-priority ALLOW can never override a
+    26→    26→  higher-priority FLATTEN/ESCALATE (G1 dominance — structural, then tested).
+    27→    27→- The guardian NEVER trades. It produces RiskDecision records; the engine
+    28→    28→  executes a permitted FLATTEN via its own validated unwind path (G4:
+    29→    29→  every risk_ transition must be preceded by a FLATTEN decision).
+    30→    30→- Purity / idempotency: evaluate() twice on the same world -> the identical
+    31→    31→  decision and ZERO new journal events (dedupe by content signature). Restart
+    32→    32→  re-evaluates instead of reconstructing: same world -> same decision ->
+    33→    33→  zero duplicate events (G3/G6).
+    34→    34→
+    35→    35→The ladder (rank order — the user's explicit priority):
+    36→    36→
+    37→    37→    rank  rule                        verdict    escalates   fires when
+    38→    38→    ----  --------------------------  --------   ---------   -------------------------
+    39→    39→      0   EXTERNAL_REDUCTION          ESCALATE   yes         recon classified external
+    40→    40→                                                        reduction (latches until recon
+    41→    41→                                                        reclassifies HEALTHY — same
+    42→    42→                                                        semantics as invariant R4)
+    43→    43→      0   RECON_CONFLICT              ESCALATE   yes         recon decided ESCALATE_CONFLICT
+    44→    44→                                                        (strict drift, frozen policy,
+    45→    45→                                                        orphan conflict)
+    46→    46→      1   VENUE_UNAVAILABLE           BLOCK      if long    any endpoint (positions/
+    47→    47→                                                        trades/account) down; escalates
+    48→    48→                                                        once the outage exceeds
+    49→    49→                                                        max_venue_unavailable_ticks
+    50→    50→      2   SINGLE_LEG                  FLATTEN    yes         unhedged notional above
+    51→    51→                                                        max_single_leg_exposure_usd,
+    52→    52→                                                        OUTSIDE the bounded entry
+    53→    53→                                                        window (see below)
+    54→    54→      3   LIQUIDATION_CRITICAL        FLATTEN    yes         distance-to-liquidation below
+    55→    55→                                                        the minimum (positions open)
+    56→    56→      4   MAX_DAILY_LOSS              FLATTEN    yes         daily loss budget consumed
+    57→    57→      4   MAX_DRAWDOWN                FLATTEN    yes         drawdown budget consumed
+    58→    58→      5   STALE_DATA                  BLOCK      no          positions view older than
+    59→    59→                                                        max_stale_data_ticks
+    60→    60→      5   LIMIT_BREACH                BLOCK      no          max_position / max_total_
+    61→    61→                                                        exposure / max_leverage exceeded
+    62→    62→      5   REPAIR_BUDGET_EXHAUSTED     BLOCK      yes         pair unresolved and repair
+    63→    63→                                                        attempts >= emergency budget
+    64→    64→      -   (no rule fired)             ALLOW      no          everything healthy
+    65→    65→
+    66→    66→Composition decisions (documented, not accidental):
+    67→    67→- EXTERNAL_REDUCTION / CONFLICT escalates rather than flattens because the
+    68→    68→  protective flatten is ALREADY issued by reconciliation + engine composition
+    69→    69→  before the guardian evaluates; the guardian's added value is fail-closed:
+    70→    70→  no auto-trading against an unknown actor until recon proves HEALTHY.
+    71→    71→- VENUE_UNAVAILABLE (BLOCK) outranks SINGLE_LEG / LIQUIDATION (FLATTEN):
+    72→    72→  while blind we do not add risk anywhere; the moment observation heals, the
+    73→    73→  higher-severity measurement rules fire on the (last-known) truth. This is
+    74→    74→  the user's explicit ladder order.
+    75→    75→- STALE_DATA sits BELOW the FLATTEN-class rules: a risk-off on last-known
+    76→    76→  venue truth is always safe (closing positions cannot worsen risk), while
+    77→    77→  ledger mutations legitimately refuse stale data (reconciliation R5). New
+    78→    78→  exposure is still blocked on stale data.
+    79→    79→- SINGLE_LEG measures PERSISTENT unhedged exposure: while the pair is inside
+    80→    80→  the bounded entry/confirm window (PAIR_PENDING / LEG_A_FILLED /
+    81→    81→  LEG_B_FILLED) the engine's own timeout machinery bounds the transient
+    82→    82→  exposure; from LEG_B_PARTIAL / REPAIR / HEDGED / EMERGENCY_UNWIND (and for
+    83→    83→  orphan exposure with no pair at all) the guardian measures it. Deterministic
+    84→    84→  state-based gating, not a heuristic.
+    85→    85→- BLOCK gates NEW exposure only. In-flight pair resolution is already
+    86→    86→  committed risk, handled by the engine's bounded machinery; FLATTEN is the
+    87→    87→  guardian's tool when that machinery is not enough.
+    88→    88→- FLATTEN execution composition rule (consumed by the engine wrapper): the
+    89→    89→  engine executes a guardian FLATTEN by sizing unwind orders against the
+    90→    90→  LEDGER, so it may act only once reconciliation has established truth
+    91→    91→  (`flatten_execution_permitted`): classification HEALTHY / DUPLICATE_TRADE /
+    92→    92→  LATE_FILL, or an acted SYNC decision. While reconciliation is still
+    93→    93→  RECONFIRMing, RETRYing (stale/blind) or holding a conflict, the verdict
+    94→    94→  STANDS (journaled, escalated where flagged) and executes the moment truth
+    95→    95→  is established — one bounded tick of deferral, never a blind mutation.
+    96→    96→  This mirrors the reconciliation module's own no-blind-action discipline.
+    97→    97→
+    98→    98→Boundary semantics (pinned per limit kind, tested at exactly-threshold and
+    99→    99→+/- one smallest step):
+   100→   100→- capacity limits breach strictly ABOVE   (position, exposure, leverage,
+   101→   101→  single-leg, stale age, outage duration)
+   102→   102→- budget limits breach AT the limit       (daily loss, drawdown, repair budget
+   103→   103→  — the budget is consumed when it is reached)
+   104→   104→- margin limits breach strictly BELOW     (liquidation distance)
+   105→   105→"""
+   106→   106→from __future__ import annotations
+   107→   107→
+   108→   108→from dataclasses import dataclass
+   109→   109→from decimal import Decimal
+   110→   110→from typing import Optional
+   111→   111→
+   112→   112→from .audit import Journal, fold, PHASE_DONE
+   113→   113→from .contracts import (Classification, Decision, LimitEval, RiskDecision,
+   114→   114→                        RiskLimits, RiskVerdict)
+   115→   115→from .exchange.fake import FakeExchange, ApiUnavailable
+   116→   116→from .reconciliation import last_recon_result
+   117→   117→from .states import PairState as S
+   118→   118→from .types import ZERO, PairSpec, Policy, dec
+   119→   119→
+   120→   120→SUBJECT = "account"
+   121→   121→
+   122→   122→# The bounded entry/confirm window: the engine's timeout machinery owns
+   123→   123→# transient exposure here; the guardian measures persistent exposure outside.
+   124→   124→ENTRY_WINDOW_STATES = (S.PAIR_PENDING, S.LEG_A_FILLED, S.LEG_B_FILLED)
+   125→   125→# Pair still resolving (repair budget under pressure matters here):
+   126→   126→UNRESOLVED_STATES = (S.PAIR_PENDING, S.LEG_A_FILLED, S.LEG_B_FILLED,
+   127→   127→                     S.LEG_B_PARTIAL, S.REPAIR)
+   128→   128→
+   129→   129→# Canonical evaluation order = the user's spoken 10-limit list.
+   130→   130→LIMITS_ORDER = (
+   131→   131→    "max_single_leg_exposure_usd", "max_position_qty", "max_total_exposure_usd",
+   132→   132→    "max_leverage", "max_daily_loss_usd", "max_drawdown_pct",
+   133→   133→    "min_liquidation_distance_pct", "max_stale_data_ticks",
+   134→   134→    "venue_unavailable", "emergency_repair_budget",
+   135→   135→)
+   136→   136→
+   137→   137→NA = "n/a"
+   138→   138→
+   139→   139→
+   140→   140→# --------------------------------------------------------------------------
+   141→   141→# The rule ladder
+   142→   142→# --------------------------------------------------------------------------
+   143→   143→@dataclass(frozen=True)
+   144→   144→class RiskRule:
+   145→   145→    rank: int
+   146→   146→    name: str
+   147→   147→    verdict: RiskVerdict
+   148→   148→    escalate: bool              # static escalation flag (VENUE's is dynamic)
+   149→   149→    description: str
+   150→   150→
+   151→   151→
+   152→   152→RISK_RULES = (
+   153→   153→    RiskRule(0, "EXTERNAL_REDUCTION", RiskVerdict.ESCALATE, True,
+   154→   154→             "unknown external actor reduced positions (ADL/other process) — "
+   155→   155→             "reconciliation already flattened protectively; auto-trading is "
+   156→   156→             "suspended until recon reclassifies HEALTHY"),
+   157→   157→    RiskRule(0, "RECON_CONFLICT", RiskVerdict.ESCALATE, True,
+   158→   158→             "reconciliation escalated a conflict (unexplained shape under "
+   159→   159→             "strict policy / frozen conflict policy / orphan) — human decides"),
+   160→   160→    RiskRule(1, "VENUE_UNAVAILABLE", RiskVerdict.BLOCK, False,
+   161→   161→             "an observation endpoint is down — blind means no new risk; "
+   162→   162→             "escalates once the outage exceeds max_venue_unavailable_ticks"),
+   163→   163→    RiskRule(2, "SINGLE_LEG", RiskVerdict.FLATTEN, True,
+   164→   164→             "persistent unhedged notional above max_single_leg_exposure_usd"),
+   165→   165→    RiskRule(3, "LIQUIDATION_CRITICAL", RiskVerdict.FLATTEN, True,
+   166→   166→             "distance-to-liquidation below the minimum margin"),
+   167→   167→    RiskRule(4, "MAX_DAILY_LOSS", RiskVerdict.FLATTEN, True,
+   168→   168→             "daily loss budget consumed"),
+   169→   169→    RiskRule(4, "MAX_DRAWDOWN", RiskVerdict.FLATTEN, True,
+   170→   170→             "drawdown budget consumed"),
+   171→   171→    RiskRule(5, "STALE_DATA", RiskVerdict.BLOCK, False,
+   172→   172→             "positions view older than max_stale_data_ticks — no new exposure "
+   173→   173→             "on old data (risk-off on last-known truth remains allowed: it is safe)"),
+   174→   174→    RiskRule(5, "LIMIT_BREACH", RiskVerdict.BLOCK, False,
+   175→   175→             "max_position / max_total_exposure / max_leverage exceeded — "
+   176→   176→             "no new exposure at current size"),
+   177→   177→    RiskRule(5, "REPAIR_BUDGET_EXHAUSTED", RiskVerdict.BLOCK, True,
+   178→   178→             "pair unresolved with repair attempts at/above the emergency "
+   179→   179→             "budget — no new exposure until it resolves"),
+   180→   180→)
+   181→   181→RULE_INDEX = {r.name: r for r in RISK_RULES}
+   182→   182→
+   183→   183→
+   184→   184→# --------------------------------------------------------------------------
+   185→   185→# Boundary semantics (single source of truth — the G2 checker recomputes
+   186→   186→# from the SAME function, so a flipped breach flag cannot survive)
+   187→   187→# --------------------------------------------------------------------------
+   188→   188→_CAPACITY_LIMITS = {"max_position_qty", "max_total_exposure_usd", "max_leverage",
+   189→   189→                    "max_single_leg_exposure_usd", "max_stale_data_ticks"}
+   190→   190→_BUDGET_LIMITS = {"max_daily_loss_usd", "max_drawdown_pct", "emergency_repair_budget"}
+   191→   191→_MARGIN_LIMITS = {"min_liquidation_distance_pct"}
+   192→   192→
+   193→   193→
+   194→   194→def _num(s: str) -> Optional[Decimal]:
+   195→   195→    try:
+   196→   196→        return dec(s)
+   197→   197→    except Exception:  # noqa: BLE001 — "n/a" / "inf" / "unset" are not numeric
+   198→   198→        return None
+   199→   199→
+   200→   200→
+   201→   201→def breached_for(limit: str, measured: str, limit_value: str) -> Optional[bool]:
+   202→   202→    """Recompute the breach flag from journaled strings. Returns None when the
+   203→   203→    recorded values do not allow a definitive recomputation ("n/a", "unset",
+   204→   204→    "inf", or limits whose breach depends on state gating)."""
+   205→   205→    if limit == "venue_unavailable":
+   206→   206→        out = _num(measured)
+   207→   207→        return True if (out is not None and out > 0) else None
+   208→   208→    if limit == "min_liquidation_distance_pct":
+   209→   209→        m, lv = _num(measured), _num(limit_value)
+   210→   210→        if m is None or lv is None:
+   211→   211→            return None
+   212→   212→        return m < lv
+   213→   213→    m, lv = _num(measured), _num(limit_value)
+   214→   214→    if m is None or lv is None:
+   215→   215→        return None
+   216→   216→    if limit in _CAPACITY_LIMITS:
+   217→   217→        return m > lv
+   218→   218→    if limit in _BUDGET_LIMITS:
+   219→   219→        if limit == "emergency_repair_budget":
+   220→   220→            # state-gated (pair unresolved): at/above budget is NOT definitively
+   221→   221→            # breached (a resolved pair keeps its historical attempt count);
+   222→   222→            # below budget is definitively NOT breached.
+   223→   223→            return False if m < lv else None
+   224→   224→        return m >= lv
+   225→   225→    return None
+   226→   226→
+   227→   227→
+   228→   228→# --------------------------------------------------------------------------
+   229→   229→# The measured ACTUAL state (pure input to the decision)
+   230→   230→# --------------------------------------------------------------------------
+   231→   231→@dataclass(frozen=True)
+   232→   232→class RiskState:
+   233→   233→    """Everything the guardian knows, measured AFTER reconciliation ran —
+   234→   234→    the honest 'actual state' picture. Immutable, side-effect-free."""
+   235→   235→    tick: int
+   236→   236→    view: tuple                       # ((leg, signed qty), ...) venue positions view
+   237→   237→    view_tick: int                    # -1 when the positions endpoint is down
+   238→   238→    positions_available: bool
+   239→   239→    trades_available: bool
+   240→   240→    account_available: bool
+   241→   241→    equity: Optional[Decimal]         # None when the account endpoint is down
+   242→   242→    realized_pnl_day: Optional[Decimal]
+   243→   243→    peak_equity: Optional[Decimal]
+   244→   244→    min_liq_distance_pct: Optional[Decimal]   # None when flat / account down
+   245→   245→    outage_ticks: tuple               # ((endpoint, ticks), ...) while down
+   246→   246→    pair_live: bool
+   247→   247→    pair_state: Optional[str]         # None when no pair exists
+   248→   248→    pair_unresolved: bool
+   249→   249→    repair_attempts: int
+   250→   250→    recon_classification: Optional[str]
+   251→   251→    recon_decision: Optional[str]
+   252→   252→    px_long: Decimal
+   253→   253→    px_short: Decimal
+   254→   254→
+   255→   255→    # ----- derived measurements (all deterministic) -----
+   256→   256→    @property
+   257→   257→    def any_endpoint_down(self) -> bool:
+   258→   258→        return not (self.positions_available and self.trades_available
+   259→   259→                    and self.account_available)
+   260→   260→
+   261→   261→    @property
+   262→   262→    def max_outage_ticks(self) -> int:
+   263→   263→        return max((n for _name, n in self.outage_ticks), default=0)
+   264→   264→
+   265→   265→    @property
+   266→   266→    def qty(self) -> dict:
+   267→   267→        return dict(self.view)
+   268→   268→
+   269→   269→    @property
+   270→   270→    def gross_notional(self) -> Decimal:
+   271→   271→        q = self.qty
+   272→   272→        return (abs(q.get("L1", ZERO)) * self.px_long
+   273→   273→                + abs(q.get("L2", ZERO)) * self.px_short)
+   274→   274→
+   275→   275→    @property
+   276→   276→    def unhedged_notional(self) -> Decimal:
+   277→   277→        """Net quantity valued at the reference (long-leg) mark."""
+   278→   278→        q = self.qty
+   279→   279→        net = q.get("L1", ZERO) + q.get("L2", ZERO)
+   280→   280→        return abs(net) * self.px_long
+   281→   281→
+   282→   282→    @property
+   283→   283→    def max_abs_leg_qty(self) -> Decimal:
+   284→   284→        q = self.qty
+   285→   285→        return max(abs(q.get("L1", ZERO)), abs(q.get("L2", ZERO)))
+   286→   286→
+   287→   287→    @property
+   288→   288→    def in_entry_window(self) -> bool:
+   289→   289→        return self.pair_state in (s.value for s in ENTRY_WINDOW_STATES)
+   290→   290→
+   291→   291→    @property
+   292→   292→    def day_loss(self) -> Optional[Decimal]:
+   293→   293→        if self.realized_pnl_day is None:
+   294→   294→            return None
+   295→   295→        return max(ZERO, -self.realized_pnl_day)
+   296→   296→
+   297→   297→    @property
+   298→   298→    def drawdown_pct(self) -> Optional[Decimal]:
+   299→   299→        if self.peak_equity is None or self.equity is None:
+   300→   300→            return None
+   301→   301→        if self.peak_equity <= ZERO:
+   302→   302→            return Decimal(100)      # degenerate world: fail-safe full drawdown
+   303→   303→        return (self.peak_equity - self.equity) / self.peak_equity * Decimal(100)
+   304→   304→
+   305→   305→    @property
+   306→   306→    def leverage(self) -> Optional[str]:
+   307→   307→        """Gross notional / equity. equity <= 0 -> unbounded ('inf')."""
+   308→   308→        if self.equity is None:
+   309→   309→            return None
+   310→   310→        if self.equity <= ZERO:
+   311→   311→            return "inf"
+   312→   312→        return str(self.gross_notional / self.equity)
+   313→   313→
+   314→   314→
+   315→   315→# --------------------------------------------------------------------------
+   316→   316→# The decision — a PURE function of (RiskState, RiskLimits)
+   317→   317→# --------------------------------------------------------------------------
+   318→   318→def _eval(limit: str, rule: str, measured: str, limit_value: str,
+   319→   319→          breached: bool) -> LimitEval:
+   320→   320→    return LimitEval(limit=limit, rule=rule, measured=measured,
+   321→   321→                     limit_value=limit_value, breached=breached)
+   322→   322→
+   323→   323→
+   324→   324→def _lv(v) -> str:
+   325→   325→    return "unset" if v is None else str(v)
+   326→   326→
+   327→   327→
+   328→   328→def decide(state: RiskState, limits: RiskLimits) -> RiskDecision:
+   329→   329→    """Pure: no I/O, no mutation, no clock. Same (state, limits) -> the same
+   330→   330→    decision, byte for byte (ts is carried in from the state)."""
+   331→   331→    # ---- measurement snapshots (None = unmeasurable) ----
+   332→   332→    unhedged = state.unhedged_notional
+   333→   333→    pos_qty = state.max_abs_leg_qty
+   334→   334→    gross = state.gross_notional
+   335→   335→    lev = state.leverage
+   336→   336→    loss = state.day_loss
+   337→   337→    dd = state.drawdown_pct
+   338→   338→    liq = state.min_liq_distance_pct
+   339→   339→    stale_age = (state.tick - state.view_tick) if state.positions_available else None
+   340→   340→    outage = state.max_outage_ticks
+   341→   341→    budget_left = limits.emergency_repair_budget
+   342→   342→
+   343→   343→    # ---- per-limit breach flags (pinned boundary semantics) ----
+   344→   344→    b_single = (limits.max_single_leg_exposure_usd is not None
+   345→   345→                and not state.in_entry_window
+   346→   346→                and unhedged > limits.max_single_leg_exposure_usd)
+   347→   347→    b_position = (limits.max_position_qty is not None
+   348→   348→                  and pos_qty > limits.max_position_qty)
+   349→   349→    b_exposure = (limits.max_total_exposure_usd is not None
+   350→   350→                  and gross > limits.max_total_exposure_usd)
+   351→   351→    b_leverage = (limits.max_leverage is not None and (
+   352→   352→        lev == "inf" or (lev is not None and dec(lev) > limits.max_leverage)))
+   353→   353→    b_daily = (limits.max_daily_loss_usd is not None and loss is not None
+   354→   354→               and loss >= limits.max_daily_loss_usd)
+   355→   355→    b_dd = (limits.max_drawdown_pct is not None and dd is not None
+   356→   356→            and dd >= limits.max_drawdown_pct)
+   357→   357→    b_liq = (limits.min_liquidation_distance_pct is not None and liq is not None
+   358→   358→             and liq < limits.min_liquidation_distance_pct)
+   359→   359→    b_stale = (limits.max_stale_data_ticks is not None and stale_age is not None
+   360→   360→               and stale_age > limits.max_stale_data_ticks)
+   361→   361→    b_venue = state.any_endpoint_down
+   362→   362→    b_budget = (budget_left is not None and state.pair_unresolved
+   363→   363→                and state.repair_attempts >= budget_left)
+   364→   364→
+   365→   365→    evaluations = (
+   366→   366→        _eval("max_single_leg_exposure_usd", "SINGLE_LEG",
+   367→   367→              str(unhedged) if not state.in_entry_window else f"{unhedged} (entry-window)",
+   368→   368→              _lv(limits.max_single_leg_exposure_usd), b_single),
+   369→   369→        _eval("max_position_qty", "LIMIT_BREACH", str(pos_qty),
+   370→   370→              _lv(limits.max_position_qty), b_position),
+   371→   371→        _eval("max_total_exposure_usd", "LIMIT_BREACH", str(gross),
+   372→   372→              _lv(limits.max_total_exposure_usd), b_exposure),
+   373→   373→        _eval("max_leverage", "LIMIT_BREACH", NA if lev is None else lev,
+   374→   374→              _lv(limits.max_leverage), b_leverage),
+   375→   375→        _eval("max_daily_loss_usd", "MAX_DAILY_LOSS",
+   376→   376→              NA if loss is None else str(loss),
+   377→   377→              _lv(limits.max_daily_loss_usd), b_daily),
+   378→   378→        _eval("max_drawdown_pct", "MAX_DRAWDOWN",
+   379→   379→              NA if dd is None else str(dd),
+   380→   380→              _lv(limits.max_drawdown_pct), b_dd),
+   381→   381→        _eval("min_liquidation_distance_pct", "LIQUIDATION_CRITICAL",
+   382→   382→              NA if liq is None else str(liq),
+   383→   383→              _lv(limits.min_liquidation_distance_pct), b_liq),
+   384→   384→        _eval("max_stale_data_ticks", "STALE_DATA",
+   385→   385→              NA if stale_age is None else str(stale_age),
+   386→   386→              _lv(limits.max_stale_data_ticks), b_stale),
+   387→   387→        _eval("venue_unavailable", "VENUE_UNAVAILABLE",
+   388→   388→              str(outage) if b_venue else "0",
+   389→   389→              _lv(limits.max_venue_unavailable_ticks), b_venue),
+   390→   390→        _eval("emergency_repair_budget", "REPAIR_BUDGET_EXHAUSTED",
+   391→   391→              str(state.repair_attempts),
+   392→   392→              _lv(budget_left), b_budget),
+   393→   393→    )
+   394→   394→
+   395→   395→    # ---- rule firing (ladder order == RISK_RULES order) ----
+   396→   396→    fired = []
+   397→   397→    if state.recon_classification == Classification.EXTERNAL_REDUCTION.value:
+   398→   398→        fired.append("EXTERNAL_REDUCTION")
+   399→   399→    if state.recon_decision == Decision.ESCALATE_CONFLICT.value:
+   400→   400→        fired.append("RECON_CONFLICT")
+   401→   401→    if b_venue:
+   402→   402→        fired.append("VENUE_UNAVAILABLE")
+   403→   403→    if b_single:
+   404→   404→        fired.append("SINGLE_LEG")
+   405→   405→    if b_liq:
+   406→   406→        fired.append("LIQUIDATION_CRITICAL")
+   407→   407→    if b_daily:
+   408→   408→        fired.append("MAX_DAILY_LOSS")
+   409→   409→    if b_dd:
+   410→   410→        fired.append("MAX_DRAWDOWN")
+   411→   411→    if b_stale:
+   412→   412→        fired.append("STALE_DATA")
+   413→   413→    if b_position or b_exposure or b_leverage:
+   414→   414→        fired.append("LIMIT_BREACH")
+   415→   415→    if b_budget:
+   416→   416→        fired.append("REPAIR_BUDGET_EXHAUSTED")
+   417→   417→
+   418→   418→    winner = RULE_INDEX[fired[0]] if fired else None
+   419→   419→    verdict = winner.verdict if winner else RiskVerdict.ALLOW
+   420→   420→    decided_by = winner.name if winner else "NONE"
+   421→   421→    escalate = any(RULE_INDEX[n].escalate for n in fired)
+   422→   422→    if "VENUE_UNAVAILABLE" in fired and limits.max_venue_unavailable_ticks is not None \
+   423→   423→            and outage > limits.max_venue_unavailable_ticks:
+   424→   424→        escalate = True
+   425→   425→
+   426→   426→    if winner is None:
+   427→   427→        reason = "all ten limits evaluated, none breached"
+   428→   428→    else:
+   429→   429→        detail = []
+   430→   430→        if "LIMIT_BREACH" in fired:
+   431→   431→            hit = [n for n, b in (("max_position_qty", b_position),
+   432→   432→                                  ("max_total_exposure_usd", b_exposure),
+   433→   433→                                  ("max_leverage", b_leverage)) if b]
+   434→   434→            detail.append("limits over: " + ",".join(hit))
+   435→   435→        if "VENUE_UNAVAILABLE" in fired:
+   436→   436→            down = [n for n, _t in state.outage_ticks]
+   437→   437→            detail.append("endpoints down: " + ",".join(down))
+   438→   438→        reason = winner.description + (" (" + "; ".join(detail) + ")" if detail else "")
+   439→   439→
+   440→   440→    signature = "|".join((
+   441→   441→        verdict.value, decided_by, str(escalate), ",".join(fired),
+   442→   442→        ";".join(f"{e.limit}={e.measured}/{e.limit_value}:{int(e.breached)}"
+   443→   443→                 for e in evaluations),
+   444→   444→    ))
+   445→   445→
+   446→   446→    return RiskDecision(
+   447→   447→        ts=state.tick, verdict=verdict, decided_by=decided_by, escalate=escalate,
+   448→   448→        triggered_by=tuple(fired), subject=SUBJECT, reason=reason,
+   449→   449→        evaluations=evaluations, signature=signature,
+   450→   450→    )
+   451→   451→
+   452→   452→
+   453→   453→# --------------------------------------------------------------------------
+   454→   454→# The guardian: measure (venue + fold + last recon) -> decide -> journal
+   455→   455→# --------------------------------------------------------------------------
+   456→   456→def last_risk_decision(events: list) -> Optional[dict]:
+   457→   457→    for ev in reversed(events):
+   458→   458→        if ev.get("t") == "risk_decision":
+   459→   459→            return ev
+   460→   460→    return None
+   461→   461→
+   462→   462→
+   463→   463→# ---- FLATTEN execution composition rule (engine-side, documented contract) ----
+   464→   464→FLATTEN_EXECUTION_TRUTH_OK_CLASS = ("HEALTHY", "DUPLICATE_TRADE", "LATE_FILL")
+   465→   465→FLATTEN_EXECUTION_TRUTH_OK_DECISION = ("SYNC_LEDGER", "SYNC_TO_VENUE")
+   466→   466→
+   467→   467→
+   468→   468→def flatten_execution_permitted(recon_classification: Optional[str],
+   469→   469→                                recon_decision: Optional[str]) -> bool:
+   470→   470→    """The engine may size a guardian FLATTEN against the ledger only after
+   471→   471→    reconciliation established truth (no unexplained/unknown state)."""
+   472→   472→    return (recon_classification in FLATTEN_EXECUTION_TRUTH_OK_CLASS
+   473→   473→            or recon_decision in FLATTEN_EXECUTION_TRUTH_OK_DECISION)
+   474→   474→
+   475→   475→
+   476→   476→class RiskGuardian:
+   477→   477→    """Produces RiskDecision records over the reconciled actual state.
+   478→   478→
+   479→   479→    The guardian appends ONLY `risk_decision` audit events (deduped by
+   480→   480→    content signature — a standing decision is not re-journaled). It never
+   481→   481→    places orders, never mutates the ledger, never touches the exchange."""
+   482→   482→
+   483→   483→    def __init__(self, journal: Journal, exchange: FakeExchange, spec: PairSpec,
+   484→   484→                 limits: RiskLimits, policy: Policy = None):
+   485→   485→        self.j = journal
+   486→   486→        self.ex = exchange
+   487→   487→        self.spec = spec
+   488→   488→        self.limits = limits
+   489→   489→        self.policy = policy
+   490→   490→
+   491→   491→    # ------------------------------------------------------------------ api
+   492→   492→    def measure(self) -> RiskState:
+   493→   493→        st = fold(self.j.events)
+   494→   494→
+   495→   495→        positions_available, view, view_tick = True, None, -1
+   496→   496→        try:
+   497→   497→            v, vt = self.ex.get_positions_snapshot()
+   498→   498→            view, view_tick = tuple(v.items()), vt
+   499→   499→        except ApiUnavailable:
+   500→   500→            positions_available = False
+   501→   501→            # last-known positions: the (post-reconciliation) ledger
+   502→   502→            view = tuple(st.ledger.items())
+   503→   503→            view_tick = -1
+   504→   504→
+   505→   505→        trades_available = self.ex.endpoint_available("trades")
+   506→   506→        account_available = True
+   507→   507→        equity = realized = peak = liq = None
+   508→   508→        try:
+   509→   509→            acct = self.ex.get_account()
+   510→   510→            equity, realized, peak = acct.equity, acct.realized_pnl_day, acct.peak_equity
+   511→   511→            liq = acct.min_liq_distance_pct
+   512→   512→        except ApiUnavailable:
+   513→   513→            account_available = False
+   514→   514→
+   515→   515→        outage = tuple((name, self.ex.endpoint_outage_ticks(name))
+   516→   516→                       for name in ("positions", "trades", "account")
+   517→   517→                       if not self.ex.endpoint_available(name))
+   518→   518→
+   519→   519→        pair_live = bool(st.orders) and st.state != S.UNWOUND and st.phase != PHASE_DONE
+   520→   520→        pair_state = st.state.value if st.orders else None
+   521→   521→        unresolved = pair_live and st.state in UNRESOLVED_STATES
+   522→   522→
+   523→   523→        recon = last_recon_result(self.j.events)
+   524→   524→        classification = recon.get("classification") if recon else None
+   525→   525→        recon_decision = recon.get("decision") if recon else None
+   526→   526→
+   527→   527→        return RiskState(
+   528→   528→            tick=self.ex.now, view=view, view_tick=view_tick,
+   529→   529→            positions_available=positions_available,
+   530→   530→            trades_available=trades_available,
+   531→   531→            account_available=account_available,
+   532→   532→            equity=equity, realized_pnl_day=realized, peak_equity=peak,
+   533→   533→            min_liq_distance_pct=liq, outage_ticks=outage,
+   534→   534→            pair_live=pair_live, pair_state=pair_state, pair_unresolved=unresolved,
+   535→   535→            repair_attempts=st.repair_attempts,
+   536→   536→            recon_classification=classification, recon_decision=recon_decision,
+   537→   537→            px_long=self.spec.px_long, px_short=self.spec.px_short,
+   538→   538→        )
+   539→   539→
+   540→   540→    def evaluate(self) -> RiskDecision:
+   541→   541→        """One full pass: measure -> decide -> journal (deduped). Pure with
+   542→   542→        respect to the world: the only effect is at most one audit event."""
+   543→   543→        state = self.measure()
+   544→   544→        decision = decide(state, self.limits)
+   545→   545→        last = last_risk_decision(self.j.events)
+   546→   546→        if last is None or last.get("signature") != decision.signature:
+   547→   547→            self.j.append(decision.to_event())
+   548→   548→        return decision
+   549→   549→
+   550→   550→
+   551→   551→# --------------------------------------------------------------------------
+   552→   552→# Sensible lab defaults (sized for DEFAULT_SPEC: qty 100 @ ~100 USD)
+   553→   553→# --------------------------------------------------------------------------
+   554→   554→DEFAULT_RISK_LIMITS = RiskLimits(
+   555→   555→    max_position_qty=Decimal(120),
+   556→   556→    max_total_exposure_usd=Decimal(25000),
+   557→   557→    max_leverage=Decimal(3),
+   558→   558→    max_daily_loss_usd=Decimal(500),
+   559→   559→    max_drawdown_pct=Decimal(10),
+   560→   560→    min_liquidation_distance_pct=Decimal(5),
+   561→   561→    max_single_leg_exposure_usd=Decimal(8000),
+   562→   562→    max_stale_data_ticks=2,
+   563→   563→    max_venue_unavailable_ticks=3,
+   564→   564→    emergency_repair_budget=2,
+   565→   565→)
+   566→   566→
