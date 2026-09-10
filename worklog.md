@@ -852,3 +852,121 @@ Stage Summary:
   rung and will consume the reconciled ACTUAL state.
 - funding-arb untouched throughout (verified below); lab total now ~3.9k
   lines, 150 scenarios, all deterministic.
+
+---
+Task ID: phase3-lab-risk-guardian
+Agent: main (Z.ai Code)
+Task: User directive (3 parts): (1) sync the lab to GitHub + update README
+with a frank what's-done/what's-missing section, (2) build the Risk Guardian
+as a global Risk Decision Engine — fully deterministic (no AI, no heuristics,
+no "maybe"), checking all 10 RiskLimits, with an EXPLICIT rule priority
+ladder so a lower-priority ALLOW can never override a higher-priority
+FLATTEN/ESCALATE, (3) the guardian must never trade itself — it produces
+RiskDecision; the engine executes permitted actions. Failure matrix required:
+single breach, multiple simultaneous, single-leg+venue-unavailable,
+liquidation+stale-data, daily-loss+drawdown, repair budget exhausted,
+external-reduction+everything, normal state, restart, same-input-twice ->
+zero mutations, threshold exactly / -1 step / +1 step. funding-arb stays
+locked.
+
+Work Log:
+- GitHub sync FIRST: extracted the account token from funding-arb's remote
+  pushurl (never printed), created github.com/markec12345678/phase3-lab
+  (public, matching the account's funding-arb pattern), pushed v0.1+v0.2;
+  v0.3 pushed after the build below (remote verified: 3 commits).
+- Read the full v0.2 lab (contracts/audit/engine/fake/reconciliation/
+  invariants/recon_scenarios, ~3.9k lines) before writing anything.
+- Golden contract bumped to v1.1.0 with an in-file CHANGELOG: RiskVerdict
+  re-pinned to ALLOW/BLOCK/FLATTEN/ESCALATE (REDUCE removed per the user's
+  "no maybes" rule); RiskDecision reshaped to carry the FULL 10-limit
+  evaluation trace (new LimitEval contract type — G2 makes "checked all ten"
+  auditable per decision), decided_by (winning rule), escalate flag and a
+  content signature (journal dedupe + restart-equivalence key, excludes ts);
+  new risk_decision event type; CONTRACT_SCHEMA hand-updated so the drift
+  test genuinely fails on undocumented changes.
+- fake.py extended: account-grade world truth (equity / realized day PnL /
+  peak / min liquidation distance, all injectable, deterministically
+  scripted — the lab tests DECISION LOGIC, not PnL math); third endpoint
+  "account" with outage-duration tracking on the WORLD side (restart-stable:
+  the venue outlives the process); get_account() reports liq distance only
+  while positions exist.
+- risk_guardian.py (~540 lines): the explicit priority ladder exactly in the
+  user's order — P0 EXTERNAL_REDUCTION/RECON_CONFLICT -> ESCALATE (fail-
+  closed: recon already flattened protectively; guardian forbids auto-trading
+  vs unknown actor until recon reclassifies HEALTHY, mirroring R4), P1
+  VENUE_UNAVAILABLE -> BLOCK (blind = no new risk; escalates past
+  max_venue_unavailable_ticks), P2 SINGLE_LEG -> FLATTEN (persistent unhedged
+  notional; entry/confirm window excluded because the engine's bounded
+  timeouts own transient exposure — state-based gating, not a heuristic),
+  P3 LIQUIDATION_CRITICAL -> FLATTEN, P4 MAX_DAILY_LOSS/MAX_DRAWDOWN ->
+  FLATTEN, P5 STALE_DATA/LIMIT_BREACH/REPAIR_BUDGET_EXHAUSTED -> BLOCK,
+  else ALLOW. decide() is a PURE function; RiskGuardian.evaluate() =
+  measure (venue view + fold + last recon result) -> decide -> journal with
+  signature dedupe (standing decisions are not re-journaled). Boundary
+  semantics pinned per limit kind: capacity limits breach strictly above,
+  budget limits (daily loss, drawdown, repair budget) breach AT the limit,
+  margin (liq distance) strictly below — each tested at threshold and
+  +/- one smallest step. FLATTEN execution composition rule
+  (flatten_execution_permitted): the engine sizes unwinds against the LEDGER,
+  so it may act only after reconciliation established truth (HEALTHY /
+  DUPLICATE / LATE_FILL / acted SYNC) — while recon RECONFIRMs or RETRYs the
+  verdict STANDS and executes the moment truth is established (never a blind
+  mutation).
+- invariants.py: check_risk_invariants G1 (priority dominance: verdict ==
+  ladder verdict of the winning rule, no fired rule outranks it, fired
+  escalation rules force escalate=True), G2 (all ten evaluations in canonical
+  order + breach flags recomputed from the SAME boundary function — flipped
+  flags cannot survive), G4 (every risk_ engine transition preceded by a
+  standing FLATTEN decision), G5 (contract round-trip + dedupe integrity);
+  G3 purity and G6 restart equivalence asserted live by the harness.
+- risk_scenarios.py: full-stack harness (world mutation -> exchange tick ->
+  reconcile -> guardian -> engine executes permitted FLATTEN -> engine poll),
+  kill/revive with boot-reconcile BEFORE engine revival + guardian boot
+  re-evaluation (G6 probe: at most one new decision, re-evaluation zero) +
+  journal-instance rebinding after restart (same bug class as recon #1),
+  post-terminal convergence (final recon HEALTHY + final verdict check) and
+  a purity probe in EVERY scenario (identical decision, zero new events,
+  zero new orders, ledger unchanged). 23-scenario matrix = the user's 12
+  families: single breach one per limit (all ten), 3-capacity-limits-at-once,
+  daily-loss+drawdown (decided_by MAX_DAILY_LOSS), single-leg+venue-down
+  (BLOCK while blind -> FLATTEN on heal), liquidation+stale (FLATTEN verdict
+  dominates, execution defers until the snapshot heals), repair budget
+  (BLOCK + escalate while the engine unwinds on its own validated path),
+  external-reduction-dominates-all (ESCALATE beats everything), normal state
+  (ALLOW, all rules forbidden), restart (world changed while dead), purity,
+  boundary at 120==limit (ALLOW) vs 121 (BLOCK), guardian-kills-repairing-
+  pair, orphan-no-engine (verdict recorded, conflict frozen).
+- Bring-up bugs found & fixed (root-caused, both my own scenario/checker
+  mistakes, not engine bugs): (1) G22 orphan used an ATTRIBUTABLE external
+  fill -> recon escalates immediately (P0) so FLATTEN never appeared —
+  switched to the invisible position adjustment which produces the designed
+  RECONFIRM tick (FLATTEN) then ESCALATE; (2) breached_for's one-directional
+  recompute for emergency_repair_budget was inverted (at/above budget is NOT
+  definitively breached — a resolved pair keeps its historical attempts;
+  below budget IS definitively not breached); (3) three test-side bugs
+  (equity/realized_pnl coupling in a fixture, tamper targeting the ALLOW
+  decision where the flag was already False, Decimal("inf") parsing = a
+  definitive recompute).
+- Full gate: 93 unit/integration tests OK (51 + 42 new), 80/80 pair
+  scenarios (zero regression), 19/19 recon scenarios (zero regression),
+  23/23 risk scenarios, ~3 s total. run_tests.sh + Makefile run all four
+  gates. README rewritten to v0.3 with a frank DONE/NOT-DONE status table.
+- Git: e698685 pushed to github.com/markec12345678/phase3-lab (remote
+  verified). funding-arb after all work: working tree CLEAN at 0373f5d,
+  runner PID 12976 alive 5h24m, zero changes — experiment fully unpolluted.
+
+Stage Summary:
+- Risk Guardian BUILT and GREEN: the lab now has the complete deterministic
+  safety chain the user specified — exchange truth -> reconciliation ->
+  actual state -> guardian -> RiskDecision -> engine execution -> audit —
+  with every decision carrying a provable all-ten-limit check, an explicit
+  priority ladder that cannot be overridden downward, journal dedupe,
+  restart re-evaluation, and zero guardian-initiated trading (G4).
+- The lab is synced to GitHub (3 commits, v0.1-v0.3) and the README answers
+  the user's "kaj manjka" question with a frank status table: regime model,
+  venue health scoring, exec-quality analytics, allocator/orchestrator and
+  the eventual funding-arb port are all explicitly NOT done.
+- Module ladder state: foundation done, reconciliation done, RISK GUARDIAN
+  done — next rungs (only when the user asks): funding regime model, venue
+  health, execution-quality analytics, allocator. funding-arb timeline
+  unchanged: daily verify-only checks, Day 3 interim, Day 5-7 A/B/C.
