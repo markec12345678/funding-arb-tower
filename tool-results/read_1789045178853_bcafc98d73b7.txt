@@ -1,0 +1,754 @@
+     1→#!/usr/bin/env python3
+     2→"""Cross-exchange deposit/withdrawal and chain information abstraction layer."""
+     3→
+     4→from __future__ import annotations
+     5→
+     6→import sys
+     7→import time
+     8→import uuid
+     9→from dataclasses import dataclass, field
+    10→from typing import Any
+    11→
+    12→from transfer.chain_aliases import native_chain, to_canonical
+    13→
+    14→
+    15→@dataclass
+    16→class ChainRoute:
+    17→    """Single-venue, single-chain deposit/withdrawal capability."""
+    18→
+    19→    venue: str
+    20→    coin: str
+    21→    native_chain: str
+    22→    canonical: str | None
+    23→    withdraw_fee: float
+    24→    withdraw_fee_pct: float  # Percentage fee (e.g. Bybit)
+    25→    min_withdraw: float
+    26→    min_deposit: float
+    27→    withdraw_enabled: bool
+    28→    deposit_enabled: bool
+    29→    label: str = ""
+    30→
+    31→    @property
+    32→    def effective_withdraw_fee(self) -> float:
+    33→        return (
+    34→            self.withdraw_fee
+    35→        )  # Percentage fee is calculated separately by router based on amount
+    36→
+    37→
+    38→@dataclass
+    39→class DepositAddress:
+    40→    venue: str
+    41→    coin: str
+    42→    chain: str
+    43→    address: str
+    44→    tag: str = ""
+    45→    url: str = ""
+    46→
+    47→
+    48→@dataclass
+    49→class WithdrawResult:
+    50→    ok: bool
+    51→    order_id: str = ""
+    52→    message: str = ""
+    53→    raw: dict[str, Any] = field(default_factory=dict)
+    54→
+    55→
+    56→class TransferProvider:
+    57→    venue_id: str = "unknown"
+    58→
+    59→    def fetch_chain_routes(self, coin: str) -> list[ChainRoute]:
+    60→        raise NotImplementedError
+    61→
+    62→    def get_deposit_address(self, coin: str, native_chain_name: str) -> DepositAddress:
+    63→        raise NotImplementedError
+    64→
+    65→    def get_withdrawable_balance(self, coin: str) -> float:
+    66→        raise NotImplementedError
+    67→
+    68→    def prepare_for_withdraw(self, coin: str, amount: float) -> list[str]:
+    69→        """Aggregate funds to the withdrawable account (e.g. futures->spot). Returns execution step descriptions."""
+    70→        return []
+    71→
+    72→    def withdraw(
+    73→        self,
+    74→        coin: str,
+    75→        amount: float,
+    76→        native_chain_name: str,
+    77→        address: str,
+    78→        tag: str = "",
+    79→    ) -> WithdrawResult:
+    80→        raise NotImplementedError
+    81→
+    82→    def fetch_deposit_records(
+    83→        self,
+    84→        coin: str,
+    85→        since_ms: int = 0,
+    86→        limit: int = 50,
+    87→    ) -> list[dict[str, Any]]:
+    88→        """Recent deposit records (implemented by each venue subclass)."""
+    89→        return []
+    90→
+    91→
+    92→def _safe_float(v: Any, default: float = 0.0) -> float:
+    93→    try:
+    94→        if v is None or v == "":
+    95→            return default
+    96→        return float(v)
+    97→    except (TypeError, ValueError):
+    98→        return default
+    99→
+   100→
+   101→class BitgetTransferProvider(TransferProvider):
+   102→    venue_id = "bitget"
+   103→
+   104→    def fetch_chain_routes(self, coin: str) -> list[ChainRoute]:
+   105→        from venues.http_util import http_get_json
+   106→
+   107→        coin_u = coin.upper()
+   108→        url = f"https://api.bitget.com/api/v2/spot/public/coins?coin={coin_u}"
+   109→        data = http_get_json(url, timeout=20)
+   110→        rows = data.get("data") or []
+   111→        if not rows:
+   112→            return []
+   113→        out: list[ChainRoute] = []
+   114→        for ch in rows[0].get("chains") or []:
+   115→            native = str(ch.get("chain", ""))
+   116→            canon = to_canonical(native)
+   117→            out.append(
+   118→                ChainRoute(
+   119→                    venue=self.venue_id,
+   120→                    coin=coin_u,
+   121→                    native_chain=native,
+   122→                    canonical=canon,
+   123→                    withdraw_fee=_safe_float(ch.get("withdrawFee")),
+   124→                    withdraw_fee_pct=_safe_float(ch.get("extraWithdrawFee")),
+   125→                    min_withdraw=_safe_float(ch.get("minWithdrawAmount")),
+   126→                    min_deposit=_safe_float(ch.get("minDepositAmount")),
+   127→                    withdraw_enabled=str(ch.get("withdrawable", "")).lower() == "true",
+   128→                    deposit_enabled=str(ch.get("rechargeable", "")).lower() == "true",
+   129→                    label=native,
+   130→                )
+   131→            )
+   132→        return out
+   133→
+   134→    def get_deposit_address(self, coin: str, native_chain_name: str) -> DepositAddress:
+   135→        from venues.bitget import _api_call
+   136→
+   137→        data = _api_call(
+   138→            "GET",
+   139→            "/api/v2/spot/wallet/deposit-address",
+   140→            params={"coin": coin.upper(), "chain": native_chain_name},
+   141→        )
+   142→        row = data.get("data") or {}
+   143→        return DepositAddress(
+   144→            venue=self.venue_id,
+   145→            coin=coin.upper(),
+   146→            chain=str(row.get("chain", native_chain_name)),
+   147→            address=str(row.get("address", "")),
+   148→            tag=str(row.get("tag") or ""),
+   149→            url=str(row.get("url") or ""),
+   150→        )
+   151→
+   152→    def get_withdrawable_balance(self, coin: str) -> float:
+   153→        from venues.bitget import BitgetSpotVenue
+   154→
+   155→        v = BitgetSpotVenue()
+   156→        bals = v.fetch_usdt_account_balances() if coin.upper() == "USDT" else {}
+   157→        if coin.upper() == "USDT":
+   158→            return _safe_float(bals.get("spot"))
+   159→        data = v.fetch_balances([coin.upper()])
+   160→        return _safe_float(data.get(coin.upper()))
+   161→
+   162→    def prepare_for_withdraw(self, coin: str, amount: float) -> list[str]:
+   163→        from venues.bitget import BitgetSpotVenue
+   164→
+   165→        v = BitgetSpotVenue()
+   166→        steps: list[str] = []
+   167→        if coin.upper() != "USDT":
+   168→            return steps
+   169→        bals = v.fetch_usdt_account_balances()
+   170→        spot = _safe_float(bals.get("spot"))
+   171→        fut = _safe_float(bals.get("futures"))
+   172→        if spot >= amount:
+   173→            return steps
+   174→        need = amount - spot
+   175→        if fut <= 0:
+   176→            return steps
+   177→        xfer = min(fut, need) * 1.01
+   178→        if hasattr(v, "transfer_asset") and v.transfer_asset(
+   179→            "USDT", xfer, "futures", "spot"
+   180→        ):
+   181→            steps.append(f"bitget: futures→spot USDT {xfer:.4f}")
+   182→        else:
+   183→            steps.append(f"bitget: futures→spot USDT {xfer:.4f} FAILED")
+   184→        return steps
+   185→
+   186→    def withdraw(
+   187→        self,
+   188→        coin: str,
+   189→        amount: float,
+   190→        native_chain_name: str,
+   191→        address: str,
+   192→        tag: str = "",
+   193→    ) -> WithdrawResult:
+   194→        from venues.bitget import _api_call
+   195→
+   196→        body: dict[str, Any] = {
+   197→            "coin": coin.upper(),
+   198→            "chain": native_chain_name,
+   199→            "address": address,
+   200→            "amount": f"{amount:.8f}".rstrip("0").rstrip("."),
+   201→            "clientOid": f"w{int(time.time())}{uuid.uuid4().hex[:8]}",
+   202→        }
+   203→        if tag:
+   204→            body["tag"] = tag
+   205→        try:
+   206→            data = _api_call("POST", "/api/v2/spot/wallet/withdrawal", body=body)
+   207→            if str(data.get("code")) == "00000":
+   208→                oid = str((data.get("data") or {}).get("orderId", ""))
+   209→                return WithdrawResult(
+   210→                    ok=True, order_id=oid, message="submitted", raw=data
+   211→                )
+   212→            return WithdrawResult(
+   213→                ok=False, message=str(data.get("msg", data)), raw=data
+   214→            )
+   215→        except Exception as e:
+   216→            return WithdrawResult(ok=False, message=str(e))
+   217→
+   218→    def fetch_deposit_records(
+   219→        self,
+   220→        coin: str,
+   221→        since_ms: int = 0,
+   222→        limit: int = 50,
+   223→    ) -> list[dict[str, Any]]:
+   224→        from venues.bitget import _api_call
+   225→
+   226→        params: dict[str, Any] = {"coin": coin.upper(), "limit": str(limit)}
+   227→        if since_ms > 0:
+   228→            params["startTime"] = str(since_ms)
+   229→        try:
+   230→            data = _api_call(
+   231→                "GET", "/api/v2/spot/wallet/deposit-records", params=params
+   232→            )
+   233→            rows = data.get("data") or []
+   234→        except Exception:
+   235→            return []
+   236→        out: list[dict[str, Any]] = []
+   237→        for row in rows:
+   238→            ts = int(row.get("cTime", 0) or 0)
+   239→            if since_ms > 0 and ts < since_ms:
+   240→                continue
+   241→            out.append(
+   242→                {
+   243→                    "venue": self.venue_id,
+   244→                    "coin": coin.upper(),
+   245→                    "amount": _safe_float(row.get("size")),
+   246→                    "chain": str(row.get("chain", "")),
+   247→                    "status": str(row.get("status", "")),
+   248→                    "tx_id": str(row.get("tradeId", "") or row.get("txId", "")),
+   249→                    "ts_ms": ts,
+   250→                }
+   251→            )
+   252→        return out
+   253→
+   254→
+   255→class BybitTransferProvider(TransferProvider):
+   256→    venue_id = "bybit"
+   257→
+   258→    def fetch_chain_routes(self, coin: str) -> list[ChainRoute]:
+   259→        from venues.bybit import _api_call
+   260→
+   261→        data = _api_call(
+   262→            "GET", "/v5/asset/coin/query-info", params={"coin": coin.upper()}
+   263→        )
+   264→        rows = data.get("result", {}).get("rows") or []
+   265→        if not rows:
+   266→            return []
+   267→        out: list[ChainRoute] = []
+   268→        for ch in rows[0].get("chains") or []:
+   269→            native = str(ch.get("chain", ""))
+   270→            canon = to_canonical(native) or to_canonical(str(ch.get("chainType", "")))
+   271→            out.append(
+   272→                ChainRoute(
+   273→                    venue=self.venue_id,
+   274→                    coin=coin.upper(),
+   275→                    native_chain=native,
+   276→                    canonical=canon,
+   277→                    withdraw_fee=_safe_float(ch.get("withdrawFee")),
+   278→                    withdraw_fee_pct=_safe_float(ch.get("withdrawPercentageFee")),
+   279→                    min_withdraw=_safe_float(ch.get("withdrawMin")),
+   280→                    min_deposit=_safe_float(ch.get("depositMin")),
+   281→                    withdraw_enabled=str(ch.get("chainWithdraw")) == "1",
+   282→                    deposit_enabled=str(ch.get("chainDeposit")) == "1",
+   283→                    label=str(ch.get("chainType", native)),
+   284→                )
+   285→            )
+   286→        return out
+   287→
+   288→    def get_deposit_address(self, coin: str, native_chain_name: str) -> DepositAddress:
+   289→        from venues.bybit import _api_call
+   290→
+   291→        data = _api_call(
+   292→            "GET",
+   293→            "/v5/asset/deposit/query-address",
+   294→            params={"coin": coin.upper(), "chainType": native_chain_name},
+   295→        )
+   296→        chains = (data.get("result") or {}).get("chains") or []
+   297→        if isinstance(chains, dict):
+   298→            chains = [chains]
+   299→        row = chains[0] if chains else {}
+   300→        return DepositAddress(
+   301→            venue=self.venue_id,
+   302→            coin=coin.upper(),
+   303→            chain=str(row.get("chain", native_chain_name)),
+   304→            address=str(row.get("addressDeposit", "")),
+   305→            tag=str(row.get("tagDeposit") or ""),
+   306→        )
+   307→
+   308→    def get_withdrawable_balance(self, coin: str) -> float:
+   309→        from venues.bybit import _api_call
+   310→
+   311→        try:
+   312→            data = _api_call(
+   313→                "GET",
+   314→                "/v5/asset/withdraw/withdrawable-amount",
+   315→                params={"coin": coin.upper()},
+   316→            )
+   317→            w = (data.get("result") or {}).get("withdrawableAmount") or {}
+   318→            for key in ("UTA", "FUND", "SPOT"):
+   319→                if key in w:
+   320→                    amt = _safe_float(w[key].get("withdrawableAmount"))
+   321→                    if amt > 0:
+   322→                        return amt
+   323→        except Exception:
+   324→            pass
+   325→        from venues.bybit import BybitSpotVenue
+   326→
+   327→        bals = BybitSpotVenue().fetch_balances([coin.upper()])
+   328→        return _safe_float(bals.get(coin.upper()))
+   329→
+   330→    def prepare_for_withdraw(self, coin: str, amount: float) -> list[str]:
+   331→        # Bybit UTA can usually withdraw directly; tries UNIFIED internal transfer if insufficient (rarely needed)
+   332→        return []
+   333→
+   334→    def withdraw(
+   335→        self,
+   336→        coin: str,
+   337→        amount: float,
+   338→        native_chain_name: str,
+   339→        address: str,
+   340→        tag: str = "",
+   341→    ) -> WithdrawResult:
+   342→        from venues.bybit import _api_call
+   343→
+   344→        body: dict[str, Any] = {
+   345→            "coin": coin.upper(),
+   346→            "chain": native_chain_name,
+   347→            "address": address,
+   348→            "amount": f"{amount:.8f}".rstrip("0").rstrip("."),
+   349→            "timestamp": int(time.time() * 1000),
+   350→            "forceChain": 0,
+   351→            "accountType": "UTA",
+   352→        }
+   353→        if tag:
+   354→            body["tag"] = tag
+   355→        try:
+   356→            data = _api_call("POST", "/v5/asset/withdraw/create", body=body)
+   357→            if int(data.get("retCode", -1)) == 0:
+   358→                oid = str((data.get("result") or {}).get("id", ""))
+   359→                return WithdrawResult(
+   360→                    ok=True, order_id=oid, message="submitted", raw=data
+   361→                )
+   362→            return WithdrawResult(
+   363→                ok=False, message=str(data.get("retMsg", data)), raw=data
+   364→            )
+   365→        except Exception as e:
+   366→            return WithdrawResult(ok=False, message=str(e))
+   367→
+   368→    def fetch_deposit_records(
+   369→        self,
+   370→        coin: str,
+   371→        since_ms: int = 0,
+   372→        limit: int = 50,
+   373→    ) -> list[dict[str, Any]]:
+   374→        from venues.bybit import _api_call
+   375→
+   376→        params: dict[str, Any] = {"coin": coin.upper(), "limit": limit}
+   377→        if since_ms > 0:
+   378→            params["startTime"] = since_ms
+   379→        try:
+   380→            data = _api_call("GET", "/v5/asset/deposit/query-record", params=params)
+   381→            rows = (data.get("result") or {}).get("rows") or []
+   382→        except Exception:
+   383→            return []
+   384→        out: list[dict[str, Any]] = []
+   385→        for row in rows:
+   386→            ts = int(row.get("successAt", 0) or row.get("createTime", 0) or 0)
+   387→            if since_ms > 0 and ts < since_ms:
+   388→                continue
+   389→            out.append(
+   390→                {
+   391→                    "venue": self.venue_id,
+   392→                    "coin": coin.upper(),
+   393→                    "amount": _safe_float(row.get("amount")),
+   394→                    "chain": str(row.get("chain", "")),
+   395→                    "status": str(row.get("status", "")),
+   396→                    "tx_id": str(row.get("txID", "")),
+   397→                    "ts_ms": ts,
+   398→                }
+   399→            )
+   400→        return out
+   401→
+   402→
+   403→class OkxTransferProvider(TransferProvider):
+   404→    venue_id = "okx"
+   405→
+   406→    def fetch_chain_routes(self, coin: str) -> list[ChainRoute]:
+   407→        from venues.okx import _api_call
+   408→
+   409→        try:
+   410→            data = _api_call(
+   411→                "GET", "/api/v5/asset/currencies", params={"ccy": coin.upper()}
+   412→            )
+   413→        except Exception as e:
+   414→            print(f"[okx] fetch currencies failed: {e}", file=sys.stderr)
+   415→            return []
+   416→        out: list[ChainRoute] = []
+   417→        for ch in data.get("data") or []:
+   418→            native = str(ch.get("chain", ""))
+   419→            canon = to_canonical(native)
+   420→            fee = _safe_float(ch.get("minFee"))
+   421→            if fee <= 0:
+   422→                fee = _safe_float(ch.get("maxFee"))
+   423→            out.append(
+   424→                ChainRoute(
+   425→                    venue=self.venue_id,
+   426→                    coin=coin.upper(),
+   427→                    native_chain=native,
+   428→                    canonical=canon,
+   429→                    withdraw_fee=fee,
+   430→                    withdraw_fee_pct=0.0,
+   431→                    min_withdraw=_safe_float(ch.get("minWd")),
+   432→                    min_deposit=_safe_float(ch.get("minDep")),
+   433→                    withdraw_enabled=str(ch.get("canWd", "")).lower() == "true",
+   434→                    deposit_enabled=str(ch.get("canDep", "")).lower() == "true",
+   435→                    label=native,
+   436→                )
+   437→            )
+   438→        return out
+   439→
+   440→    def get_deposit_address(self, coin: str, native_chain_name: str) -> DepositAddress:
+   441→        from venues.okx import _api_call
+   442→
+   443→        data = _api_call(
+   444→            "GET",
+   445→            "/api/v5/asset/deposit-address",
+   446→            params={"ccy": coin.upper(), "chain": native_chain_name},
+   447→        )
+   448→        rows = data.get("data") or []
+   449→        row = rows[0] if rows else {}
+   450→        return DepositAddress(
+   451→            venue=self.venue_id,
+   452→            coin=coin.upper(),
+   453→            chain=str(row.get("chain", native_chain_name)),
+   454→            address=str(row.get("addr", "")),
+   455→            tag=str(row.get("tag") or ""),
+   456→        )
+   457→
+   458→    def get_withdrawable_balance(self, coin: str) -> float:
+   459→        from venues.okx import _api_call
+   460→
+   461→        try:
+   462→            data = _api_call(
+   463→                "GET", "/api/v5/account/balance", params={"ccy": coin.upper()}
+   464→            )
+   465→            for row in (data.get("data") or [{}])[0].get("details") or []:
+   466→                if str(row.get("ccy", "")).upper() == coin.upper():
+   467→                    return _safe_float(row.get("availBal"))
+   468→        except Exception:
+   469→            pass
+   470→        from venues.okx import OkxSpotVenue
+   471→
+   472→        bals = OkxSpotVenue().fetch_balances([coin.upper()])
+   473→        return _safe_float(bals.get(coin.upper()))
+   474→
+   475→    def prepare_for_withdraw(self, coin: str, amount: float) -> list[str]:
+   476→        from venues.okx import _api_call
+   477→
+   478→        steps: list[str] = []
+   479→        try:
+   480→            bal = _api_call(
+   481→                "GET", "/api/v5/account/balance", params={"ccy": coin.upper()}
+   482→            )
+   483→            details = (bal.get("data") or [{}])[0].get("details") or []
+   484→            trading_avail = 0.0
+   485→            for d in details:
+   486→                if str(d.get("ccy", "")).upper() == coin.upper():
+   487→                    trading_avail = _safe_float(d.get("availBal"))
+   488→                    break
+   489→            if trading_avail >= amount:
+   490→                return steps
+   491→            # Trading account -> Funding account (18=funding, 6=trading etc., OKX internal transfer)
+   492→            xfer = amount - trading_avail + 0.01
+   493→            _api_call(
+   494→                "POST",
+   495→                "/api/v5/asset/transfer",
+   496→                body={
+   497→                    "from": "18",
+   498→                    "to": "18",
+   499→                    "type": "0",
+   500→                    "ccy": coin.upper(),
+   501→                    "amt": f"{xfer:.8f}".rstrip("0").rstrip("."),
+   502→                },
+   503→            )
+   504→            steps.append(f"okx: internal transfer {coin} {xfer:.4f} for withdraw")
+   505→        except Exception as e:
+   506→            steps.append(f"okx: prepare_for_withdraw skipped ({e})")
+   507→        return steps
+   508→
+   509→    def withdraw(
+   510→        self,
+   511→        coin: str,
+   512→        amount: float,
+   513→        native_chain_name: str,
+   514→        address: str,
+   515→        tag: str = "",
+   516→    ) -> WithdrawResult:
+   517→        from venues.okx import _api_call
+   518→
+   519→        body: dict[str, Any] = {
+   520→            "ccy": coin.upper(),
+   521→            "amt": f"{amount:.8f}".rstrip("0").rstrip("."),
+   522→            "dest": "4",  # on-chain
+   523→            "toAddr": address,
+   524→            "chain": native_chain_name,
+   525→            "fee": "",  # Let the exchange calculate automatically
+   526→        }
+   527→        if tag:
+   528→            body["tag"] = tag
+   529→        try:
+   530→            data = _api_call("POST", "/api/v5/asset/withdrawal", body=body)
+   531→            if str(data.get("code")) == "0":
+   532→                oid = str((data.get("data") or [{}])[0].get("wdId", ""))
+   533→                return WithdrawResult(
+   534→                    ok=True, order_id=oid, message="submitted", raw=data
+   535→                )
+   536→            return WithdrawResult(
+   537→                ok=False, message=str(data.get("msg", data)), raw=data
+   538→            )
+   539→        except Exception as e:
+   540→            return WithdrawResult(ok=False, message=str(e))
+   541→
+   542→    def fetch_deposit_records(
+   543→        self,
+   544→        coin: str,
+   545→        since_ms: int = 0,
+   546→        limit: int = 50,
+   547→    ) -> list[dict[str, Any]]:
+   548→        from venues.okx import _api_call
+   549→
+   550→        params: dict[str, Any] = {"ccy": coin.upper(), "limit": str(limit)}
+   551→        if since_ms > 0:
+   552→            params["after"] = str(since_ms)
+   553→        try:
+   554→            data = _api_call("GET", "/api/v5/asset/deposit-history", params=params)
+   555→            rows = data.get("data") or []
+   556→        except Exception:
+   557→            return []
+   558→        out: list[dict[str, Any]] = []
+   559→        for row in rows:
+   560→            ts = int(row.get("ts", 0) or 0)
+   561→            if since_ms > 0 and ts < since_ms:
+   562→                continue
+   563→            out.append(
+   564→                {
+   565→                    "venue": self.venue_id,
+   566→                    "coin": coin.upper(),
+   567→                    "amount": _safe_float(row.get("amt")),
+   568→                    "chain": str(row.get("chain", "")),
+   569→                    "status": str(row.get("state", "")),
+   570→                    "tx_id": str(row.get("txId", "")),
+   571→                    "ts_ms": ts,
+   572→                }
+   573→            )
+   574→        return out
+   575→
+   576→
+   577→class BinanceTransferProvider(TransferProvider):
+   578→    venue_id = "binance"
+   579→
+   580→    def fetch_chain_routes(self, coin: str) -> list[ChainRoute]:
+   581→        from venues.binance import _api_call
+   582→
+   583→        data = _api_call("GET", "/sapi/v1/capital/config/getall", signed=True)
+   584→        out: list[ChainRoute] = []
+   585→        for row in data if isinstance(data, list) else []:
+   586→            if str(row.get("coin", "")).upper() != coin.upper():
+   587→                continue
+   588→            for ch in row.get("networkList") or []:
+   589→                native = str(ch.get("network", ""))
+   590→                canon = to_canonical(native)
+   591→                out.append(
+   592→                    ChainRoute(
+   593→                        venue=self.venue_id,
+   594→                        coin=coin.upper(),
+   595→                        native_chain=native,
+   596→                        canonical=canon,
+   597→                        withdraw_fee=_safe_float(ch.get("withdrawFee")),
+   598→                        withdraw_fee_pct=0.0,
+   599→                        min_withdraw=_safe_float(ch.get("withdrawMin")),
+   600→                        min_deposit=_safe_float(ch.get("depositDust")),
+   601→                        withdraw_enabled=bool(ch.get("withdrawEnable")),
+   602→                        deposit_enabled=bool(ch.get("depositEnable")),
+   603→                        label=native,
+   604→                    )
+   605→                )
+   606→        return out
+   607→
+   608→    def get_deposit_address(self, coin: str, native_chain_name: str) -> DepositAddress:
+   609→        from venues.binance import _api_call
+   610→
+   611→        data = _api_call(
+   612→            "GET",
+   613→            "/sapi/v1/capital/deposit/address",
+   614→            params={"coin": coin.upper(), "network": native_chain_name},
+   615→            signed=True,
+   616→        )
+   617→        return DepositAddress(
+   618→            venue=self.venue_id,
+   619→            coin=coin.upper(),
+   620→            chain=native_chain_name,
+   621→            address=str(data.get("address", "")),
+   622→            tag=str(data.get("tag") or ""),
+   623→        )
+   624→
+   625→    def get_withdrawable_balance(self, coin: str) -> float:
+   626→        from venues.binance import BinanceSpotVenue
+   627→
+   628→        v = BinanceSpotVenue()
+   629→        if coin.upper() == "USDT":
+   630→            bals = v.fetch_usdt_account_balances()
+   631→            return _safe_float(bals.get("spot"))
+   632→        return _safe_float(v.fetch_balances([coin.upper()]).get(coin.upper()))
+   633→
+   634→    def prepare_for_withdraw(self, coin: str, amount: float) -> list[str]:
+   635→        from venues.binance import BinanceSpotVenue
+   636→
+   637→        steps: list[str] = []
+   638→        if coin.upper() != "USDT":
+   639→            return steps
+   640→        v = BinanceSpotVenue()
+   641→        bals = v.fetch_usdt_account_balances()
+   642→        spot = _safe_float(bals.get("spot"))
+   643→        fut = _safe_float(bals.get("futures"))
+   644→        if spot >= amount or fut <= 0:
+   645→            return steps
+   646→        need = amount - spot
+   647→        xfer = min(fut, need) * 1.01
+   648→        if v.transfer_asset("USDT", xfer, "futures", "spot"):
+   649→            steps.append(f"binance: futures→spot USDT {xfer:.4f}")
+   650→        return steps
+   651→
+   652→    def withdraw(
+   653→        self,
+   654→        coin: str,
+   655→        amount: float,
+   656→        native_chain_name: str,
+   657→        address: str,
+   658→        tag: str = "",
+   659→    ) -> WithdrawResult:
+   660→        from venues.binance import _api_call
+   661→
+   662→        params: dict[str, Any] = {
+   663→            "coin": coin.upper(),
+   664→            "network": native_chain_name,
+   665→            "address": address,
+   666→            "amount": f"{amount:.8f}".rstrip("0").rstrip("."),
+   667→        }
+   668→        if tag:
+   669→            params["addressTag"] = tag
+   670→        try:
+   671→            data = _api_call(
+   672→                "POST", "/sapi/v1/capital/withdraw/apply", params=params, signed=True
+   673→            )
+   674→            oid = str(data.get("id", ""))
+   675→            return WithdrawResult(ok=True, order_id=oid, message="submitted", raw=data)
+   676→        except Exception as e:
+   677→            return WithdrawResult(ok=False, message=str(e))
+   678→
+   679→
+   680→_PROVIDERS: dict[str, TransferProvider] = {
+   681→    "bitget": BitgetTransferProvider(),
+   682→    "bybit": BybitTransferProvider(),
+   683→    "okx": OkxTransferProvider(),
+   684→    "binance": BinanceTransferProvider(),
+   685→}
+   686→
+   687→
+   688→def get_transfer_provider(venue: str) -> TransferProvider:
+   689→    v = str(venue or "").strip().lower()
+   690→    p = _PROVIDERS.get(v)
+   691→    if p is None:
+   692→        raise ValueError(
+   693→            f"Unsupported transfer venue={v!r}, available: {', '.join(sorted(_PROVIDERS))}"
+   694→        )
+   695→    return p
+   696→
+   697→
+   698→def resolve_native_chain(canon: str, venue: str) -> str | None:
+   699→    return native_chain(canon, venue)
+   700→
+   701→
+   702→_DEPOSIT_OK_STATUS = frozenset(
+   703→    {
+   704→        "success",
+   705→        "1",
+   706→        "2",
+   707→        "completed",
+   708→        "complete",
+   709→        "confirmed",
+   710→    }
+   711→)
+   712→
+   713→
+   714→def _deposit_confirmed(row: dict[str, Any]) -> bool:
+   715→    st = str(row.get("status", "")).lower()
+   716→    if st in _DEPOSIT_OK_STATUS:
+   717→        return True
+   718→    if st.isdigit() and int(st) >= 1:
+   719→        return True
+   720→    return row.get("amount", 0) > 0 and not st
+   721→
+   722→
+   723→def poll_deposit_until(
+   724→    venue: str,
+   725→    coin: str,
+   726→    expected_amount: float,
+   727→    since_ms: int,
+   728→    *,
+   729→    timeout_s: int = 600,
+   730→    poll_interval_s: int = 15,
+   731→    tolerance: float = 0.02,
+   732→) -> tuple[bool, list[dict[str, Any]]]:
+   733→    """Poll for deposit arrival. Returns (matched, records)."""
+   734→    provider = get_transfer_provider(venue)
+   735→    deadline = time.time() + timeout_s
+   736→    seen: list[dict[str, Any]] = []
+   737→    seen_ids: set[str] = set()
+   738→    min_amt = max(0.0, expected_amount * (1.0 - tolerance))
+   739→    while time.time() < deadline:
+   740→        rows = provider.fetch_deposit_records(coin, since_ms=since_ms)
+   741→        for row in rows:
+   742→            rid = str(row.get("tx_id") or row.get("ts_ms") or "")
+   743→            if rid and rid in seen_ids:
+   744→                continue
+   745→            if rid:
+   746→                seen_ids.add(rid)
+   747→            seen.append(row)
+   748→            if not _deposit_confirmed(row):
+   749→                continue
+   750→            if _safe_float(row.get("amount")) >= min_amt:
+   751→                return True, seen
+   752→        time.sleep(poll_interval_s)
+   753→    return False, seen
+   754→

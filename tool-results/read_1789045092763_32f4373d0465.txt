@@ -1,0 +1,1037 @@
+     1→#!/usr/bin/env python3
+     2→"""Bitget spot venue adapter."""
+     3→
+     4→from __future__ import annotations
+     5→
+     6→import json
+     7→import os
+     8→import random
+     9→import sys
+    10→import time
+    11→import urllib.error
+    12→import urllib.request
+    13→from typing import Any, Optional
+    14→
+    15→from core.config import resolve_timeframes
+    16→from venues.base import make_pair
+    17→from venues.http_util import (
+    18→    credentials_file,
+    19→    http_get_json,
+    20→    parse_kline_ohlcv,
+    21→    rules_for_price,
+    22→)
+    23→
+    24→BASE = "https://api.bitget.com"
+    25→CONFIG_PATH = credentials_file()
+    26→_symbol_rules_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+    27→_futures_rules_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+    28→_spot_ticker_loaded_at: float = 0.0
+    29→_spot_ticker_prices: dict[str, float] = {}
+    30→_futures_ticker_loaded_at: float = 0.0
+    31→_futures_ticker_prices: dict[str, float] = {}
+    32→_env_loaded = False
+    33→_initialized_symbols: set[str] = set()
+    34→
+    35→
+    36→def _ensure_env() -> None:
+    37→    global _env_loaded
+    38→    if _env_loaded:
+    39→        return
+    40→    if os.environ.get("BITGET_API_KEY"):
+    41→        _env_loaded = True
+    42→        return
+    43→    try:
+    44→        with open(CONFIG_PATH) as f:
+    45→            for k, v in json.load(f).get("env", {}).items():
+    46→                if v and k not in os.environ:
+    47→                    os.environ[k] = str(v)
+    48→    except (OSError, json.JSONDecodeError):
+    49→        pass
+    50→    _env_loaded = True
+    51→
+    52→
+    53→def _get_key() -> str:
+    54→    _ensure_env()
+    55→    return os.environ.get("BITGET_API_KEY") or ""
+    56→
+    57→
+    58→def _get_secret() -> str:
+    59→    _ensure_env()
+    60→    return os.environ.get("BITGET_SECRET_KEY") or ""
+    61→
+    62→
+    63→def _get_pass() -> str:
+    64→    _ensure_env()
+    65→    return os.environ.get("BITGET_PASSPHRASE") or ""
+    66→
+    67→
+    68→def _sign(ts: str, method: str, path: str, body: str) -> str:
+    69→    import base64
+    70→    import hashlib
+    71→    import hmac
+    72→
+    73→    prehash = ts + method + path + (body or "")
+    74→    return base64.b64encode(
+    75→        hmac.new(_get_secret().encode(), prehash.encode(), hashlib.sha256).digest()
+    76→    ).decode()
+    77→
+    78→
+    79→def _api_call(
+    80→    method: str, path: str, params: Optional[dict] = None, body: Optional[dict] = None
+    81→) -> dict:
+    82→    from urllib.parse import urlencode
+    83→
+    84→    # Credential validation: fail immediately on missing credentials; never send private requests with empty credentials (avoids silent failures / account-state misjudgment)
+    85→    key, secret, passp = _get_key(), _get_secret(), _get_pass()
+    86→    if not (key and secret and passp):
+    87→        raise RuntimeError(
+    88→            "Bitget API credentials missing: please set environment variables BITGET_API_KEY / BITGET_SECRET_KEY / "
+    89→            "BITGET_PASSPHRASE, or configure them in ~/.funding-arb/credentials.json under env."
+    90→        )
+    91→
+    92→    p = "?" + urlencode(params) if params else ""
+    93→    body_str = json.dumps(body) if body else ""
+    94→    # GET can be safely retried (including 429/network jitter); POST (orders) are not retried to avoid duplicate orders
+    95→    retries = 3 if method == "GET" else 1
+    96→    last_err: Optional[Exception] = None
+    97→    for attempt in range(retries):
+    98→        ts = str(
+    99→            int(time.time() * 1000)
+   100→        )  # Refresh timestamp on each retry to avoid signature expiration
+   101→        sig = _sign(ts, method, path + p, body_str)
+   102→        headers = {
+   103→            "CONTENT-TYPE": "application/json",
+   104→            "ACCESS-KEY": key,
+   105→            "ACCESS-SIGN": sig,
+   106→            "ACCESS-TIMESTAMP": ts,
+   107→            "ACCESS-PASSPHRASE": passp,
+   108→            "locale": "en-US",
+   109→        }
+   110→        req = urllib.request.Request(BASE + path + p, headers=headers, method=method)
+   111→        if body_str:
+   112→            req.data = body_str.encode()
+   113→        try:
+   114→            with urllib.request.urlopen(req, timeout=15) as resp:
+   115→                return json.loads(resp.read().decode())
+   116→        except Exception as e:
+   117→            last_err = e
+   118→            if method == "GET" and attempt < retries - 1:
+   119→                time.sleep(0.5 * (attempt + 1))
+   120→                continue
+   121→            raise
+   122→    raise last_err if last_err else RuntimeError("bitget _api_call failed")
+   123→
+   124→
+   125→class BitgetSpotVenue:
+   126→    venue_id = "bitget"
+   127→
+   128→    def get_ticker(self, pair: str) -> float:
+   129→        url = f"{BASE}/api/v2/spot/market/tickers?symbol={pair}"
+   130→        try:
+   131→            data = http_get_json(url).get("data", [])
+   132→            if data:
+   133→                return float(data[0].get("lastPr", "0"))
+   134→        except Exception:
+   135→            pass
+   136→        return 0.0
+   137→
+   138→    def get_futures_ticker(self, pair: str) -> float:
+   139→        """USDT-M perpetual last price. pair format same as get_ticker (e.g. BTCUSDT)."""
+   140→        url = f"{BASE}/api/v2/mix/market/ticker?symbol={pair}&productType=USDT-FUTURES"
+   141→        try:
+   142→            data = http_get_json(url).get("data", [])
+   143→            if isinstance(data, list) and data:
+   144→                return float(data[0].get("lastPr", 0) or 0)
+   145→            elif isinstance(data, dict):
+   146→                return float(data.get("lastPr", 0) or 0)
+   147→        except Exception:
+   148→            pass
+   149→        return 0.0
+   150→
+   151→    def get_all_spot_tickers(self, cache_sec: int = 5) -> dict[str, float]:
+   152→        """Bulk spot last prices {PAIR: price}. Cached briefly for screener loops."""
+   153→        global _spot_ticker_loaded_at, _spot_ticker_prices
+   154→        now = time.time()
+   155→        if _spot_ticker_prices and (now - _spot_ticker_loaded_at) < cache_sec:
+   156→            return dict(_spot_ticker_prices)
+   157→        try:
+   158→            rows = http_get_json(f"{BASE}/api/v2/spot/market/tickers").get("data", [])
+   159→            _spot_ticker_prices = {
+   160→                str(r.get("symbol", "")).upper(): float(r.get("lastPr", 0) or 0)
+   161→                for r in rows
+   162→                if r.get("symbol")
+   163→            }
+   164→            _spot_ticker_loaded_at = now
+   165→        except Exception:
+   166→            pass
+   167→        return dict(_spot_ticker_prices)
+   168→
+   169→    def get_all_futures_tickers(self, cache_sec: int = 5) -> dict[str, float]:
+   170→        """Bulk USDT-M perpetual last prices {BTCUSDT: price}. Cached briefly."""
+   171→        global _futures_ticker_loaded_at, _futures_ticker_prices
+   172→        now = time.time()
+   173→        if _futures_ticker_prices and (now - _futures_ticker_loaded_at) < cache_sec:
+   174→            return dict(_futures_ticker_prices)
+   175→        try:
+   176→            rows = http_get_json(
+   177→                f"{BASE}/api/v2/mix/market/tickers?productType=USDT-FUTURES"
+   178→            ).get("data", [])
+   179→            _futures_ticker_prices = {
+   180→                str(r.get("symbol", "")).upper(): float(r.get("lastPr", 0) or 0)
+   181→                for r in rows
+   182→                if r.get("symbol")
+   183→            }
+   184→            _futures_ticker_loaded_at = now
+   185→        except Exception:
+   186→            pass
+   187→        return dict(_futures_ticker_prices)
+   188→
+   189→    # Mapping from common shorthand to Bitget's accepted granularity format
+   190→    GRANULARITY_MAP: dict[str, str] = {
+   191→        "1m": "1min",
+   192→        "3m": "3min",
+   193→        "5m": "5min",
+   194→        "15m": "15min",
+   195→        "30m": "30min",
+   196→        "1h": "1h",
+   197→        "2h": "2h",
+   198→        "4h": "4h",
+   199→        "6h": "6h",
+   200→        "12h": "12h",
+   201→        "1d": "1day",
+   202→        "1day": "1day",
+   203→        "1w": "1week",
+   204→        "1week": "1week",
+   205→    }
+   206→
+   207→    def get_klines(
+   208→        self, pair: str, granularity: str = "1day", limit: int = 200
+   209→    ) -> list:
+   210→        gran = self.GRANULARITY_MAP.get(granularity, granularity)
+   211→        url = f"{BASE}/api/v2/spot/market/candles?symbol={pair}&granularity={gran}&limit={limit}"
+   212→        try:
+   213→            return http_get_json(url).get("data", [])
+   214→        except Exception:
+   215→            return []
+   216→
+   217→    def fetch_symbol_rules(
+   218→        self, pair: str, cache_sec: int = 3600
+   219→    ) -> Optional[dict[str, Any]]:
+   220→        now = time.time()
+   221→        cached = _symbol_rules_cache.get(pair)
+   222→        if cached and (now - cached[0]) < cache_sec:
+   223→            return dict(cached[1])
+   224→        url = f"{BASE}/api/v2/spot/public/symbols?symbol={pair}"
+   225→        try:
+   226→            payload = http_get_json(url)
+   227→        except Exception:
+   228→            return dict(cached[1]) if cached else None
+   229→        if payload.get("code") != "00000" or not payload.get("data"):
+   230→            return dict(cached[1]) if cached else None
+   231→        info = payload["data"][0]
+   232→        qty_prec = int(info.get("quantityPrecision", 6))
+   233→        quote_prec = int(info.get("quotePrecision", 2))
+   234→        min_usdt = float(info.get("minTradeUSDT") or 0)
+   235→        min_base = float(info.get("minTradeAmount") or 0)
+   236→        if min_base <= 0:
+   237→            min_base = 10 ** (-qty_prec)
+   238→        rules = {
+   239→            "symbol": pair,
+   240→            "min_trade_usdt": min_usdt,
+   241→            "min_trade_base": min_base,
+   242→            "quantity_precision": qty_prec,
+   243→            "quote_precision": quote_prec,
+   244→            "status": info.get("status", ""),
+   245→        }
+   246→        _symbol_rules_cache[pair] = (now, rules)
+   247→        return dict(rules)
+   248→
+   249→    def fetch_futures_symbol_rules(
+   250→        self, pair: str, cache_sec: int = 3600
+   251→    ) -> dict[str, Any] | None:
+   252→        now = time.time()
+   253→        cached = _futures_rules_cache.get(pair)
+   254→        if cached and (now - cached[0]) < cache_sec:
+   255→            return dict(cached[1])
+   256→        url = f"{BASE}/api/v2/mix/market/contracts?productType=USDT-FUTURES"
+   257→        try:
+   258→            payload = http_get_json(url)
+   259→        except Exception:
+   260→            return dict(cached[1]) if cached else None
+   261→        if payload.get("code") != "00000" or not payload.get("data"):
+   262→            return dict(cached[1]) if cached else None
+   263→
+   264→        sym_info = None
+   265→        target_sym = pair
+   266→        for s in payload["data"]:
+   267→            if s.get("symbol") == target_sym:
+   268→                sym_info = s
+   269→                break
+   270→
+   271→        if not sym_info:
+   272→            return dict(cached[1]) if cached else None
+   273→
+   274→        size_mult = str(sym_info.get("sizeMultiplier", "0.001"))
+   275→        qty_prec = len(size_mult.split(".")[1]) if "." in size_mult else 0
+   276→
+   277→        quote_prec = int(sym_info.get("pricePlace", 2))
+   278→        min_base = float(sym_info.get("minTradeNum", 0))
+   279→
+   280→        if min_base <= 0:
+   281→            min_base = 10 ** (-qty_prec)
+   282→
+   283→        rules = {
+   284→            "symbol": pair,
+   285→            "min_trade_usdt": 0,
+   286→            "min_trade_base": min_base,
+   287→            "quantity_precision": qty_prec,
+   288→            "quote_precision": quote_prec,
+   289→            "status": sym_info.get("symbolStatus", ""),
+   290→        }
+   291→        _futures_rules_cache[pair] = (now, rules)
+   292→        return dict(rules)
+   293→
+   294→    # Official wallet/transfer docs: futures account type is usdt_futures (not mix_usdt)
+   295→    _ACCOUNT_TYPES = {
+   296→        "spot": "spot",
+   297→        "futures": "usdt_futures",
+   298→        "margin": "crossed_margin",
+   299→    }
+   300→
+   301→    def transfer_asset(
+   302→        self, asset: str, amount: float, from_account: str, to_account: str
+   303→    ) -> bool:
+   304→        """Transfer between spot / USDT-M futures / cross margin on Bitget."""
+   305→        fromType = self._ACCOUNT_TYPES.get(from_account)
+   306→        toType = self._ACCOUNT_TYPES.get(to_account)
+   307→        if not fromType or not toType:
+   308→            return False
+   309→
+   310→        try:
+   311→            res = _api_call(
+   312→                "POST",
+   313→                "/api/v2/spot/wallet/transfer",
+   314→                body={
+   315→                    "fromType": fromType,
+   316→                    "toType": toType,
+   317→                    "amount": f"{amount:.8f}".rstrip("0").rstrip("."),
+   318→                    "coin": asset,
+   319→                    "clientOid": f"t{int(time.time() * 1000)}",
+   320→                },
+   321→            )
+   322→            return res.get("code") == "00000"
+   323→        except Exception:
+   324→            return False
+   325→
+   326→    def fetch_usdt_account_balances(self) -> dict[str, float]:
+   327→        """Fetch separate Spot and Futures USDT balances. Returns {'spot': val, 'futures': val}."""
+   328→        spot_usdt = 0.0
+   329→        try:
+   330→            data = _api_call("GET", "/api/v2/spot/account/assets")
+   331→            for asset in data.get("data", []):
+   332→                if str(asset.get("coin", "")).upper() == "USDT":
+   333→                    spot_usdt = float(asset.get("available", "0"))
+   334→                    break
+   335→        except Exception as e:
+   336→            print(f"fetch_usdt_account_balances spot error: {e}", file=sys.stderr)
+   337→            raise e
+   338→
+   339→        futures_usdt = 0.0
+   340→        try:
+   341→            f_data = _api_call(
+   342→                "GET",
+   343→                "/api/v2/mix/account/accounts",
+   344→                params={"productType": "USDT-FUTURES"},
+   345→            )
+   346→            for asset in f_data.get("data", []):
+   347→                if str(asset.get("marginCoin", "")).upper() == "USDT":
+   348→                    futures_usdt = float(asset.get("available", "0"))
+   349→                    break
+   350→        except Exception as e:
+   351→            print(f"fetch_usdt_account_balances futures error: {e}", file=sys.stderr)
+   352→            raise e
+   353→
+   354→        return {"spot": spot_usdt, "futures": futures_usdt}
+   355→
+   356→    def fetch_asset_market(
+   357→        self, asset: str, quote: str = "USDT", cfg: dict[str, Any] | None = None
+   358→    ) -> dict[str, Any]:
+   359→        pair = make_pair(asset, quote)
+   360→        price = self.get_ticker(pair)
+   361→        rules = self.fetch_symbol_rules(pair)
+   362→        if rules is None:
+   363→            return {
+   364→                "symbol": asset,
+   365→                "price": price,
+   366→                "rules_error": True,
+   367→                "venue": self.venue_id,
+   368→            }
+   369→        limits = rules_for_price(rules, price)
+   370→
+   371→        cfg = cfg or {}
+   372→        tf = resolve_timeframes(cfg)
+   373→
+   374→        klines_1d = [
+   375→            parse_kline_ohlcv(k)
+   376→            for k in self.get_klines(pair, tf["slow"]["interval"], tf["slow"]["limit"])
+   377→            if k
+   378→        ]
+   379→        klines_4h = [
+   380→            parse_kline_ohlcv(k)
+   381→            for k in self.get_klines(pair, tf["mid"]["interval"], tf["mid"]["limit"])
+   382→            if k
+   383→        ]
+   384→        klines_1w = [
+   385→            parse_kline_ohlcv(k)
+   386→            for k in self.get_klines(
+   387→                pair, tf["macro"]["interval"], tf["macro"]["limit"]
+   388→            )
+   389→            if k
+   390→        ]
+   391→        return {
+   392→            "symbol": asset,
+   393→            "pair": pair,
+   394→            "price": price,
+   395→            "rules_error": False,
+   396→            "venue": self.venue_id,
+   397→            "symbol_rules": rules,
+   398→            **limits,
+   399→            "klines_1d": klines_1d,
+   400→            "klines_4h": klines_4h,
+   401→            "klines_1w": klines_1w,
+   402→        }
+   403→
+   404→    def fetch_balances(self, coins: list[str]) -> dict[str, float]:
+   405→        # Do not swallow exceptions: balance fetch failure must propagate to abort, never return all zeros
+   406→        # (otherwise strategy misjudges account as empty and only uses cash orders)
+   407→        balances: dict[str, float] = {c: 0.0 for c in coins}
+   408→        data = _api_call("GET", "/api/v2/spot/account/assets")
+   409→        for asset in data.get("data", []):
+   410→            coin = str(asset.get("coin", "")).upper()
+   411→            if coin in balances:
+   412→                balances[coin] = float(asset.get("available", "0"))
+   413→
+   414→        # Fetch futures balance if USDT is requested
+   415→        if "USDT" in balances:
+   416→            try:
+   417→                f_data = _api_call(
+   418→                    "GET",
+   419→                    "/api/v2/mix/account/accounts",
+   420→                    params={"productType": "USDT-FUTURES"},
+   421→                )
+   422→                for asset in f_data.get("data", []):
+   423→                    if str(asset.get("marginCoin", "")).upper() == "USDT":
+   424→                        balances["USDT"] += float(asset.get("balance", "0"))
+   425→            except Exception as e:
+   426→                print(f"bitget fetch_futures_balances error: {e}", file=sys.stderr)
+   427→
+   428→        return balances
+   429→
+   430→    def fetch_live_state(self, assets: list[str]) -> dict[str, Any]:
+   431→        """Fetch unified global state for Bitget: spot balances and futures positions."""
+   432→        balances = self.fetch_balances(assets + ["USDT"])
+   433→
+   434→        positions = {}
+   435→        try:
+   436→            pos_data = _api_call(
+   437→                "GET",
+   438→                "/api/v2/mix/position/all-position",
+   439→                params={"productType": "USDT-FUTURES"},
+   440→            )
+   441→            for pos in pos_data.get("data", []):
+   442→                total_amt = float(pos.get("total", "0") or 0)
+   443→                if total_amt > 1e-9:
+   444→                    raw_sym = pos.get("symbol", "")
+   445→                    base_sym = raw_sym
+   446→                    if raw_sym.endswith("USDT"):
+   447→                        base_sym = raw_sym[:-4]
+   448→
+   449→                    side = str(pos.get("holdSide", "")).lower()  # "long" or "short"
+   450→                    entry = float(
+   451→                        pos.get("averageOpenPrice", 0)
+   452→                        or pos.get("openPriceAvg", 0)
+   453→                        or 0
+   454→                    )
+   455→                    unrealized = float(pos.get("unrealizedPL", 0) or 0)
+   456→                    liq_price = float(pos.get("liquidationPrice", 0) or 0)
+   457→                    lev = float(pos.get("leverage", 1) or 1)
+   458→
+   459→                    positions[base_sym] = {
+   460→                        "amount": total_amt,
+   461→                        "side": side,
+   462→                        "entry_price": entry,
+   463→                        "unrealized_pnl": unrealized,
+   464→                        "liq_price": liq_price,
+   465→                        "leverage": lev,
+   466→                    }
+   467→        except Exception as e:
+   468→            print(f"fetch_live_state futures positions error: {e}", file=sys.stderr)
+   469→            raise e
+   470→
+   471→        return {"balances": balances, "futures_positions": positions}
+   472→
+   473→    def fetch_futures_positions(self, quote: str = "USDT") -> list[dict[str, Any]]:
+   474→        """USDT perpetual position list (single endpoint, raises on failure)."""
+   475→        pos_data = _api_call(
+   476→            "GET",
+   477→            "/api/v2/mix/position/all-position",
+   478→            params={"productType": "USDT-FUTURES"},
+   479→        )
+   480→        out: list[dict[str, Any]] = []
+   481→        for pos in pos_data.get("data", []) or []:
+   482→            qty = abs(float(pos.get("total", 0) or 0))
+   483→            if qty <= 1e-12:
+   484→                continue
+   485→            out.append(
+   486→                {
+   487→                    "symbol": str(pos.get("symbol", "")).upper(),
+   488→                    "side": str(pos.get("holdSide", "")).lower(),
+   489→                    "qty": qty,
+   490→                    "entry_price": float(
+   491→                        pos.get("averageOpenPrice", 0)
+   492→                        or pos.get("openPriceAvg", 0)
+   493→                        or 0
+   494→                    ),
+   495→                    "liq_price": float(pos.get("liquidationPrice", 0) or 0),
+   496→                    "leverage": float(pos.get("leverage", 1) or 1),
+   497→                    "unrealized_pnl": float(pos.get("unrealizedPL", 0) or 0),
+   498→                }
+   499→            )
+   500→        return out
+   501→
+   502→    def initialize_futures_symbol(self, pair: str) -> None:
+   503→        """Initialize futures configuration (marginType, leverage, positionSide) for a specific pair on Bitget."""
+   504→        if pair in _initialized_symbols:
+   505→            return
+   506→        mix_symbol = f"{pair}_UMCBL"
+   507→        try:
+   508→            _api_call(
+   509→                "POST",
+   510→                "/api/v2/mix/account/set-margin-mode",
+   511→                body={
+   512→                    "symbol": mix_symbol,
+   513→                    "marginCoin": "USDT",
+   514→                    "marginMode": "isolated",
+   515→                },
+   516→            )
+   517→        except Exception:
+   518→            pass
+   519→        for side in ("long", "short"):
+   520→            try:
+   521→                _api_call(
+   522→                    "POST",
+   523→                    "/api/v2/mix/account/set-leverage",
+   524→                    body={
+   525→                        "symbol": mix_symbol,
+   526→                        "marginCoin": "USDT",
+   527→                        "leverage": "1",
+   528→                        "holdSide": side,
+   529→                    },
+   530→                )
+   531→            except Exception:
+   532→                pass
+   533→        _initialized_symbols.add(pair)
+   534→
+   535→    def fetch_borrow_rates(self, coins: list[str]) -> dict[str, float]:
+   536→        """Fetch annualized borrow rates from Bitget cross margin. Returns {coin: rate_decimal}."""
+   537→        rates: dict[str, float] = {c: 0.0 for c in coins}
+   538→        for coin in coins:
+   539→            try:
+   540→                data = _api_call(
+   541→                    "GET",
+   542→                    "/api/v2/margin/crossed/interest-rate-and-limit",
+   543→                    params={"coin": coin.upper()},
+   544→                )
+   545→                items = data.get("data") or []
+   546→                if not items or not items[0].get("borrowable"):
+   547→                    continue
+   548→                item = items[0]
+   549→                daily = float(item.get("dailyInterestRate", 0) or 0)
+   550→                annual = float(item.get("annualInterestRate", 0) or 0)
+   551→                if annual <= 0 and daily > 0:
+   552→                    annual = daily * 365
+   553→                if annual > 0:
+   554→                    rates[coin.upper()] = annual
+   555→            except Exception:
+   556→                pass
+   557→        return rates
+   558→
+   559→    # ── cross margin (Reverse C&C: borrow-sell / buy-repay) ──────────────────────
+   560→
+   561→    def supports_reverse_arbitrage(self) -> bool:
+   562→        """Cross margin borrow/repay capability: assumed available without API keys; probes account when keys are present."""
+   563→        if not (_get_key() and _get_secret()):
+   564→            return True
+   565→        try:
+   566→            data = _api_call(
+   567→                "GET", "/api/v2/margin/crossed/account/assets", params={"coin": "USDT"}
+   568→            )
+   569→            return data.get("code") == "00000"
+   570→        except Exception:
+   571→            return False
+   572→
+   573→    def fetch_margin_debt(self, assets: list[str]) -> dict[str, float]:
+   574→        """Cross margin per-asset outstanding debt (borrow + interest), in base coin units."""
+   575→        debt: dict[str, float] = {a.upper(): 0.0 for a in assets}
+   576→        try:
+   577→            data = _api_call("GET", "/api/v2/margin/crossed/account/assets")
+   578→            for item in data.get("data", []):
+   579→                coin = str(item.get("coin", "")).upper()
+   580→                if coin in debt:
+   581→                    debt[coin] = float(item.get("borrow", 0) or 0) + float(
+   582→                        item.get("interest", 0) or 0
+   583→                    )
+   584→        except Exception as e:
+   585→            print(f"bitget fetch_margin_debt failed: {e}", file=sys.stderr)
+   586→        return debt
+   587→
+   588→    def _margin_borrow_repay(self, asset: str, amount: float, op: str) -> bool:
+   589→        path = f"/api/v2/margin/crossed/account/{op}"
+   590→        amt_key = "borrowAmount" if op == "borrow" else "repayAmount"
+   591→        try:
+   592→            res = _api_call(
+   593→                "POST",
+   594→                path,
+   595→                body={
+   596→                    "coin": asset.upper(),
+   597→                    amt_key: f"{amount:.8f}".rstrip("0").rstrip("."),
+   598→                    "clientid": f"qm{op[0]}{int(time.time())}{random.randint(0, 9999)}",
+   599→                },
+   600→            )
+   601→            return res.get("code") == "00000"
+   602→        except Exception as e:
+   603→            print(f"bitget margin {op} {asset} failed: {e}", file=sys.stderr)
+   604→            return False
+   605→
+   606→    def margin_borrow(self, asset: str, amount: float) -> bool:
+   607→        return self._margin_borrow_repay(asset, amount, "borrow")
+   608→
+   609→    def margin_repay(self, asset: str, amount: float) -> bool:
+   610→        return self._margin_borrow_repay(asset, amount, "repay")
+   611→
+   612→    def _fetch_margin_fills(self, pair: str, order_id: str) -> dict[str, Any]:
+   613→        try:
+   614→            data = _api_call(
+   615→                "GET",
+   616→                "/api/v2/margin/crossed/fills",
+   617→                params={"symbol": pair, "orderId": order_id},
+   618→            )
+   619→        except Exception:
+   620→            return {}
+   621→        fills = (data.get("data") or {}).get("fills") or data.get("data") or []
+   622→        if isinstance(fills, dict):
+   623→            fills = fills.get("fills", [])
+   624→        exec_qty = 0.0
+   625→        exec_quote = 0.0
+   626→        for f in fills if isinstance(fills, list) else []:
+   627→            qty = float(f.get("size", 0) or 0)
+   628→            px = float(f.get("priceAvg", f.get("price", 0)) or 0)
+   629→            amt = float(f.get("amount", 0) or 0)
+   630→            exec_qty += qty
+   631→            exec_quote += amt if amt > 0 else qty * px
+   632→        return {
+   633→            "exec_qty": exec_qty,
+   634→            "exec_quote_usd": exec_quote,
+   635→            "exec_price": exec_quote / exec_qty if exec_qty > 0 else 0.0,
+   636→        }
+   637→
+   638→    def place_margin_order(
+   639→        self,
+   640→        pair: str,
+   641→        side: str,
+   642→        amount_base: float,
+   643→        quantity_precision: int = 6,
+   644→        ref_price: float = 0.0,
+   645→        side_effect: str = "",
+   646→    ) -> tuple[bool, dict[str, Any]]:
+   647→        """Cross margin market order.
+   648→
+   649→        side_effect:
+   650→          - auto_borrow → loanType=autoLoan : auto-borrow missing assets (SELL = borrow to sell)
+   651→          - auto_repay  → loanType=autoRepay: auto-repay debt after execution (BUY = buy back to repay)
+   652→        Market buy is measured in quote; converted via ref_price + 1% buffer then cleared by autoRepay.
+   653→        """
+   654→        loan_type = {"auto_borrow": "autoLoan", "auto_repay": "autoRepay"}.get(
+   655→            side_effect.lower(), "normal"
+   656→        )
+   657→        client_oid = f"qmgn{int(time.time())}{random.randint(0, 9999)}"
+   658→        body: dict[str, Any] = {
+   659→            "symbol": pair,
+   660→            "orderType": "market",
+   661→            "side": side,
+   662→            "force": "gtc",  # Required by API; force does not affect matching logic for market orders
+   663→            "loanType": loan_type,
+   664→            "clientOid": client_oid,
+   665→        }
+   666→        if side == "sell":
+   667→            sz = f"{amount_base:.{quantity_precision}f}".rstrip("0").rstrip(".")
+   668→            body["baseSize"] = sz or f"{amount_base:.{quantity_precision}f}"
+   669→        else:
+   670→            if ref_price <= 0:
+   671→                return False, {
+   672→                    "error": "margin market buy requires ref_price to compute quoteSize"
+   673→                }
+   674→            body["quoteSize"] = f"{amount_base * ref_price * 1.01:.4f}"
+   675→        submit_ts = time.time()
+   676→        try:
+   677→            result = _api_call("POST", "/api/v2/margin/crossed/place-order", body=body)
+   678→            fill_ts = time.time()
+   679→            if result.get("code") != "00000":
+   680→                return False, {
+   681→                    "error": f"{result.get('code')}: {result.get('msg', 'unknown')}"
+   682→                }
+   683→            order_id = str((result.get("data") or {}).get("orderId", "?"))
+   684→            time.sleep(0.3)
+   685→            parsed = self._fetch_margin_fills(pair, order_id)
+   686→            exec_price = parsed.get("exec_price") or ref_price
+   687→            exec_qty = parsed.get("exec_qty") or amount_base
+   688→            slippage = (
+   689→                round((exec_price - ref_price) / ref_price, 6)
+   690→                if ref_price and exec_price
+   691→                else None
+   692→            )
+   693→            return True, {
+   694→                "order_id": order_id,
+   695→                "exec_price": exec_price,
+   696→                "exec_qty": exec_qty,
+   697→                "exec_quote_usd": parsed.get("exec_quote_usd") or exec_qty * exec_price,
+   698→                "ref_price": ref_price,
+   699→                "slippage": slippage,
+   700→                "submit_ts": round(submit_ts, 3),
+   701→                "fill_ts": round(fill_ts, 3),
+   702→                "latency_ms": round((fill_ts - submit_ts) * 1000),
+   703→                "order_status": "filled",
+   704→            }
+   705→        except urllib.error.HTTPError as e:
+   706→            try:
+   707→                body_txt = e.read().decode()
+   708→            except Exception:
+   709→                body_txt = ""
+   710→            return False, {"error": f"HTTP {e.code}: {body_txt[:200]}"}
+   711→        except Exception as e:
+   712→            return False, {"error": str(e)}
+   713→
+   714→    def _fetch_order_detail(self, order_id: str) -> dict[str, Any]:
+   715→        try:
+   716→            return _api_call(
+   717→                "GET", "/api/v2/spot/trade/orderInfo", params={"orderId": order_id}
+   718→            )
+   719→        except Exception:
+   720→            return {}
+   721→
+   722→    @staticmethod
+   723→    def _parse_order_detail(detail: dict[str, Any]) -> dict[str, Any]:
+   724→        exec_price = 0.0
+   725→        exec_qty = 0.0
+   726→        exec_quote = 0.0
+   727→        status = ""
+   728→        for od in detail.get("data", []):
+   729→            exec_price = float(od.get("priceAvg", 0))
+   730→            status = od.get("status", "")
+   731→            quote_vol = float(od.get("quoteVolume", od.get("volume", 0)))
+   732→            exec_quote = quote_vol
+   733→            if exec_price > 0:
+   734→                exec_qty = quote_vol / exec_price
+   735→            else:
+   736→                exec_qty = float(od.get("sizeAccumulate", od.get("size", 0)))
+   737→        return {
+   738→            "exec_price": exec_price,
+   739→            "exec_qty": exec_qty,
+   740→            "exec_quote_usd": exec_quote,
+   741→            "order_status": status,
+   742→        }
+   743→
+   744→    def place_buy(
+   745→        self,
+   746→        pair: str,
+   747→        amount_usdt: float,
+   748→        quote_precision: int = 2,
+   749→        ref_price: float = 0.0,
+   750→    ) -> tuple[bool, dict[str, Any]]:
+   751→        client_oid = f"qbuy{int(time.time() // 3600)}n{int(round(amount_usdt * 100))}r{random.randint(0, 9999)}"
+   752→        size = f"{amount_usdt:.{quote_precision}f}"
+   753→        submit_ts = time.time()
+   754→        try:
+   755→            result = _api_call(
+   756→                "POST",
+   757→                "/api/v2/spot/trade/place-order",
+   758→                body={
+   759→                    "symbol": pair,
+   760→                    "side": "buy",
+   761→                    "orderType": "market",
+   762→                    "size": size,
+   763→                    "clientOid": client_oid,
+   764→                },
+   765→            )
+   766→            fill_ts = time.time()
+   767→            latency_ms = round((fill_ts - submit_ts) * 1000)
+   768→            if result.get("code") == "00000":
+   769→                order_id = str(result.get("data", {}).get("orderId", "?"))
+   770→                parsed = self._parse_order_detail(self._fetch_order_detail(order_id))
+   771→                exec_price = parsed["exec_price"]
+   772→                slippage = (
+   773→                    round((exec_price - ref_price) / ref_price, 6)
+   774→                    if ref_price and exec_price
+   775→                    else None
+   776→                )
+   777→                return True, {
+   778→                    "order_id": order_id,
+   779→                    "exec_price": exec_price,
+   780→                    "exec_qty": parsed["exec_qty"],
+   781→                    "exec_quote_usd": parsed["exec_quote_usd"],
+   782→                    "ref_price": ref_price,
+   783→                    "slippage": slippage,
+   784→                    "submit_ts": round(submit_ts, 3),
+   785→                    "fill_ts": round(fill_ts, 3),
+   786→                    "latency_ms": latency_ms,
+   787→                    "order_status": parsed["order_status"],
+   788→                }
+   789→            return False, {
+   790→                "error": f"{result.get('code')}: {result.get('msg', 'unknown')}"
+   791→            }
+   792→        except urllib.error.HTTPError as e:
+   793→            try:
+   794→                body = e.read().decode()
+   795→            except Exception:
+   796→                body = ""
+   797→            return False, {"error": f"HTTP {e.code}: {body[:200]}"}
+   798→        except Exception as e:
+   799→            return False, {"error": str(e)}
+   800→
+   801→    def place_sell(
+   802→        self,
+   803→        pair: str,
+   804→        amount_base: float,
+   805→        quantity_precision: int = 6,
+   806→        ref_price: float = 0.0,
+   807→    ) -> tuple[bool, dict[str, Any]]:
+   808→        client_oid = f"qsell{int(time.time() // 3600)}n{int(round(amount_base * 1e6))}r{random.randint(0, 9999)}"
+   809→        size = f"{amount_base:.{quantity_precision}f}".rstrip("0").rstrip(".")
+   810→        if "." not in size:
+   811→            size = f"{amount_base:.{quantity_precision}f}"
+   812→        submit_ts = time.time()
+   813→        try:
+   814→            result = _api_call(
+   815→                "POST",
+   816→                "/api/v2/spot/trade/place-order",
+   817→                body={
+   818→                    "symbol": pair,
+   819→                    "side": "sell",
+   820→                    "orderType": "market",
+   821→                    "size": size,
+   822→                    "clientOid": client_oid,
+   823→                },
+   824→            )
+   825→            fill_ts = time.time()
+   826→            latency_ms = round((fill_ts - submit_ts) * 1000)
+   827→            if result.get("code") == "00000":
+   828→                order_id = str(result.get("data", {}).get("orderId", "?"))
+   829→                parsed = self._parse_order_detail(self._fetch_order_detail(order_id))
+   830→                exec_price = parsed["exec_price"]
+   831→                slippage = (
+   832→                    round((exec_price - ref_price) / ref_price, 6)
+   833→                    if ref_price and exec_price
+   834→                    else None
+   835→                )
+   836→                return True, {
+   837→                    "order_id": order_id,
+   838→                    "exec_price": exec_price,
+   839→                    "exec_qty": parsed["exec_qty"],
+   840→                    "exec_quote_usd": parsed["exec_quote_usd"],
+   841→                    "ref_price": ref_price,
+   842→                    "slippage": slippage,
+   843→                    "submit_ts": round(submit_ts, 3),
+   844→                    "fill_ts": round(fill_ts, 3),
+   845→                    "latency_ms": latency_ms,
+   846→                    "order_status": parsed["order_status"],
+   847→                }
+   848→            return False, {
+   849→                "error": f"{result.get('code')}: {result.get('msg', 'unknown')}"
+   850→            }
+   851→        except urllib.error.HTTPError as e:
+   852→            try:
+   853→                body = e.read().decode()
+   854→            except Exception:
+   855→                body = ""
+   856→            return False, {"error": f"HTTP {e.code}: {body[:200]}"}
+   857→        except Exception as e:
+   858→            return False, {"error": str(e)}
+   859→
+   860→    def place_futures_order(
+   861→        self,
+   862→        pair: str,
+   863→        side: str,  # "open_long", "open_short", "close_long", "close_short"
+   864→        amount_base: float,
+   865→        quantity_precision: int = 3,
+   866→        ref_price: float = 0.0,
+   867→    ) -> tuple[bool, dict[str, Any]]:
+   868→        client_oid = f"qfut{int(time.time() // 3600)}n{random.randint(0, 99999)}"
+   869→        size = f"{amount_base:.{quantity_precision}f}".rstrip("0").rstrip(".")
+   870→        if "." not in size:
+   871→            size = f"{amount_base:.{quantity_precision}f}"
+   872→        submit_ts = time.time()
+   873→
+   874→        self.initialize_futures_symbol(pair)
+   875→
+   876→        try:
+   877→            result = _api_call(
+   878→                "POST",
+   879→                "/api/v2/mix/order/place-order",
+   880→                body={
+   881→                    "symbol": pair,
+   882→                    "productType": "USDT-FUTURES",
+   883→                    "marginMode": "isolated",
+   884→                    "marginCoin": "USDT",
+   885→                    "side": side,
+   886→                    "orderType": "market",
+   887→                    "size": size,
+   888→                    "clientOid": client_oid,
+   889→                },
+   890→            )
+   891→            fill_ts = time.time()
+   892→            latency_ms = round((fill_ts - submit_ts) * 1000)
+   893→            if result.get("code") == "00000":
+   894→                order_id = str(result.get("data", {}).get("orderId", "?"))
+   895→
+   896→                exec_price = ref_price
+   897→                try:
+   898→                    time.sleep(0.5)
+   899→                    detail = _api_call(
+   900→                        "GET",
+   901→                        "/api/v2/mix/order/detail",
+   902→                        params={
+   903→                            "symbol": pair,
+   904→                            "orderId": order_id,
+   905→                        },
+   906→                    )
+   907→                    dp = detail.get("data", {})
+   908→                    if dp.get("priceAvg"):
+   909→                        exec_price = float(dp["priceAvg"])
+   910→                except Exception:
+   911→                    pass
+   912→
+   913→                slippage = (
+   914→                    round((exec_price - ref_price) / ref_price, 6)
+   915→                    if ref_price and exec_price
+   916→                    else None
+   917→                )
+   918→                return True, {
+   919→                    "order_id": order_id,
+   920→                    "exec_price": exec_price,
+   921→                    "exec_qty": amount_base,
+   922→                    "exec_quote_usd": amount_base * exec_price,
+   923→                    "ref_price": ref_price,
+   924→                    "slippage": slippage,
+   925→                    "submit_ts": round(submit_ts, 3),
+   926→                    "fill_ts": round(fill_ts, 3),
+   927→                    "latency_ms": latency_ms,
+   928→                    "order_status": "filled",
+   929→                }
+   930→            return False, {
+   931→                "error": f"{result.get('code')}: {result.get('msg', 'unknown')}"
+   932→            }
+   933→        except urllib.error.HTTPError as e:
+   934→            try:
+   935→                body = e.read().decode()
+   936→            except Exception:
+   937→                body = ""
+   938→            return False, {"error": f"HTTP {e.code}: {body[:200]}"}
+   939→        except Exception as e:
+   940→            return False, {"error": str(e)}
+   941→
+   942→    def execute_trades(
+   943→        self,
+   944→        trades: list[dict[str, Any]],
+   945→        market: dict[str, dict[str, Any]],
+   946→        dry_run: bool,
+   947→    ) -> list[dict[str, Any]]:
+   948→        results: list[dict[str, Any]] = []
+   949→        for trade in trades:
+   950→            symbol = trade["symbol"]
+   951→            mkt = market.get(symbol, {})
+   952→            pair = str(mkt.get("pair") or make_pair(symbol, "USDT"))
+   953→            ref_price = float(mkt.get("price", 0))
+   954→            record = dict(trade)
+   955→            record["dry_run"] = dry_run
+   956→            record["ref_price"] = ref_price
+   957→            record["venue"] = self.venue_id
+   958→            if dry_run:
+   959→                record["status"] = "simulated"
+   960→                record["order_id"] = None
+   961→                # Simulate slippage for more realistic paper trading
+   962→                slippage_bps = float(trade.get("slippage_bps", 0)) or 2.0
+   963→                sim_slippage = slippage_bps / 10000.0
+   964→                if trade["type"] == "buy":
+   965→                    record["slippage"] = round(sim_slippage, 6)
+   966→                else:
+   967→                    record["slippage"] = round(-sim_slippage, 6)
+   968→                record["latency_ms"] = 0
+   969→                results.append(record)
+   970→                continue
+   971→            is_margin = str(trade.get("account", "")).lower() == "margin"
+   972→            if trade["type"] in ("buy", "sell") and is_margin:
+   973→                # Reverse C&C spot leg uses cross margin:
+   974→                # sell + auto_borrow = borrow to sell; buy + auto_repay = buy back to auto-repay.
+   975→                ok, detail = self.place_margin_order(
+   976→                    pair,
+   977→                    trade["type"],
+   978→                    trade["amount_base"],
+   979→                    int(mkt.get("quantity_precision", 6)),
+   980→                    ref_price=ref_price,
+   981→                    side_effect=str(trade.get("side_effect", "")),
+   982→                )
+   983→            elif trade["type"] == "buy":
+   984→                ok, detail = self.place_buy(
+   985→                    pair,
+   986→                    trade["amount_usdt"],
+   987→                    int(mkt.get("quote_precision", 2)),
+   988→                    ref_price=ref_price,
+   989→                )
+   990→            elif trade["type"] == "sell":
+   991→                ok, detail = self.place_sell(
+   992→                    pair,
+   993→                    trade["amount_base"],
+   994→                    int(mkt.get("quantity_precision", 6)),
+   995→                    ref_price=ref_price,
+   996→                )
+   997→            elif trade["type"] in (
+   998→                "open_short",
+   999→                "close_long",
+  1000→                "close_short",
+  1001→                "open_long",
+  1002→            ):
+  1003→                # Perp open/close
+  1004→                ok, detail = self.place_futures_order(
+  1005→                    pair,
+  1006→                    trade["type"],
+  1007→                    trade["amount_base"],
+  1008→                    int(
+  1009→                        trade.get("quantity_precision")
+  1010→                        or mkt.get("quantity_precision", 3)
+  1011→                    ),
+  1012→                    ref_price=ref_price,
+  1013→                )
+  1014→            else:
+  1015→                ok, detail = False, {"error": f"Unknown trade type {trade['type']}"}
+  1016→            record["status"] = "filled" if ok else "failed"
+  1017→            if ok:
+  1018→                record.update(
+  1019→                    {
+  1020→                        "order_id": detail.get("order_id"),
+  1021→                        "exec_price": detail.get("exec_price"),
+  1022→                        "exec_qty": detail.get("exec_qty"),
+  1023→                        "exec_quote_usd": detail.get("exec_quote_usd"),
+  1024→                        "slippage": detail.get("slippage"),
+  1025→                        "latency_ms": detail.get("latency_ms"),
+  1026→                        "submit_ts": detail.get("submit_ts"),
+  1027→                        "fill_ts": detail.get("fill_ts"),
+  1028→                        "order_status": detail.get("order_status"),
+  1029→                        "error": None,
+  1030→                    }
+  1031→                )
+  1032→            else:
+  1033→                record["order_id"] = None
+  1034→                record["error"] = detail.get("error", str(detail))
+  1035→            results.append(record)
+  1036→        return results
+  1037→

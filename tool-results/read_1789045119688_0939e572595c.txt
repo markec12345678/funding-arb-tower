@@ -1,0 +1,834 @@
+     1→#!/usr/bin/env python3
+     2→"""Pure Perpetual Futures Spread Arbitrage Scanner — Cross-exchange perpetual contract funding rate spread scanner。
+     3→
+     4→No spot/borrow needed; only compares funding rate differences across exchanges for USDT perpetuals：
+     5→  - Forward: long at the venue with the highest rate, short at the venue with the lowest rate
+     6→  - Reverse: long at the venue with the lowest (most negative) rate, short at the venue with the highest (or less negative) rate
+     7→
+     8→Key difference from cash-and-carry scanner：both legs are perp（lower taker fees, no spot slippage），
+     9→Legs can be split across different exchanges; no need for one exchange to support both spot and perp.
+    10→
+    11→Usage:
+    12→  python3 scripts/cli/scan_pure_futures_spreads.py
+    13→  python3 scripts/cli/scan_pure_futures_spreads.py --venues binance,bybit,okx,bitget
+    14→  python3 scripts/cli/scan_pure_futures_spreads.py --include-dex             # include all perp DEX venues
+    15→  python3 scripts/cli/scan_pure_futures_spreads.py --min-spread 0.1 --verbose
+    16→  python3 scripts/cli/scan_pure_futures_spreads.py --json
+    17→  python3 scripts/cli/scan_pure_futures_spreads.py --watch 5  # scan every 5 minutes and append to JSONL
+    18→
+    19→Architecture note:
+    20→  This is Phase 1 — data-driven scan only. No order execution. The output answers:
+    21→  - How many pairs have spreads > 0.1% net?
+    22→  - What is the average duration of a spread above threshold?
+    23→  - Which venue pairs dominate?
+    24→"""
+    25→
+    26→from __future__ import annotations
+    27→
+    28→import argparse
+    29→import json
+    30→import sys
+    31→import time
+    32→from datetime import datetime, timedelta, timezone
+    33→from pathlib import Path
+    34→from typing import Any
+    35→
+    36→ROOT = Path(__file__).resolve().parent.parent
+    37→if str(ROOT) not in sys.path:
+    38→    sys.path.insert(0, str(ROOT))
+    39→
+    40→from backtest.funding_providers import get_funding_provider
+    41→from market.futures_depth import depth_usd_within, fetch_futures_depth
+    42→from market.parallel_fetch import run_io_parallel
+    43→
+    44→TZ = timezone(timedelta(hours=8))
+    45→TZ_UTC = timezone.utc
+    46→
+    47→# Default thresholds
+    48→DEFAULT_MIN_SPREAD = 0.03  # 0.03% minimum rate spread
+    49→DEFAULT_MIN_EDGE = 0.01  # 0.01% minimum net edge after fees
+    50→DEFAULT_IO_WORKERS = 16  # I/O-bound; threads release GIL during urllib calls
+    51→DEFAULT_WATCH_INTERVAL = 5  # minutes
+    52→DEFAULT_JSONL_FILE = "data/pure_futures_spreads.jsonl"
+    53→HOURS_PER_YEAR = 365.0 * 24.0
+    54→
+    55→# Liquidity context (futures_depth enrichment).
+    56→# Only the top-N entries (by real_edge) get depth lookups — the rest are
+    57→# truncated downstream anyway (TG: top 10, snapshot: top 30).
+    58→DEFAULT_DEPTH_TOP_N = 30
+    59→DEFAULT_DEPTH_WINDOW_PCT = 0.3  # ±0.3% around mid, aligned with executor pre-check
+    60→
+    61→from core.cross_interval_funding import (
+    62→    infer_last_settle_ts,
+    63→    pair_pure_futures_spread,
+    64→)
+    65→from core.fee_providers import (
+    66→    build_policy_futures_cache,
+    67→    pair_open_taker_fee_pct,
+    68→    parse_fee_policy,
+    69→)
+    70→
+    71→# Unified cross-scan cache for fetch_all_fee_rate_rows_by_base.
+    72→# Keyed by venue, holds (timestamp, by_base_dict). Populated when cache_ttl_sec > 0.
+    73→_FETCH_ALL_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+    74→
+    75→# USDT-stablecoin / wrapped-asset blacklist (no point arbing against CEX's internal USD)
+    76→SYMBOL_BLACKLIST = {"USDC", "FDUSD", "TUSD", "BTCDOM", "BUSD", "USDP", "DAI"}
+    77→
+    78→
+    79→def _base_from_symbol(symbol: str) -> str:
+    80→    s = symbol.upper()
+    81→    if s.endswith("USDT"):
+    82→        return s[:-4]
+    83→    return s
+    84→
+    85→
+    86→def _ts_to_ymd(ts_ms: int) -> str:
+    87→    if ts_ms <= 0:
+    88→        return "N/A"
+    89→    return datetime.fromtimestamp(ts_ms / 1000, TZ).strftime("%m-%d %H:%M")
+    90→
+    91→
+    92→def _mins_to_settle(ts_ms: int) -> str:
+    93→    if ts_ms <= 0:
+    94→        return "?"
+    95→    mins = (ts_ms - time.time() * 1000) / 60000
+    96→    if mins < 0:
+    97→        return "now"
+    98→    if mins < 60:
+    99→        return f"{mins:.0f}m"
+   100→    return f"{mins / 60:.1f}h"
+   101→
+   102→
+   103→def _fmt_depth_usd(usd: float | None) -> str:
+   104→    """Compact USD formatter for the max_exec column (e.g. 12.3k / 4.5M / N/A)."""
+   105→    if usd is None:
+   106→        return "N/A"
+   107→    if usd >= 1_000_000:
+   108→        return f"{usd / 1_000_000:.2f}M"
+   109→    if usd >= 1_000:
+   110→        return f"{usd / 1_000:.1f}k"
+   111→    return f"{usd:.0f}"
+   112→
+   113→
+   114→def _annual_from_rate(rate_pct: float, interval_h: float) -> float:
+   115→    if interval_h <= 0:
+   116→        interval_h = 8.0
+   117→    return (rate_pct / 100.0) * (24.0 / interval_h) * 365.0 * 100.0
+   118→
+   119→
+   120→def fetch_all_fee_rate_rows_by_base(
+   121→    venues: list[str],
+   122→    workers: int,
+   123→    *,
+   124→    cache_ttl_sec: float = 0.0,
+   125→) -> dict[str, dict[str, dict[str, Any]]]:
+   126→    """Fetch funding info from each venue, return {base: {venue: {rate, next_ts, interval_h, mark}}}.
+   127→
+   128→    If cache_ttl_sec > 0, results are cached at the venue level for that duration.
+   129→    Repeated calls within the TTL window return cached data without hitting the network.
+   130→    This is useful for the scanner loop and positions enrichment which both call this.
+   131→    """
+   132→    # Unified cross-scan cache: avoid re-fetching DEX venues on rapid repeated calls
+   133→    if cache_ttl_sec > 0:
+   134→        now = time.time()
+   135→        cached_venues: list[str] = []
+   136→        out: dict[str, dict[str, dict[str, Any]]] = {}
+   137→        for v in venues:
+   138→            entry = _FETCH_ALL_CACHE.get(v)
+   139→            if entry and now - entry[0] < cache_ttl_sec:
+   140→                for base, info in entry[1].items():
+   141→                    if base not in out:
+   142→                        out[base] = {}
+   143→                    out[base][v] = info
+   144→            else:
+   145→                cached_venues.append(v)
+   146→        if not cached_venues:
+   147→            return out  # all cached
+   148→        venues = cached_venues
+   149→    else:
+   150→        out = {}
+   151→
+   152→    def _fetch_one(venue: str) -> tuple[str, dict[str, dict[str, Any]]]:
+   153→        fp = get_funding_provider(venue)
+   154→        rows = fp.fetch_all("USDT")
+   155→        imap = fp.fetch_interval_map("USDT")
+   156→        by_base: dict[str, dict[str, Any]] = {}
+   157→        for r in rows:
+   158→            sym = str(r.get("symbol", "")).upper()
+   159→            if not sym.endswith("USDT"):
+   160→                continue
+   161→            base = _base_from_symbol(sym)
+   162→            if not base or base in SYMBOL_BLACKLIST:
+   163→                continue
+   164→            interval_h = float(imap.get(sym, 8.0) or 8.0)
+   165→            next_ts = int(r.get("next_funding_ts", 0) or 0)
+   166→            by_base[base] = {
+   167→                "symbol": sym,
+   168→                "rate_pct": float(r.get("rate_pct", 0.0)),
+   169→                "interval_h": interval_h,
+   170→                "next_funding_ts": next_ts,
+   171→                "last_settle_ts": infer_last_settle_ts(next_ts, interval_h),
+   172→                "mark_price": float(r.get("mark_price", 0.0) or 0.0),
+   173→                "index_price": float(r.get("index_price", 0.0) or 0.0),
+   174→            }
+   175→        return venue, by_base
+   176→
+   177→    fetched = run_io_parallel(
+   178→        venues, _fetch_one, max_workers=workers, swallow_errors=True, timeout=30.0
+   179→    )
+   180→    for venue, by_base in fetched.items():
+   181→        # Store in cache
+   182→        if cache_ttl_sec > 0:
+   183→            _FETCH_ALL_CACHE[venue] = (time.time(), by_base)
+   184→        for base, info in by_base.items():
+   185→            if base not in out:
+   186→                out[base] = {}
+   187→            out[base][venue] = info
+   188→    return out
+   189→
+   190→
+   191→def _backfill_missing_settle_times(
+   192→    by_base: dict[str, dict[str, dict[str, Any]]],
+   193→    venues: list[str],
+   194→    workers: int,
+   195→) -> None:
+   196→    """For entries with next_funding_ts==0 (Bitget bulk), backfill via per-symbol fetch_current."""
+   197→    missing: list[tuple[str, str, str]] = []  # (venue, symbol, base)
+   198→    for base, venue_map in by_base.items():
+   199→        for venue in venues:
+   200→            info = venue_map.get(venue)
+   201→            if info and not info.get("next_funding_ts"):
+   202→                missing.append((venue, info["symbol"], base))
+   203→    if not missing:
+   204→        return
+   205→
+   206→    def _fetch_one(
+   207→        args: tuple[str, str, str],
+   208→    ) -> tuple[tuple[str, str, str], dict[str, Any]]:
+   209→        venue, symbol, _base = args
+   210→        fp = get_funding_provider(venue)
+   211→        snap = fp.fetch_current(symbol)
+   212→        return args, snap
+   213→
+   214→    snap_map = run_io_parallel(
+   215→        missing, _fetch_one, max_workers=workers, swallow_errors=True
+   216→    )
+   217→    for venue, symbol, base in missing:
+   218→        snap = snap_map.get((venue, symbol, base))
+   219→        if not isinstance(snap, dict):
+   220→            continue
+   221→        info = by_base[base][venue]
+   222→        next_ts = int(snap.get("next_funding_ts", 0) or 0)
+   223→        if next_ts > 0:
+   224→            info["next_funding_ts"] = next_ts
+   225→        last_ts = int(snap.get("last_settle_ts", 0) or 0)
+   226→        if last_ts > 0:
+   227→            info["last_settle_ts"] = last_ts
+   228→        elif next_ts > 0:
+   229→            info["last_settle_ts"] = infer_last_settle_ts(
+   230→                next_ts, float(info.get("interval_h", 8.0) or 8.0)
+   231→            )
+   232→        idx = float(snap.get("index_price", 0) or 0)
+   233→        if idx > 0:
+   234→            info["index_price"] = idx
+   235→        mark = float(snap.get("mark_price", 0) or 0)
+   236→        if mark > 0 and not info.get("mark_price"):
+   237→            info["mark_price"] = mark
+   238→
+   239→
+   240→def _scan_spreads(
+   241→    by_base: dict[str, dict[str, dict[str, Any]]],
+   242→    min_spread: float,
+   243→    min_edge: float,
+   244→    fee_cache: dict[tuple[str, str], dict[str, float]] | None = None,
+   245→    max_mark_spread_pct: float = 1.0,
+   246→) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+   247→    """Compute pairwise perp-perp spreads across venues, return (forward, reverse)."""
+   248→    forward: list[dict[str, Any]] = []
+   249→    reverse: list[dict[str, Any]] = []
+   250→
+   251→    # Hoist now_ms out of the inner loop — funding timestamps resolve to
+   252→    # seconds/minutes, so one timestamp per scan is identical in effect.
+   253→    now_ms = int(time.time() * 1000)
+   254→
+   255→    for base, venue_map in by_base.items():
+   256→        vlist = sorted(venue_map.keys())
+   257→        for i, va in enumerate(vlist):
+   258→            for vb in vlist[i + 1 :]:
+   259→                ra = venue_map[va]
+   260→                rb = venue_map[vb]
+   261→                rate_a = float(ra["rate_pct"])
+   262→                rate_b = float(rb["rate_pct"])
+   263→                interval_a = float(ra.get("interval_h", 8.0) or 8.0)
+   264→                interval_b = float(rb.get("interval_h", 8.0) or 8.0)
+   265→
+   266→                # Cheap pre-filter: raw rate spread before building model.
+   267→                # This avoids ~2000 pair_pure_futures_spread calls for pairs
+   268→                # that can't possibly clear min_spread.
+   269→                raw_spread = abs(rate_a - rate_b)
+   270→                if raw_spread < min_spread * 0.5:
+   271→                    continue
+   272→
+   273→                # Perp-perp: short at higher rate (receives funding), long at lower (pays less).
+   274→                if rate_a >= rate_b:
+   275→                    short_venue, short_rate, short_info, short_interval = (
+   276→                        va,
+   277→                        rate_a,
+   278→                        ra,
+   279→                        interval_a,
+   280→                    )
+   281→                    long_venue, long_rate, long_info, long_interval = (
+   282→                        vb,
+   283→                        rate_b,
+   284→                        rb,
+   285→                        interval_b,
+   286→                    )
+   287→                else:
+   288→                    short_venue, short_rate, short_info, short_interval = (
+   289→                        vb,
+   290→                        rate_b,
+   291→                        rb,
+   292→                        interval_b,
+   293→                    )
+   294→                    long_venue, long_rate, long_info, long_interval = (
+   295→                        va,
+   296→                        rate_a,
+   297→                        ra,
+   298→                        interval_a,
+   299→                    )
+   300→
+   301→                now_ms_snapshot = now_ms  # use hoisted timestamp
+   302→                model = pair_pure_futures_spread(
+   303→                    long_rate_pct=long_rate,
+   304→                    long_interval_h=long_interval,
+   305→                    long_info=long_info,
+   306→                    long_venue=long_venue,
+   307→                    short_rate_pct=short_rate,
+   308→                    short_interval_h=short_interval,
+   309→                    short_info=short_info,
+   310→                    short_venue=short_venue,
+   311→                    now_ms=now_ms_snapshot,
+   312→                )
+   313→                is_mismatch = model["is_mismatch"]
+   314→                long_blend = model["long_blend"]
+   315→                short_blend = model["short_blend"]
+   316→                eff_interval = model["eff_interval_h"]
+   317→                spread = model["spread_pct"]
+   318→                if spread < min_spread:
+   319→                    continue
+   320→
+   321→                long_sym = str(long_info.get("symbol") or f"{base}USDT")
+   322→                short_sym = str(short_info.get("symbol") or f"{base}USDT")
+   323→                long_fee, short_fee, fee_pct = pair_open_taker_fee_pct(
+   324→                    long_venue,
+   325→                    long_sym,
+   326→                    short_venue,
+   327→                    short_sym,
+   328→                    fee_cache=fee_cache,
+   329→                )
+   330→
+   331→                net_edge = spread - fee_pct
+   332→                if net_edge < min_edge:
+   333→                    continue
+   334→
+   335→                # Categorize: forward (both positive or mixed), reverse (both negative)
+   336→                if long_rate < 0 and short_rate < 0:
+   337→                    direction = "reverse"
+   338→                else:
+   339→                    direction = "forward"
+   340→
+   341→                annual = _annual_from_rate(spread, eff_interval)
+   342→
+   343→                # Calculate mark price spread percentage
+   344→                long_mark = float(long_info.get("mark_price", 0.0) or 0.0)
+   345→                short_mark = float(short_info.get("mark_price", 0.0) or 0.0)
+   346→                mark_spread_pct = (
+   347→                    abs(long_mark - short_mark) / max(long_mark, short_mark) * 100.0
+   348→                    if max(long_mark, short_mark) > 0
+   349→                    else 0.0
+   350→                )
+   351→
+   352→                # Skip if mark price spread is too large（conservative pass when mark is 0）
+   353→                if mark_spread_pct > 0 and mark_spread_pct > max_mark_spread_pct:
+   354→                    continue
+   355→
+   356→                # net_apy_pct = gross APY minus one-time cost (round-trip fees + entry basis)
+   357→                one_time_cost = fee_pct * 2 + mark_spread_pct
+   358→                net_apy = round(annual - one_time_cost, 1)
+   359→
+   360→                entry: dict[str, Any] = {
+   361→                    "base": base,
+   362→                    "direction": direction,
+   363→                    "long_venue": long_venue,
+   364→                    "short_venue": short_venue,
+   365→                    "long_rate_pct": round(long_rate, 6),
+   366→                    "short_rate_pct": round(short_rate, 6),
+   367→                    "spread_pct": round(spread, 6),
+   368→                    "long_fee_pct": round(long_fee, 4),
+   369→                    "short_fee_pct": round(short_fee, 4),
+   370→                    "fee_pct": round(fee_pct, 4),
+   371→                    "round_trip_fee_pct": round(fee_pct * 2, 4),
+   372→                    "net_edge_pct": round(net_edge, 6),
+   373→                    "annual_apy_pct": round(annual, 1),
+   374→                    "net_apy_pct": net_apy,
+   375→                    "long_settle_ms": long_info.get("next_funding_ts", 0),
+   376→                    "short_settle_ms": short_info.get("next_funding_ts", 0),
+   377→                    "long_interval_h": float(long_info.get("interval_h", 8.0) or 8.0),
+   378→                    "short_interval_h": float(short_info.get("interval_h", 8.0) or 8.0),
+   379→                    "settle_mismatch": is_mismatch,
+   380→                    "same_interval": not is_mismatch,
+   381→                    "long_mark": long_mark,
+   382→                    "short_mark": short_mark,
+   383→                    "mark_spread_pct": round(mark_spread_pct, 6),
+   384→                    # Basis-adjusted edge: net funding edge minus the cross-venue
+   385→                    # mark divergence (a one-shot basis-risk discount). This is the
+   386→                    # primary ranking metric — high funding edge with high mark
+   387→                    # divergence (dislocated perp) is NOT a clean opportunity.
+   388→                    "real_edge_pct": round(net_edge - mark_spread_pct, 6),
+   389→                    "long_basis_pct": (
+   390→                        round(long_blend["basis_pct"], 6)
+   391→                        if long_blend.get("basis_pct") is not None
+   392→                        else None
+   393→                    ),
+   394→                    "short_basis_pct": (
+   395→                        round(short_blend["basis_pct"], 6)
+   396→                        if short_blend.get("basis_pct") is not None
+   397→                        else None
+   398→                    ),
+   399→                    "long_settle_progress": long_blend.get("settle_progress"),
+   400→                    "short_settle_progress": short_blend.get("settle_progress"),
+   401→                    "spread_source": model["spread_source"],
+   402→                }
+   403→
+   404→                if direction == "forward":
+   405→                    forward.append(entry)
+   406→                else:
+   407→                    reverse.append(entry)
+   408→
+   409→    # Rank by basis-adjusted real edge (not raw funding edge): a clean funding
+   410→    # inefficiency beats a large edge that sits on a dislocated mark price.
+   411→    forward.sort(key=lambda x: -x["real_edge_pct"])
+   412→    reverse.sort(key=lambda x: -x["real_edge_pct"])
+   413→    return forward, reverse
+   414→
+   415→
+   416→def _enrich_with_depth(
+   417→    entries: list[dict[str, Any]],
+   418→    *,
+   419→    top_n: int = DEFAULT_DEPTH_TOP_N,
+   420→    window_pct: float = DEFAULT_DEPTH_WINDOW_PCT,
+   421→    workers: int = DEFAULT_IO_WORKERS,
+   422→) -> None:
+   423→    """Add ``long_depth_usd`` / ``short_depth_usd`` / ``max_exec_usd`` to the top-N entries.
+   424→
+   425→    Mutates ``entries`` in place (each dict gets the four depth fields set;
+   426→    entries beyond ``top_n`` get ``None`` placeholders for symmetry).
+   427→
+   428→    Caches (venue, base) → book so a venue/base combo shared by many pairs is
+   429→    fetched at most once per scan. On fetch failure the entry's depth fields
+   430→    stay ``None`` and ``depth_ok=False`` — the scan never blocks on a thin
+   431→    or unresponsive book (same fail-open philosophy as ``check_pair_depth``).
+   432→    """
+   433→    # Rank by real_edge (the scan's primary ranking metric) and pick the top.
+   434→    ranked = sorted(entries, key=lambda x: -x.get("real_edge_pct", -1e9))
+   435→    targets = ranked[:top_n]
+   436→
+   437→    # Collect unique (venue, base) keys actually needed by the targets.
+   438→    needed: set[tuple[str, str]] = set()
+   439→    for e in targets:
+   440→        needed.add((e["long_venue"], e["base"]))
+   441→        needed.add((e["short_venue"], e["base"]))
+   442→    if not needed:
+   443→        for e in entries:
+   444→            e.setdefault("long_depth_usd", None)
+   445→            e.setdefault("short_depth_usd", None)
+   446→            e.setdefault("max_exec_usd", None)
+   447→            e.setdefault("depth_ok", None)
+   448→        return
+   449→
+   450→    def _fetch_one(key: tuple[str, str]) -> tuple[tuple[str, str], dict | None]:
+   451→        venue, base = key
+   452→        try:
+   453→            book = fetch_futures_depth(venue, base)
+   454→        except Exception:
+   455→            return key, None
+   456→        long_usd = depth_usd_within(book, "asks", window_pct)
+   457→        short_usd = depth_usd_within(book, "bids", window_pct)
+   458→        return key, {"asks_usd": long_usd, "bids_usd": short_usd}
+   459→
+   460→    cache: dict[tuple[str, str], dict | None] = run_io_parallel(
+   461→        list(needed),
+   462→        _fetch_one,
+   463→        max_workers=workers,
+   464→        swallow_errors=True,
+   465→    )
+   466→
+   467→    for e in entries:
+   468→        long_d = cache.get((e["long_venue"], e["base"]))
+   469→        short_d = cache.get((e["short_venue"], e["base"]))
+   470→        if e in targets:
+   471→            long_usd = long_d["asks_usd"] if long_d else None
+   472→            short_usd = short_d["bids_usd"] if short_d else None
+   473→            if long_usd is not None and short_usd is not None:
+   474→                max_exec = min(long_usd, short_usd)
+   475→                depth_ok = True
+   476→            else:
+   477→                max_exec = None
+   478→                depth_ok = False
+   479→            e["long_depth_usd"] = round(long_usd, 2) if long_usd is not None else None
+   480→            e["short_depth_usd"] = (
+   481→                round(short_usd, 2) if short_usd is not None else None
+   482→            )
+   483→            e["max_exec_usd"] = round(max_exec, 2) if max_exec is not None else None
+   484→            e["depth_ok"] = depth_ok
+   485→        else:
+   486→            e.setdefault("long_depth_usd", None)
+   487→            e.setdefault("short_depth_usd", None)
+   488→            e.setdefault("max_exec_usd", None)
+   489→            e.setdefault("depth_ok", None)
+   490→
+   491→
+   492→def scan_pure_futures_spreads(
+   493→    venues: list[str] | None = None,
+   494→    min_spread: float = DEFAULT_MIN_SPREAD,
+   495→    min_edge: float = DEFAULT_MIN_EDGE,
+   496→    max_mark_spread_pct: float = 1.0,
+   497→    workers: int = DEFAULT_IO_WORKERS,
+   498→    fee_policy: dict[str, Any] | None = None,
+   499→    with_depth: bool = True,
+   500→    depth_top_n: int = DEFAULT_DEPTH_TOP_N,
+   501→    depth_window_pct: float = DEFAULT_DEPTH_WINDOW_PCT,
+   502→) -> dict[str, Any]:
+   503→    """Main entry point — scan and return structured results."""
+   504→    if venues is None:
+   505→        venues = ["binance", "bitget", "bybit", "okx"]
+   506→
+   507→    by_base = fetch_all_fee_rate_rows_by_base(venues, workers, cache_ttl_sec=30.0)
+   508→    _backfill_missing_settle_times(by_base, venues, workers)
+   509→    policy = parse_fee_policy(fee_policy)
+   510→    fee_cache = build_policy_futures_cache(by_base, policy, workers=workers)
+   511→
+   512→    forward, reverse = _scan_spreads(
+   513→        by_base, min_spread, min_edge, fee_cache, max_mark_spread_pct
+   514→    )
+   515→
+   516→    # Liquidity context — only fetched for the top-N entries to bound latency.
+   517→    # Disabled in unit tests / fast scans via with_depth=False.
+   518→    if with_depth and (forward or reverse):
+   519→        _enrich_with_depth(
+   520→            forward + reverse,
+   521→            top_n=depth_top_n,
+   522→            window_pct=depth_window_pct,
+   523→            workers=workers,
+   524→        )
+   525→
+   526→    # Compute venue-level stats
+   527→    venue_pairs: dict[str, int] = {}
+   528→    for entry in forward + reverse:
+   529→        key = f"{entry['long_venue']}↔{entry['short_venue']}"
+   530→        venue_pairs[key] = venue_pairs.get(key, 0) + 1
+   531→
+   532→    return {
+   533→        "venues": venues,
+   534→        "total_assets_scanned": len(by_base),
+   535→        "total_spreads_found": len(forward) + len(reverse),
+   536→        "forward": forward,
+   537→        "reverse": reverse,
+   538→        "venue_pair_stats": sorted(
+   539→            [{"pair": k, "count": v} for k, v in venue_pairs.items()],
+   540→            key=lambda x: -x["count"],
+   541→        ),
+   542→        "timestamp": datetime.now(TZ_UTC).isoformat(),
+   543→    }
+   544→
+   545→
+   546→def _print_human(result: dict[str, Any], verbose: bool = False) -> None:
+   547→    venues = result["venues"]
+   548→    fwd = result["forward"]
+   549→    rev = result["reverse"]
+   550→    now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
+   551→
+   552→    print(f"\n{'=' * 100}")
+   553→    print(
+   554→        f"PURE-FUTURES SPREAD  —  {now}  "
+   555→        f"venues=[{','.join(venues)}]  assets={result['total_assets_scanned']}"
+   556→    )
+   557→    print(f"{'=' * 100}")
+   558→
+   559→    if fwd:
+   560→        print(
+   561→            f"\n  FORWARD (long@higher-rate  short@lower-rate) — {len(fwd)} candidates:"
+   562→        )
+   563→        print(
+   564→            f"  {'asset':<10s} {'long@':>8s} {'short@':>8s} "
+   565→            f"{'long_rate':>10s} {'short_rate':>10s} {'spread':>8s} "
+   566→            f"{'fee':>6s} {'net_edge':>9s} {'APY':>7s} {'mark_diff':>10s} "
+   567→            f"{'max_exec':>10s} {'settle':>18s}"
+   568→        )
+   569→        print(
+   570→            f"  {'-' * 10} {'-' * 8} {'-' * 8} {'-' * 10} {'-' * 10} {'-' * 8} "
+   571→            f"{'-' * 6} {'-' * 9} {'-' * 7} {'-' * 10} {'-' * 10} {'-' * 18}"
+   572→        )
+   573→        for x in fwd[: verbose and 50 or 20]:
+   574→            settle = (
+   575→                f"L={_mins_to_settle(x['long_settle_ms'])} "
+   576→                f"S={_mins_to_settle(x['short_settle_ms'])}"
+   577→            )
+   578→            if x.get("settle_mismatch"):
+   579→                settle += " ⚠️"
+   580→            mark_spread = x.get("mark_spread_pct", 0.0)
+   581→            mark_str = f"{mark_spread:9.4f}%" if mark_spread > 0 else "      N/A"
+   582→            max_exec = x.get("max_exec_usd")
+   583→            exec_str = _fmt_depth_usd(max_exec)
+   584→            print(
+   585→                f"  {x['base']:<10s} {x['long_venue']:>8s} {x['short_venue']:>8s} "
+   586→                f"{x['long_rate_pct']:+9.4f}% {x['short_rate_pct']:+9.4f}% "
+   587→                f"{x['spread_pct']:7.4f}% {x['fee_pct']:5.3f}% "
+   588→                f"{x['net_edge_pct']:+8.4f}% {x['annual_apy_pct']:6.0f}% "
+   589→                f"{mark_str} {exec_str:>10s} {settle}"
+   590→            )
+   591→        if len(fwd) > 20 and not verbose:
+   592→            print(f"  ... ({len(fwd) - 20} more, use --verbose to see all)")
+   593→
+   594→    if rev:
+   595→        print(
+   596→            f"\n  REVERSE (long@more-negative  short@less-negative) — {len(rev)} candidates:"
+   597→        )
+   598→        print(
+   599→            f"  {'asset':<10s} {'long@':>8s} {'short@':>8s} "
+   600→            f"{'long_rate':>10s} {'short_rate':>10s} {'spread':>8s} "
+   601→            f"{'fee':>6s} {'net_edge':>9s} {'APY':>7s} {'mark_diff':>10s} "
+   602→            f"{'max_exec':>10s} {'settle':>18s}"
+   603→        )
+   604→        print(
+   605→            f"  {'-' * 10} {'-' * 8} {'-' * 8} {'-' * 10} {'-' * 10} {'-' * 8} "
+   606→            f"{'-' * 6} {'-' * 9} {'-' * 7} {'-' * 10} {'-' * 10} {'-' * 18}"
+   607→        )
+   608→        for x in rev[: verbose and 50 or 20]:
+   609→            settle = (
+   610→                f"L={_mins_to_settle(x['long_settle_ms'])} "
+   611→                f"S={_mins_to_settle(x['short_settle_ms'])}"
+   612→            )
+   613→            if x.get("settle_mismatch"):
+   614→                settle += " ⚠️"
+   615→            mark_spread = x.get("mark_spread_pct", 0.0)
+   616→            mark_str = f"{mark_spread:9.4f}%" if mark_spread > 0 else "      N/A"
+   617→            max_exec = x.get("max_exec_usd")
+   618→            exec_str = _fmt_depth_usd(max_exec)
+   619→            print(
+   620→                f"  {x['base']:<10s} {x['long_venue']:>8s} {x['short_venue']:>8s} "
+   621→                f"{x['long_rate_pct']:+9.4f}% {x['short_rate_pct']:+9.4f}% "
+   622→                f"{x['spread_pct']:7.4f}% {x['fee_pct']:5.3f}% "
+   623→                f"{x['net_edge_pct']:+8.4f}% {x['annual_apy_pct']:6.0f}% "
+   624→                f"{mark_str} {exec_str:>10s} {settle}"
+   625→            )
+   626→        if len(rev) > 20 and not verbose:
+   627→            print(f"  ... ({len(rev) - 20} more, use --verbose to see all)")
+   628→
+   629→    if not fwd and not rev:
+   630→        print(
+   631→            f"\n  No spreads above min_spread={result.get('min_spread', 'N/A')}%. Try lowering --min-spread."
+   632→        )
+   633→    else:
+   634→        pairs = result.get("venue_pair_stats", [])
+   635→        if pairs and verbose:
+   636→            print("\n  VENUE PAIR FREQUENCY (top 10):")
+   637→            for p in pairs[:10]:
+   638→                print(f"    {p['pair']:<16s} {p['count']} pairs")
+   639→
+   640→    fwd_profitable = len([x for x in fwd if x["net_edge_pct"] > 0])
+   641→    rev_profitable = len([x for x in rev if x["net_edge_pct"] > 0])
+   642→    fmt_mismatch = len([x for x in fwd + rev if x.get("settle_mismatch")])
+   643→    print(
+   644→        f"\n  SUMMARY: forward={len(fwd)}({fwd_profitable} profitable)  "
+   645→        f"reverse={len(rev)}({rev_profitable} profitable)  "
+   646→        f"settle_mismatch={fmt_mismatch}"
+   647→    )
+   648→
+   649→
+   650→def _append_jsonl(jsonl_path: str, result: dict[str, Any]) -> None:
+   651→    p = Path(jsonl_path)
+   652→    p.parent.mkdir(parents=True, exist_ok=True)
+   653→    with open(p, "a", encoding="utf-8") as f:
+   654→        f.write(json.dumps(result, ensure_ascii=False) + "\n")
+   655→
+   656→
+   657→def main() -> None:
+   658→    parser = argparse.ArgumentParser(
+   659→        description="Pure perpetual futures funding spread scanner"
+   660→    )
+   661→    parser.add_argument(
+   662→        "--venues",
+   663→        default=None,
+   664→        help=(
+   665→            "Comma-separated venues (default: CEX+HL; "
+   666→            "available CEX: binance,bitget,bybit,okx; "
+   667→            "available DEX: hyperliquid,aster,lighter,edgex,dydx)"
+   668→        ),
+   669→    )
+   670→    parser.add_argument(
+   671→        "--include-dex",
+   672→        action="store_true",
+   673→        help="Include all perp DEX venues (hyperliquid,aster,lighter,edgex,dydx) in addition to CEX defaults",
+   674→    )
+   675→    parser.add_argument(
+   676→        "--min-spread",
+   677→        type=float,
+   678→        default=DEFAULT_MIN_SPREAD,
+   679→        help=f"Minimum rate spread %% (default {DEFAULT_MIN_SPREAD}%%)",
+   680→    )
+   681→    parser.add_argument(
+   682→        "--min-edge",
+   683→        type=float,
+   684→        default=DEFAULT_MIN_EDGE,
+   685→        help=f"Minimum net edge %% after fees (default {DEFAULT_MIN_EDGE}%%)",
+   686→    )
+   687→    parser.add_argument(
+   688→        "--workers",
+   689→        "-w",
+   690→        type=int,
+   691→        default=DEFAULT_IO_WORKERS,
+   692→        help="Parallel I/O workers",
+   693→    )
+   694→    parser.add_argument(
+   695→        "--max-mark-spread",
+   696→        type=float,
+   697→        default=1.0,
+   698→        help="Max mark price spread %% between venues (default 1.0%%)",
+   699→    )
+   700→    parser.add_argument(
+   701→        "--with-depth",
+   702→        dest="with_depth",
+   703→        action="store_true",
+   704→        default=True,
+   705→        help="Enrich top-N entries with order-book depth (long/short/max_exec USD). Default on.",
+   706→    )
+   707→    parser.add_argument(
+   708→        "--no-depth",
+   709→        dest="with_depth",
+   710→        action="store_false",
+   711→        help="Skip depth enrichment (faster scan, no liquidity fields in output).",
+   712→    )
+   713→    parser.add_argument(
+   714→        "--depth-top",
+   715→        type=int,
+   716→        default=DEFAULT_DEPTH_TOP_N,
+   717→        help=f"How many top entries to enrich with depth (default {DEFAULT_DEPTH_TOP_N})",
+   718→    )
+   719→    parser.add_argument("--verbose", "-V", action="store_true", help="Show all results")
+   720→    parser.add_argument("--json", action="store_true", help="JSON output (single scan)")
+   721→    parser.add_argument(
+   722→        "--watch",
+   723→        type=float,
+   724→        const=DEFAULT_WATCH_INTERVAL,
+   725→        nargs="?",
+   726→        metavar="MINUTES",
+   727→        help=f"Run continuously every N minutes (default {DEFAULT_WATCH_INTERVAL}m), append JSONL",
+   728→    )
+   729→    parser.add_argument(
+   730→        "--jsonl-file",
+   731→        default=DEFAULT_JSONL_FILE,
+   732→        help=f"JSONL output file (default {DEFAULT_JSONL_FILE})",
+   733→    )
+   734→    args = parser.parse_args()
+   735→
+   736→    _DEFAULT_CEX = ["binance", "bitget", "bybit", "okx"]
+   737→    _DEFAULT_DEX = ["hyperliquid", "aster", "lighter", "edgex", "dydx"]
+   738→    if args.venues:
+   739→        venues = [v.strip().lower() for v in args.venues.split(",") if v.strip()]
+   740→    elif args.include_dex:
+   741→        venues = _DEFAULT_CEX + _DEFAULT_DEX
+   742→    else:
+   743→        venues = _DEFAULT_CEX + ["hyperliquid"]
+   744→
+   745→    if args.watch:
+   746→        interval_min = float(args.watch)
+   747→        print(
+   748→            f"Watch mode: scanning every {interval_min:.1f}m → {args.jsonl_file}",
+   749→            file=sys.stderr,
+   750→        )
+   751→        print("Press Ctrl+C to stop.", file=sys.stderr)
+   752→        while True:
+   753→            try:
+   754→                t0 = time.time()
+   755→                result = scan_pure_futures_spreads(
+   756→                    venues=venues,
+   757→                    min_spread=args.min_spread,
+   758→                    min_edge=args.min_edge,
+   759→                    max_mark_spread_pct=args.max_mark_spread,
+   760→                    workers=args.workers,
+   761→                    with_depth=args.with_depth,
+   762→                    depth_top_n=args.depth_top,
+   763→                )
+   764→                result["min_spread"] = args.min_spread
+   765→                result["min_edge"] = args.min_edge
+   766→                elapsed = time.time() - t0
+   767→                result["elapsed_sec"] = round(elapsed, 2)
+   768→                _append_jsonl(args.jsonl_file, result)
+   769→                print(
+   770→                    f"[{datetime.now(TZ).strftime('%H:%M:%S')}] "
+   771→                    f"{result['total_spreads_found']} spreads "
+   772→                    f"({len(result['forward'])}fwd {len(result['reverse'])}rev) "
+   773→                    f"in {elapsed:.1f}s",
+   774→                    file=sys.stderr,
+   775→                )
+   776→                _print_human(result, verbose=args.verbose)
+   777→                time.sleep(max(0, interval_min * 60 - elapsed))
+   778→            except KeyboardInterrupt:
+   779→                print("\nStopped.", file=sys.stderr)
+   780→                break
+   781→            except Exception as e:
+   782→                print(f"Scan error: {e}", file=sys.stderr)
+   783→                time.sleep(60)
+   784→        return
+   785→
+   786→    # Single scan
+   787→    t0 = time.time()
+   788→    print(f"Fetching {len(venues)} venues...", file=sys.stderr)
+   789→    result = scan_pure_futures_spreads(
+   790→        venues=venues,
+   791→        min_spread=args.min_spread,
+   792→        min_edge=args.min_edge,
+   793→        max_mark_spread_pct=args.max_mark_spread,
+   794→        workers=args.workers,
+   795→        with_depth=args.with_depth,
+   796→        depth_top_n=args.depth_top,
+   797→    )
+   798→    elapsed = time.time() - t0
+   799→    result["min_spread"] = args.min_spread
+   800→    result["min_edge"] = args.min_edge
+   801→    result["elapsed_sec"] = round(elapsed, 2)
+   802→    print(f"Done in {elapsed:.1f}s", file=sys.stderr)
+   803→
+   804→    if args.json:
+   805→        out_rows: list[dict[str, Any]] = []
+   806→        for x in result["forward"]:
+   807→            x["direction"] = "forward"
+   808→            out_rows.append(x)
+   809→        for x in result["reverse"]:
+   810→            x["direction"] = "reverse"
+   811→            out_rows.append(x)
+   812→        out_rows.sort(key=lambda x: -x["net_edge_pct"])
+   813→        print(
+   814→            json.dumps(
+   815→                {
+   816→                    "timestamp": result["timestamp"],
+   817→                    "venues": result["venues"],
+   818→                    "total_assets": result["total_assets_scanned"],
+   819→                    "min_spread": args.min_spread,
+   820→                    "min_edge": args.min_edge,
+   821→                    "elapsed_sec": elapsed,
+   822→                    "spreads": out_rows,
+   823→                },
+   824→                ensure_ascii=False,
+   825→                indent=2,
+   826→            )
+   827→        )
+   828→    else:
+   829→        _print_human(result, verbose=args.verbose)
+   830→
+   831→
+   832→if __name__ == "__main__":
+   833→    main()
+   834→

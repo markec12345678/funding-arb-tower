@@ -1,0 +1,763 @@
+     1→#!/usr/bin/env python3
+     2→"""Per-symbol USDT-M perpetual fee rates from exchange account APIs.
+     3→
+     4→Rates are returned as **percentage points** (0.06 = 0.06%, not 0.0006).
+     5→Falls back to venue defaults when API is unavailable.
+     6→"""
+     7→
+     8→from __future__ import annotations
+     9→
+    10→import os
+    11→import time
+    12→from typing import Any, Callable
+    13→
+    14→from core.vip_fee_tiers import tier_rates
+    15→from market.parallel_fetch import run_io_parallel
+    16→
+    17→# Venue-level VIP0 defaults (percentage points) — fallback only
+    18→DEFAULT_TAKER_PCT: dict[str, float] = {
+    19→    "bitget": 0.06,
+    20→    "binance": 0.05,
+    21→    "okx": 0.05,
+    22→    "bybit": 0.055,
+    23→    "hyperliquid": 0.045,  # HL base cross rate (userFees userCrossRate=0.00045); was a stale 0.035
+    24→    "aster": 0.04,  # Aster perp taker VIP0 (0.04% per official docs)
+    25→    "lighter": 0.0,  # Lighter currently zero-fee (orderBookDetails taker_fee=0)
+    26→    "edgex": 0.038,  # EdgeX defaultTakerFeeRate=0.00038 (getMetaData)
+    27→    "dydx": 0.05,  # dYdX v4 default taker ~5 bps (scan-only until wallet adapter)
+    28→}
+    29→
+    30→DEFAULT_MAKER_PCT: dict[str, float] = {
+    31→    "bitget": 0.02,
+    32→    "binance": 0.02,
+    33→    "okx": 0.02,
+    34→    "bybit": 0.02,
+    35→    "hyperliquid": 0.01,
+    36→    "aster": 0.0,  # Aster perp maker 0% per official docs
+    37→    "lighter": 0.0,
+    38→    "edgex": 0.0,
+    39→    "dydx": 0.0,
+    40→}
+    41→
+    42→# Spot VIP0 defaults (percentage points) — cash-and-carry spot leg
+    43→DEFAULT_SPOT_TAKER_PCT: dict[str, float] = {
+    44→    "bitget": 0.1,
+    45→    "binance": 0.1,
+    46→    "okx": 0.1,
+    47→    "bybit": 0.1,
+    48→}
+    49→
+    50→# Backward-compatible alias used by scanners / history backfill
+    51→FUTURES_TAKER_FEE_PCT = dict(DEFAULT_TAKER_PCT)
+    52→
+    53→_CACHE: dict[tuple[str, str], tuple[float, dict[str, float]]] = {}
+    54→_SPOT_CACHE: dict[tuple[str, str], tuple[float, dict[str, float]]] = {}
+    55→_CACHE_TTL_SEC = 3600
+    56→
+    57→
+    58→def normalize_symbol(symbol: str) -> str:
+    59→    return symbol.upper().replace("-USDT-SWAP", "USDT").replace("-USDT", "USDT")
+    60→
+    61→
+    62→def _decimal_to_pct(rate: float | str) -> float:
+    63→    v = abs(float(rate))
+    64→    if v < 0.01:
+    65→        return v * 100.0
+    66→    return v
+    67→
+    68→
+    69→def _okx_inst_family(symbol: str) -> str:
+    70→    sym = normalize_symbol(symbol)
+    71→    if sym.endswith("USDT"):
+    72→        return f"{sym[:-4]}-USDT"
+    73→    return sym
+    74→
+    75→
+    76→def _fetch_bitget(symbol: str) -> dict[str, float]:
+    77→    from venues.bitget import _api_call
+    78→
+    79→    r = _api_call(
+    80→        "GET",
+    81→        "/api/v2/common/trade-rate",
+    82→        params={"symbol": normalize_symbol(symbol), "businessType": "mix"},
+    83→    )
+    84→    d = r.get("data") or {}
+    85→    if isinstance(d, list) and d:
+    86→        d = d[0]
+    87→    return {
+    88→        "taker_pct": _decimal_to_pct(d.get("takerFeeRate", 0.0006)),
+    89→        "maker_pct": _decimal_to_pct(d.get("makerFeeRate", 0.0002)),
+    90→    }
+    91→
+    92→
+    93→def _fetch_bybit(symbol: str) -> dict[str, float]:
+    94→    from venues.bybit import _api_call
+    95→
+    96→    r = _api_call(
+    97→        "GET",
+    98→        "/v5/account/fee-rate",
+    99→        params={"category": "linear", "symbol": normalize_symbol(symbol)},
+   100→    )
+   101→    lst = r.get("result", {}).get("list") or [{}]
+   102→    d = lst[0]
+   103→    return {
+   104→        "taker_pct": _decimal_to_pct(d.get("takerFeeRate", 0.00055)),
+   105→        "maker_pct": _decimal_to_pct(d.get("makerFeeRate", 0.0002)),
+   106→    }
+   107→
+   108→
+   109→def _fetch_okx(symbol: str) -> dict[str, float]:
+   110→    from venues.okx import _api_call
+   111→
+   112→    family = _okx_inst_family(symbol)
+   113→    try:
+   114→        r = _api_call(
+   115→            "GET",
+   116→            "/api/v5/account/trade-fee",
+   117→            params={"instType": "SWAP", "instFamily": family},
+   118→        )
+   119→    except Exception:
+   120→        r = _api_call("GET", "/api/v5/account/trade-fee", params={"instType": "SWAP"})
+   121→    d = (r.get("data") or [{}])[0]
+   122→    taker = d.get("takerU") or d.get("taker") or "0.0005"
+   123→    maker = d.get("makerU") or d.get("maker") or "0.0002"
+   124→    return {
+   125→        "taker_pct": _decimal_to_pct(taker),
+   126→        "maker_pct": _decimal_to_pct(maker),
+   127→    }
+   128→
+   129→
+   130→def _fetch_binance(symbol: str) -> dict[str, float]:
+   131→    from venues.binance import _api_call
+   132→
+   133→    r = _api_call(
+   134→        "GET",
+   135→        "/fapi/v1/commissionRate",
+   136→        {"symbol": normalize_symbol(symbol)},
+   137→        signed=True,
+   138→    )
+   139→    return {
+   140→        "taker_pct": _decimal_to_pct(r.get("takerCommissionRate", 0.0005)),
+   141→        "maker_pct": _decimal_to_pct(r.get("makerCommissionRate", 0.0002)),
+   142→    }
+   143→
+   144→
+   145→# ---------------------------------------------------------------------------
+   146→# Perp-DEX fee fetchers — public data, no account credentials required.
+   147→# These replace stale hardcoded defaults so the scanner uses live venue fees.
+   148→# ---------------------------------------------------------------------------
+   149→
+   150→# Venues whose real fees are fetchable from public endpoints (no API keys).
+   151→_PUBLIC_FEE_VENUES = frozenset({"hyperliquid", "lighter", "edgex", "dydx"})
+   152→
+   153→_HL_FEE_CACHE: tuple[float, dict[str, float]] | None = None
+   154→_HL_FEE_TTL_SEC = 3600.0
+   155→
+   156→
+   157→def _fetch_hyperliquid(symbol: str) -> dict[str, float]:
+   158→    """Hyperliquid fees via the public `userFees` info endpoint (account-wide).
+   159→
+   160→    Effective rate = base tier rate × (1 − staking discount) × (1 − referral
+   161→    discount), per the docs (multiplicative). With HYPERLIQUID_ADDRESS set the
+   162→    rate reflects that account's HYPE-staking tier; otherwise the zero address
+   163→    returns the base schedule. Cached account-wide (fee is not per-symbol).
+   164→    """
+   165→    global _HL_FEE_CACHE
+   166→    now = time.time()
+   167→    if _HL_FEE_CACHE and now - _HL_FEE_CACHE[0] < _HL_FEE_TTL_SEC:
+   168→        return dict(_HL_FEE_CACHE[1])
+   169→
+   170→    import json as _json
+   171→    import urllib.request
+   172→
+   173→    addr = (
+   174→        os.environ.get("HYPERLIQUID_ADDRESS")
+   175→        or os.environ.get("HYPERLIQUID_PUBLIC_ADDRESS")
+   176→        or "0x0000000000000000000000000000000000000000"
+   177→    ).strip()
+   178→    body = _json.dumps({"type": "userFees", "user": addr}).encode()
+   179→    req = urllib.request.Request(
+   180→        "https://api.hyperliquid.xyz/info",
+   181→        data=body,
+   182→        headers={"Content-Type": "application/json"},
+   183→    )
+   184→    with urllib.request.urlopen(req, timeout=15) as resp:
+   185→        d = _json.loads(resp.read().decode())
+   186→
+   187→    taker = float(d.get("userCrossRate", 0.00045) or 0.00045)
+   188→    maker = float(d.get("userAddRate", 0.00015) or 0.00015)
+   189→    staking = float((d.get("activeStakingDiscount") or {}).get("discount", 0) or 0)
+   190→    referral = float(d.get("activeReferralDiscount", 0) or 0)
+   191→    rates = {
+   192→        "taker_pct": taker * 100.0 * (1 - staking) * (1 - referral),
+   193→        "maker_pct": maker * 100.0 * (1 - staking),
+   194→    }
+   195→    _HL_FEE_CACHE = (now, rates)
+   196→    return dict(rates)
+   197→
+   198→
+   199→def _fetch_lighter(symbol: str) -> dict[str, float]:
+   200→    """Lighter per-market fees from orderBookDetails (decimal fractions → pct)."""
+   201→    from venues.lighter_funding import LighterFundingProvider
+   202→
+   203→    base = normalize_symbol(symbol).removesuffix("USDT")
+   204→    meta = LighterFundingProvider().market_meta_for_base(base)
+   205→    if meta is None:
+   206→        raise RuntimeError(f"lighter market meta unavailable for {base}")
+   207→    return {
+   208→        "taker_pct": _decimal_to_pct(meta.get("taker_fee", 0.0)),
+   209→        "maker_pct": _decimal_to_pct(meta.get("maker_fee", 0.0)),
+   210→    }
+   211→
+   212→
+   213→def _fetch_edgex(symbol: str) -> dict[str, float]:
+   214→    """EdgeX per-contract taker from metadata defaultTakerFeeRate (already pct)."""
+   215→    from venues.edgex_funding import EdgexFundingProvider
+   216→
+   217→    base = normalize_symbol(symbol).removesuffix("USDT")
+   218→    meta = EdgexFundingProvider().contract_meta_for_base(base)
+   219→    if meta is None:
+   220→        raise RuntimeError(f"edgex contract meta unavailable for {base}")
+   221→    return {
+   222→        "taker_pct": float(meta.get("taker_pct", DEFAULT_TAKER_PCT["edgex"])),
+   223→        "maker_pct": DEFAULT_MAKER_PCT.get("edgex", 0.0),
+   224→    }
+   225→
+   226→
+   227→def _fetch_dydx(symbol: str) -> dict[str, float]:
+   228→    """dYdX v4 fees — defaults (fee tiers are on-chain, not public REST).
+   229→
+   230→    The default taker fee is 5 bps (0.05%). Fee tiers are volume-based
+   231→    and require on-chain query; we use the default tier here.
+   232→    """
+   233→    return {
+   234→        "taker_pct": DEFAULT_TAKER_PCT["dydx"],
+   235→        "maker_pct": DEFAULT_MAKER_PCT.get("dydx", 0.0),
+   236→    }
+   237→
+   238→
+   239→_FETCHERS: dict[str, Callable[[str], dict[str, float]]] = {
+   240→    "bitget": _fetch_bitget,
+   241→    "bybit": _fetch_bybit,
+   242→    "okx": _fetch_okx,
+   243→    "binance": _fetch_binance,
+   244→    "hyperliquid": _fetch_hyperliquid,
+   245→    "lighter": _fetch_lighter,
+   246→    "edgex": _fetch_edgex,
+   247→    "dydx": _fetch_dydx,
+   248→}
+   249→
+   250→
+   251→def _fetch_binance_spot(symbol: str) -> dict[str, float]:
+   252→    from venues.binance import _api_call
+   253→
+   254→    rows = _api_call(
+   255→        "GET",
+   256→        "/sapi/v1/asset/tradeFee",
+   257→        {"symbol": normalize_symbol(symbol)},
+   258→        signed=True,
+   259→    )
+   260→    row = rows[0] if isinstance(rows, list) and rows else {}
+   261→    return {
+   262→        "taker_pct": _decimal_to_pct(row.get("takerCommission", 0.001)),
+   263→        "maker_pct": _decimal_to_pct(row.get("makerCommission", 0.001)),
+   264→    }
+   265→
+   266→
+   267→def _fetch_bitget_spot(symbol: str) -> dict[str, float]:
+   268→    from venues.bitget import _api_call
+   269→
+   270→    r = _api_call(
+   271→        "GET",
+   272→        "/api/v2/common/trade-rate",
+   273→        params={"symbol": normalize_symbol(symbol), "businessType": "spot"},
+   274→    )
+   275→    d = r.get("data") or {}
+   276→    if isinstance(d, list) and d:
+   277→        d = d[0]
+   278→    return {
+   279→        "taker_pct": _decimal_to_pct(d.get("takerFeeRate", 0.001)),
+   280→        "maker_pct": _decimal_to_pct(d.get("makerFeeRate", 0.001)),
+   281→    }
+   282→
+   283→
+   284→def _fetch_bybit_spot(symbol: str) -> dict[str, float]:
+   285→    from venues.bybit import _api_call
+   286→
+   287→    r = _api_call(
+   288→        "GET",
+   289→        "/v5/account/fee-rate",
+   290→        params={"category": "spot", "symbol": normalize_symbol(symbol)},
+   291→    )
+   292→    lst = r.get("result", {}).get("list") or [{}]
+   293→    d = lst[0]
+   294→    return {
+   295→        "taker_pct": _decimal_to_pct(d.get("takerFeeRate", 0.001)),
+   296→        "maker_pct": _decimal_to_pct(d.get("makerFeeRate", 0.001)),
+   297→    }
+   298→
+   299→
+   300→def _fetch_okx_spot(symbol: str) -> dict[str, float]:
+   301→    from venues.okx import _api_call
+   302→
+   303→    family = _okx_inst_family(symbol)
+   304→    try:
+   305→        r = _api_call(
+   306→            "GET",
+   307→            "/api/v5/account/trade-fee",
+   308→            params={"instType": "SPOT", "instFamily": family},
+   309→        )
+   310→    except Exception:
+   311→        r = _api_call("GET", "/api/v5/account/trade-fee", params={"instType": "SPOT"})
+   312→    d = (r.get("data") or [{}])[0]
+   313→    taker = d.get("takerU") or d.get("taker") or "0.001"
+   314→    maker = d.get("makerU") or d.get("maker") or "0.001"
+   315→    return {
+   316→        "taker_pct": _decimal_to_pct(taker),
+   317→        "maker_pct": _decimal_to_pct(maker),
+   318→    }
+   319→
+   320→
+   321→_SPOT_FETCHERS: dict[str, Callable[[str], dict[str, float]]] = {
+   322→    "bitget": _fetch_bitget_spot,
+   323→    "bybit": _fetch_bybit_spot,
+   324→    "okx": _fetch_okx_spot,
+   325→    "binance": _fetch_binance_spot,
+   326→}
+   327→
+   328→
+   329→def default_taker_pct(venue: str) -> float:
+   330→    return DEFAULT_TAKER_PCT.get(venue.lower(), 0.06)
+   331→
+   332→
+   333→def default_spot_taker_pct(venue: str) -> float:
+   334→    return DEFAULT_SPOT_TAKER_PCT.get(venue.lower(), 0.1)
+   335→
+   336→
+   337→def fetch_futures_fee_rates(
+   338→    venue: str,
+   339→    symbol: str,
+   340→    *,
+   341→    use_cache: bool = True,
+   342→) -> dict[str, float]:
+   343→    """Fetch {taker_pct, maker_pct} for one venue + symbol."""
+   344→    v = venue.lower()
+   345→    sym = normalize_symbol(symbol)
+   346→    key = (v, sym)
+   347→    now = time.time()
+   348→    if use_cache and key in _CACHE:
+   349→        ts, rates = _CACHE[key]
+   350→        if now - ts < _CACHE_TTL_SEC:
+   351→            return dict(rates)
+   352→
+   353→    fetcher = _FETCHERS.get(v)
+   354→    if fetcher:
+   355→        try:
+   356→            rates = fetcher(sym)
+   357→            _CACHE[key] = (now, rates)
+   358→            return dict(rates)
+   359→        except Exception:
+   360→            pass
+   361→
+   362→    return {
+   363→        "taker_pct": default_taker_pct(v),
+   364→        "maker_pct": DEFAULT_MAKER_PCT.get(v, 0.02),
+   365→    }
+   366→
+   367→
+   368→def fetch_spot_fee_rates(
+   369→    venue: str,
+   370→    symbol: str,
+   371→    *,
+   372→    use_cache: bool = True,
+   373→) -> dict[str, float]:
+   374→    """Fetch {taker_pct, maker_pct} for one venue + spot symbol."""
+   375→    v = venue.lower()
+   376→    sym = normalize_symbol(symbol)
+   377→    key = (v, sym)
+   378→    now = time.time()
+   379→    if use_cache and key in _SPOT_CACHE:
+   380→        ts, rates = _SPOT_CACHE[key]
+   381→        if now - ts < _CACHE_TTL_SEC:
+   382→            return dict(rates)
+   383→
+   384→    fetcher = _SPOT_FETCHERS.get(v)
+   385→    if fetcher:
+   386→        try:
+   387→            rates = fetcher(sym)
+   388→            _SPOT_CACHE[key] = (now, rates)
+   389→            return dict(rates)
+   390→        except Exception:
+   391→            pass
+   392→
+   393→    return {
+   394→        "taker_pct": default_spot_taker_pct(v),
+   395→        "maker_pct": default_spot_taker_pct(v),
+   396→    }
+   397→
+   398→
+   399→def prefetch_spot_fee_rates(
+   400→    pairs: list[tuple[str, str]],
+   401→    *,
+   402→    workers: int = 8,
+   403→) -> dict[tuple[str, str], dict[str, float]]:
+   404→    """Parallel prefetch spot fee rates. pairs = [(venue, symbol), ...].
+   405→
+   406→    Checks _SPOT_CACHE first; only fetches stale/missing entries.
+   407→    """
+   408→    unique = list({(v.lower(), normalize_symbol(s)) for v, s in pairs})
+   409→    now = time.time()
+   410→
+   411→    cached: dict[tuple[str, str], dict[str, float]] = {}
+   412→    stale: list[tuple[str, str]] = []
+   413→    for item in unique:
+   414→        entry = _SPOT_CACHE.get(item)
+   415→        if entry and now - entry[0] < _CACHE_TTL_SEC:
+   416→            cached[item] = dict(entry[1])
+   417→        else:
+   418→            stale.append(item)
+   419→
+   420→    if not stale:
+   421→        return cached
+   422→
+   423→    def _one(item: tuple[str, str]) -> tuple[tuple[str, str], dict[str, float]]:
+   424→        v, sym = item
+   425→        return (v, sym), fetch_spot_fee_rates(v, sym, use_cache=False)
+   426→
+   427→    raw = run_io_parallel(stale, _one, max_workers=workers, swallow_errors=True)
+   428→    for k, v in raw.items():
+   429→        _SPOT_CACHE[k] = (time.time(), v)
+   430→    out: dict[tuple[str, str], dict[str, float]] = dict(cached)
+   431→    for v, sym in stale:
+   432→        out[(v, sym)] = raw.get((v, sym)) or {
+   433→            "taker_pct": default_spot_taker_pct(v),
+   434→            "maker_pct": default_spot_taker_pct(v),
+   435→        }
+   436→    return out
+   437→
+   438→
+   439→def carry_two_leg_fee_pct(
+   440→    venue: str,
+   441→    symbol: str,
+   442→    *,
+   443→    futures_cache: dict[tuple[str, str], dict[str, float]] | None = None,
+   444→    spot_cache: dict[tuple[str, str], dict[str, float]] | None = None,
+   445→) -> tuple[float, float, float]:
+   446→    """Cash-and-carry open cost: (spot_pct, futures_pct, total_pct) in percentage points."""
+   447→    v = venue.lower()
+   448→    sym = normalize_symbol(symbol)
+   449→    key = (v, sym)
+   450→    if futures_cache and key in futures_cache:
+   451→        futures_pct = float(futures_cache[key].get("taker_pct", default_taker_pct(v)))
+   452→    else:
+   453→        futures_pct = float(fetch_futures_fee_rates(v, sym)["taker_pct"])
+   454→    if spot_cache and key in spot_cache:
+   455→        spot_pct = float(spot_cache[key].get("taker_pct", default_spot_taker_pct(v)))
+   456→    else:
+   457→        spot_pct = float(fetch_spot_fee_rates(v, sym)["taker_pct"])
+   458→    return spot_pct, futures_pct, spot_pct + futures_pct
+   459→
+   460→
+   461→def prefetch_futures_fee_rates(
+   462→    pairs: list[tuple[str, str]],
+   463→    *,
+   464→    workers: int = 8,
+   465→) -> dict[tuple[str, str], dict[str, float]]:
+   466→    """Parallel prefetch. pairs = [(venue, symbol), ...].
+   467→
+   468→    Checks the per-symbol _CACHE first; only fetches pairs whose cache entry
+   469→    is stale or missing. Exchange fee rates rarely change (_CACHE_TTL_SEC=3600),
+   470→    so repeated scans within an hour skip all HTTP work here.
+   471→    """
+   472→    unique = list({(v.lower(), normalize_symbol(s)) for v, s in pairs})
+   473→    now = time.time()
+   474→
+   475→    # Fast path: serve everything from cache if fresh.
+   476→    cached: dict[tuple[str, str], dict[str, float]] = {}
+   477→    stale: list[tuple[str, str]] = []
+   478→    for item in unique:
+   479→        entry = _CACHE.get(item)
+   480→        if entry and now - entry[0] < _CACHE_TTL_SEC:
+   481→            cached[item] = dict(entry[1])
+   482→        else:
+   483→            stale.append(item)
+   484→
+   485→    if not stale:
+   486→        return cached  # all fresh, zero HTTP
+   487→
+   488→    def _one(item: tuple[str, str]) -> tuple[tuple[str, str], dict[str, float]]:
+   489→        v, sym = item
+   490→        return (v, sym), fetch_futures_fee_rates(v, sym, use_cache=False)
+   491→
+   492→    raw = run_io_parallel(stale, _one, max_workers=workers, swallow_errors=True)
+   493→    for k, v in raw.items():
+   494→        _CACHE[k] = (time.time(), v)
+   495→    # Merge cached + freshly fetched
+   496→    out: dict[tuple[str, str], dict[str, float]] = dict(cached)
+   497→    for v, sym in stale:
+   498→        out[(v, sym)] = raw.get((v, sym)) or {
+   499→            "taker_pct": default_taker_pct(v),
+   500→            "maker_pct": DEFAULT_MAKER_PCT.get(v, 0.02),
+   501→        }
+   502→    return out
+   503→
+   504→
+   505→def offline_fee_cache_from_by_base(
+   506→    by_base: dict[str, dict[str, dict[str, Any]]],
+   507→) -> dict[tuple[str, str], dict[str, float]]:
+   508→    """Build venue-default fee cache without network (tests / offline backtest)."""
+   509→    out: dict[tuple[str, str], dict[str, float]] = {}
+   510→    for base, venue_map in by_base.items():
+   511→        for venue, info in venue_map.items():
+   512→            v = venue.lower()
+   513→            sym = normalize_symbol(str(info.get("symbol") or f"{base}USDT"))
+   514→            out[(v, sym)] = {
+   515→                "taker_pct": default_taker_pct(v),
+   516→                "maker_pct": DEFAULT_MAKER_PCT.get(v, 0.02),
+   517→            }
+   518→    return out
+   519→
+   520→
+   521→def build_fee_cache_from_by_base(
+   522→    by_base: dict[str, dict[str, dict[str, Any]]],
+   523→    *,
+   524→    workers: int = 8,
+   525→) -> dict[tuple[str, str], dict[str, float]]:
+   526→    """Build fee cache from scan_pure_futures_spreads `by_base` structure."""
+   527→    pairs: list[tuple[str, str]] = []
+   528→    for base, venue_map in by_base.items():
+   529→        for venue, info in venue_map.items():
+   530→            sym = str(info.get("symbol") or f"{base}USDT")
+   531→            pairs.append((venue, sym))
+   532→    return prefetch_futures_fee_rates(pairs, workers=workers)
+   533→
+   534→
+   535→def taker_fee_pct(
+   536→    venue: str,
+   537→    symbol: str,
+   538→    *,
+   539→    fee_cache: dict[tuple[str, str], dict[str, float]] | None = None,
+   540→    config_overrides: dict[str, float] | None = None,
+   541→) -> float:
+   542→    """Taker fee in percentage points for venue+symbol."""
+   543→    v = venue.lower()
+   544→    sym = normalize_symbol(symbol)
+   545→    if config_overrides and v in config_overrides:
+   546→        return float(config_overrides[v])
+   547→    if fee_cache is not None:
+   548→        cached = fee_cache.get((v, sym))
+   549→        if cached:
+   550→            return float(cached.get("taker_pct", default_taker_pct(v)))
+   551→    return fetch_futures_fee_rates(v, sym)["taker_pct"]
+   552→
+   553→
+   554→def pair_open_taker_fee_pct(
+   555→    long_venue: str,
+   556→    long_symbol: str,
+   557→    short_venue: str,
+   558→    short_symbol: str,
+   559→    *,
+   560→    fee_cache: dict[tuple[str, str], dict[str, float]] | None = None,
+   561→    config_overrides: dict[str, float] | None = None,
+   562→) -> tuple[float, float, float]:
+   563→    """Returns (long_fee_pct, short_fee_pct, total_open_fee_pct)."""
+   564→    long_fee = taker_fee_pct(
+   565→        long_venue, long_symbol, fee_cache=fee_cache, config_overrides=config_overrides
+   566→    )
+   567→    short_fee = taker_fee_pct(
+   568→        short_venue,
+   569→        short_symbol,
+   570→        fee_cache=fee_cache,
+   571→        config_overrides=config_overrides,
+   572→    )
+   573→    return long_fee, short_fee, long_fee + short_fee
+   574→
+   575→
+   576→# ---------------------------------------------------------------------------
+   577→# Fee policy: API when credentials exist, else VIP tier from settings
+   578→# ---------------------------------------------------------------------------
+   579→
+   580→_VENUE_CRED_KEYS: dict[str, list[str]] = {
+   581→    "binance": [
+   582→        "BINANCE_API_KEY",
+   583→        "BINANCE_API_SECRET",
+   584→        "BINANCE_TRADE_API_KEY",
+   585→        "BINANCE_SECRET_KEY",
+   586→    ],
+   587→    "bitget": ["BITGET_API_KEY", "BITGET_SECRET_KEY"],
+   588→    "bybit": ["BYBIT_API_KEY", "BYBIT_SECRET_KEY"],
+   589→    "okx": ["OKX_API_KEY", "OKX_SECRET_KEY"],
+   590→    "hyperliquid": ["HYPERLIQUID_API_KEY", "HYPERLIQUID_API_SECRET"],
+   591→}
+   592→
+   593→
+   594→def venue_has_credentials(venue: str) -> bool:
+   595→    """True when any known API key env var is set for this venue."""
+   596→    for key in _VENUE_CRED_KEYS.get(venue.lower(), []):
+   597→        if os.environ.get(key):
+   598→            return True
+   599→    return False
+   600→
+   601→
+   602→def parse_fee_policy(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+   603→    """Normalize fee policy from strategy config.
+   604→
+   605→    Idempotent: accepts either raw strategy config keys (fee_mode /
+   606→    venue_fee_tiers) or an already-parsed policy (mode / venue_tiers), so
+   607→    callers can safely re-parse a policy passed down from the server layer.
+   608→    """
+   609→    cfg = cfg or {}
+   610→    tiers = cfg.get("venue_fee_tiers")
+   611→    if not isinstance(tiers, dict):
+   612→        tiers = cfg.get("venue_tiers")
+   613→    mode = cfg.get("fee_mode") or cfg.get("mode") or "auto"
+   614→    return {
+   615→        "mode": str(mode),
+   616→        "venue_tiers": dict(tiers) if isinstance(tiers, dict) else {},
+   617→    }
+   618→
+   619→
+   620→def venue_uses_api(venue: str, policy: dict[str, Any] | None = None) -> bool:
+   621→    """Whether this venue should fetch fees from API (account or public).
+   622→
+   623→    Perp-DEX venues with public fee endpoints (no keys) always fetch live, so
+   624→    the scanner reflects real venue fees instead of stale hardcoded defaults.
+   625→    The user can still force the VIP-tier table via fee_mode='vip_tier'.
+   626→    """
+   627→    policy = policy or parse_fee_policy()
+   628→    mode = policy.get("mode", "auto")
+   629→    if mode == "vip_tier":
+   630→        return False
+   631→    if venue.lower() in _PUBLIC_FEE_VENUES:
+   632→        return True
+   633→    if mode == "api":
+   634→        return venue_has_credentials(venue)
+   635→    return venue_has_credentials(venue)
+   636→
+   637→
+   638→def _tier_taker_pct(venue: str, leg: str, policy: dict[str, Any]) -> float:
+   639→    tier_id = policy.get("venue_tiers", {}).get(venue.lower())
+   640→    rates = tier_rates(venue, tier_id)
+   641→    if leg == "spot":
+   642→        return float(rates["spot_taker_pct"])
+   643→    return float(rates["futures_taker_pct"])
+   644→
+   645→
+   646→def resolve_venue_fee(
+   647→    venue: str,
+   648→    *,
+   649→    leg: str = "futures",
+   650→    symbol: str = "BTCUSDT",
+   651→    policy: dict[str, Any] | None = None,
+   652→) -> dict[str, Any]:
+   653→    """Resolve taker fee for one venue with source metadata."""
+   654→    policy = policy or parse_fee_policy()
+   655→    v = venue.lower()
+   656→    sym = normalize_symbol(symbol)
+   657→    if venue_uses_api(v, policy):
+   658→        try:
+   659→            if leg == "spot":
+   660→                rates = fetch_spot_fee_rates(v, sym)
+   661→            else:
+   662→                rates = fetch_futures_fee_rates(v, sym)
+   663→            return {
+   664→                "taker_pct": float(rates["taker_pct"]),
+   665→                "maker_pct": float(rates.get("maker_pct", 0.02)),
+   666→                "source": "api",
+   667→                "tier": None,
+   668→            }
+   669→        except Exception:
+   670→            pass
+   671→    tier_id = policy.get("venue_tiers", {}).get(v) or (
+   672→        "vip0" if v in ("binance", "bitget", "bybit", "okx") else "default"
+   673→    )
+   674→    taker = _tier_taker_pct(v, leg, policy)
+   675→    return {
+   676→        "taker_pct": taker,
+   677→        "maker_pct": DEFAULT_MAKER_PCT.get(v, 0.02),
+   678→        "source": "tier",
+   679→        "tier": tier_id,
+   680→    }
+   681→
+   682→
+   683→def build_policy_futures_cache(
+   684→    by_base: dict[str, dict[str, dict[str, Any]]],
+   685→    policy: dict[str, Any] | None = None,
+   686→    *,
+   687→    workers: int = 8,
+   688→) -> dict[tuple[str, str], dict[str, float]]:
+   689→    """Futures fee cache honoring auto API vs VIP tier per venue."""
+   690→    policy = policy or parse_fee_policy()
+   691→    cache: dict[tuple[str, str], dict[str, float]] = {}
+   692→    api_pairs: list[tuple[str, str]] = []
+   693→
+   694→    # Precompute which venues use API fees — avoids ~500 os.environ scans
+   695→    # (one per (base, venue) pair) when most venues repeat across bases.
+   696→    all_venues = {
+   697→        venue.lower() for venue_map in by_base.values() for venue in venue_map
+   698→    }
+   699→    api_venues = {v for v in all_venues if venue_uses_api(v, policy)}
+   700→
+   701→    for base, venue_map in by_base.items():
+   702→        for venue, info in venue_map.items():
+   703→            v = venue.lower()
+   704→            sym = normalize_symbol(str(info.get("symbol") or f"{base}USDT"))
+   705→            key = (v, sym)
+   706→            if v in api_venues:
+   707→                api_pairs.append(key)
+   708→            else:
+   709→                cache[key] = {
+   710→                    "taker_pct": _tier_taker_pct(v, "futures", policy),
+   711→                    "maker_pct": DEFAULT_MAKER_PCT.get(v, 0.02),
+   712→                }
+   713→
+   714→    if api_pairs:
+   715→        api_cache = prefetch_futures_fee_rates(api_pairs, workers=workers)
+   716→        cache.update(api_cache)
+   717→
+   718→    return cache
+   719→
+   720→
+   721→def build_policy_carry_caches(
+   722→    venue: str,
+   723→    symbols: list[str],
+   724→    policy: dict[str, Any] | None = None,
+   725→    *,
+   726→    workers: int = 8,
+   727→) -> tuple[
+   728→    dict[tuple[str, str], dict[str, float]], dict[tuple[str, str], dict[str, float]]
+   729→]:
+   730→    """Spot + futures caches for cash-and-carry scanner."""
+   731→    policy = policy or parse_fee_policy()
+   732→    v = venue.lower()
+   733→    pairs = [(v, normalize_symbol(s)) for s in symbols]
+   734→    futures_cache: dict[tuple[str, str], dict[str, float]] = {}
+   735→    spot_cache: dict[tuple[str, str], dict[str, float]] = {}
+   736→
+   737→    if venue_uses_api(v, policy):
+   738→        futures_cache = prefetch_futures_fee_rates(pairs, workers=workers)
+   739→        spot_cache = prefetch_spot_fee_rates(pairs, workers=workers)
+   740→    else:
+   741→        spot_taker = _tier_taker_pct(v, "spot", policy)
+   742→        futures_taker = _tier_taker_pct(v, "futures", policy)
+   743→        maker = DEFAULT_MAKER_PCT.get(v, 0.02)
+   744→        for key in pairs:
+   745→            spot_cache[key] = {"taker_pct": spot_taker, "maker_pct": spot_taker}
+   746→            futures_cache[key] = {"taker_pct": futures_taker, "maker_pct": maker}
+   747→
+   748→    return futures_cache, spot_cache
+   749→
+   750→
+   751→def futures_config_overrides(
+   752→    venues: list[str],
+   753→    policy: dict[str, Any] | None = None,
+   754→) -> dict[str, float] | None:
+   755→    """Per-venue taker overrides for venues not using API (pair_open_taker_fee_pct)."""
+   756→    policy = policy or parse_fee_policy()
+   757→    overrides: dict[str, float] = {}
+   758→    for venue in venues:
+   759→        v = venue.lower()
+   760→        if not venue_uses_api(v, policy):
+   761→            overrides[v] = _tier_taker_pct(v, "futures", policy)
+   762→    return overrides or None
+   763→

@@ -1,0 +1,746 @@
+     1→#!/usr/bin/env python3
+     2→"""Scanner API routes — spread scanning and opportunity discovery."""
+     3→
+     4→from __future__ import annotations
+     5→
+     6→import asyncio
+     7→import sys
+     8→import time
+     9→from datetime import datetime, timezone
+    10→from pathlib import Path
+    11→from typing import Any
+    12→
+    13→from fastapi import APIRouter, Query
+    14→
+    15→router = APIRouter(tags=["scanner"])
+    16→
+    17→# Ensure the server's main module is importable for the broadcast helper.
+    18→_SERVER_DIR = Path(__file__).resolve().parent.parent
+    19→if str(_SERVER_DIR) not in sys.path:
+    20→    sys.path.insert(0, str(_SERVER_DIR))
+    21→
+    22→# ---------------------------------------------------------------------------
+    23→# Try importing scanners; fall back to None if unavailable.
+    24→# ---------------------------------------------------------------------------
+    25→_scan_pure_fn = None
+    26→try:
+    27→    from cli.scan_pure_futures_spreads import scan_pure_futures_spreads  # noqa: E402
+    28→
+    29→    _scan_pure_fn = scan_pure_futures_spreads
+    30→except Exception:
+    31→    pass
+    32→
+    33→_scan_carry_fn = None
+    34→try:
+    35→    from cli.scan_funding_arbitrage import scan_venue  # noqa: E402
+    36→
+    37→    _scan_carry_fn = scan_venue
+    38→except Exception:
+    39→    pass
+    40→
+    41→_unified_carry_cls = None
+    42→try:
+    43→    from backtest.unified_funding_pool import (  # noqa: E402
+    44→        DEFAULT_VENUES,
+    45→        UnifiedFundingPool,
+    46→    )
+    47→
+    48→    _unified_carry_cls = UnifiedFundingPool
+    49→except Exception:
+    50→    pass
+    51→
+    52→# ---------------------------------------------------------------------------
+    53→# In-memory scan state (per strategy)
+    54→# ---------------------------------------------------------------------------
+    55→
+    56→_pure_results: dict[str, Any] | None = None
+    57→_pure_ts: float = 0.0
+    58→_carry_results: list[dict[str, Any]] = []
+    59→_carry_ts: float = 0.0
+    60→_unified_results: list[dict[str, Any]] = []
+    61→_unified_ts: float = 0.0
+    62→# Per-strategy locks so a slow carry/unified scan never blocks pure (and vice versa)
+    63→_scanning_strategies: set[str] = set()
+    64→
+    65→# ---------------------------------------------------------------------------
+    66→# Strategy config helpers (thresholds + venues from Settings)
+    67→# ---------------------------------------------------------------------------
+    68→
+    69→# Carry / Unified need spot + borrow → CEX only.
+    70→CARRY_VENUES = ["binance", "bitget", "bybit", "okx"]
+    71→# Pure futures: any venue with a funding provider. Defaults are CEX-only;
+    72→# DEX venues (hyperliquid / aster / lighter / edgex) opt-in via venue selector.
+    73→PURE_DEFAULT_VENUES = ["binance", "bitget", "bybit", "okx"]
+    74→PURE_ALL_VENUES = PURE_DEFAULT_VENUES + [
+    75→    "hyperliquid",
+    76→    "aster",
+    77→    "lighter",
+    78→    "edgex",
+    79→    "dydx",
+    80→]
+    81→
+    82→
+    83→def _strategy_cfg() -> dict[str, Any]:
+    84→    try:
+    85→        from server.routes.settings import _strategy_config  # noqa: E402
+    86→
+    87→        return _strategy_config
+    88→    except Exception:
+    89→        return {}
+    90→
+    91→
+    92→def _parse_venue_list(override: str | None, fallback: list[str]) -> list[str]:
+    93→    if override:
+    94→        return [v.strip().lower() for v in override.split(",") if v.strip()]
+    95→    cfg = _strategy_cfg()
+    96→    saved = cfg.get("scan_venues")
+    97→    if isinstance(saved, list) and saved:
+    98→        return [str(v).lower() for v in saved]
+    99→    return list(fallback)
+   100→
+   101→
+   102→def _venue_sets_match(requested: list[str], cached: list[str] | None) -> bool:
+   103→    if not cached:
+   104→        return False
+   105→    return set(requested) == set(cached)
+   106→
+   107→
+   108→def _scan_thresholds() -> tuple[float, float, float]:
+   109→    """Return (min_spread, min_edge, max_mark_spread_pct) from saved strategy config."""
+   110→    cfg = _strategy_cfg()
+   111→    return (
+   112→        float(cfg.get("min_spread_annual", 0.03)),
+   113→        float(cfg.get("min_edge_annual", 0.01)),
+   114→        float(cfg.get("max_mark_spread_pct", 1.0)),
+   115→    )
+   116→
+   117→
+   118→def _fee_policy() -> dict[str, Any]:
+   119→    try:
+   120→        from core.fee_providers import parse_fee_policy  # noqa: E402
+   121→
+   122→        return parse_fee_policy(_strategy_cfg())
+   123→    except Exception:
+   124→        return {"mode": "auto", "venue_tiers": {}}
+   125→
+   126→
+   127→def _min_edge_1h() -> float | None:
+   128→    """Optional lower net-edge threshold for pairs where both legs settle hourly.
+   129→
+   130→    1h-group pairs turn capital over faster, so a lower per-cycle edge can still
+   131→    be attractive. Returns None when not configured.
+   132→    """
+   133→    cfg = _strategy_cfg()
+   134→    val = cfg.get("min_edge_1h")
+   135→    try:
+   136→        return float(val) if val is not None else None
+   137→    except (TypeError, ValueError):
+   138→        return None
+   139→
+   140→
+   141→def _min_edge_mismatch() -> float | None:
+   142→    """Optional higher net-edge threshold for cross-interval (settle_mismatch) pairs.
+   143→
+   144→    When two legs settle on different schedules (e.g. EdgeX 4h vs Binance 8h),
+   145→    you carry funding-timing risk between settlements, so demand a larger edge.
+   146→    Returns None when not configured (no premium).
+   147→    """
+   148→    cfg = _strategy_cfg()
+   149→    val = cfg.get("min_edge_mismatch")
+   150→    try:
+   151→        return float(val) if val is not None else None
+   152→    except (TypeError, ValueError):
+   153→        return None
+   154→
+   155→
+   156→def _recalc_pure_fees(result: dict[str, Any]) -> dict[str, Any]:
+   157→    """Recompute per-leg fees and net edge from cached spread using current fee policy."""
+   158→    from core.fee_providers import resolve_venue_fee  # noqa: E402
+   159→
+   160→    policy = _fee_policy()
+   161→    out = dict(result)
+   162→    for section in ("forward", "reverse"):
+   163→        updated: list[dict[str, Any]] = []
+   164→        for row in result.get(section, []):
+   165→            base = str(row.get("base", ""))
+   166→            sym = f"{base}USDT"
+   167→            long_fee = float(
+   168→                resolve_venue_fee(
+   169→                    str(row["long_venue"]), leg="futures", symbol=sym, policy=policy
+   170→                )["taker_pct"]
+   171→            )
+   172→            short_fee = float(
+   173→                resolve_venue_fee(
+   174→                    str(row["short_venue"]), leg="futures", symbol=sym, policy=policy
+   175→                )["taker_pct"]
+   176→            )
+   177→            fee_pct = long_fee + short_fee
+   178→            spread = float(row.get("spread_pct", 0) or 0)
+   179→            r = dict(row)
+   180→            r["long_fee_pct"] = round(long_fee, 4)
+   181→            r["short_fee_pct"] = round(short_fee, 4)
+   182→            r["fee_pct"] = round(fee_pct, 4)
+   183→            r["round_trip_fee_pct"] = round(fee_pct * 2, 4)
+   184→            net_edge = spread - fee_pct
+   185→            r["net_edge_pct"] = round(net_edge, 6)
+   186→            r["real_edge_pct"] = round(
+   187→                net_edge - float(row.get("mark_spread_pct", 0) or 0), 6
+   188→            )
+   189→            updated.append(r)
+   190→        updated.sort(key=lambda x: -float(x.get("real_edge_pct", 0) or 0))
+   191→        out[section] = updated
+   192→    out["total_spreads_found"] = len(out.get("forward", [])) + len(out.get("reverse", []))
+   193→    return out
+   194→
+   195→
+   196→def _recalc_carry_fees(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+   197→    from core.fee_providers import carry_two_leg_fee_pct, resolve_venue_fee  # noqa: E402
+   198→
+   199→    policy = _fee_policy()
+   200→    out: list[dict[str, Any]] = []
+   201→    for block in results:
+   202→        if block.get("error"):
+   203→            out.append(block)
+   204→            continue
+   205→        venue = str(block.get("venue", ""))
+   206→        spot = resolve_venue_fee(venue, leg="spot", policy=policy)
+   207→        fut = resolve_venue_fee(venue, leg="futures", policy=policy)
+   208→        spot_pct = float(spot["taker_pct"])
+   209→        fut_pct = float(fut["taker_pct"])
+   210→        two_leg = spot_pct + fut_pct
+   211→        nb = dict(block)
+   212→        nb["spot_fee_pct"] = round(spot_pct, 4)
+   213→        nb["futures_fee_pct"] = round(fut_pct, 4)
+   214→        nb["two_leg_fee_pct"] = round(two_leg, 4)
+   215→        nb["fee_source"] = fut.get("source", "tier")
+   216→        nb["fee_tier"] = fut.get("tier")
+   217→
+   218→        for key in ("forward", "reverse"):
+   219→            rows: list[dict[str, Any]] = []
+   220→            for row in block.get(key, []):
+   221→                sym = str(row.get("symbol", ""))
+   222→                from core.fee_providers import normalize_symbol  # noqa: E402
+   223→
+   224→                cache_key = (venue.lower(), normalize_symbol(sym))
+   225→                _, _, leg_fee = carry_two_leg_fee_pct(
+   226→                    venue,
+   227→                    sym,
+   228→                    futures_cache={cache_key: {"taker_pct": fut_pct}},
+   229→                    spot_cache={cache_key: {"taker_pct": spot_pct}},
+   230→                )
+   231→                r = dict(row)
+   232→                r["spot_fee_pct"] = round(spot_pct, 4)
+   233→                r["futures_fee_pct"] = round(fut_pct, 4)
+   234→                r["fee_pct"] = round(leg_fee, 4)
+   235→                rate = float(row.get("rate_pct", 0) or 0)
+   236→                if key == "forward":
+   237→                    r["net_edge_pct"] = round(rate - leg_fee, 4)
+   238→                else:
+   239→                    borrow_period = float(row.get("borrow_per_period_pct", 0) or 0)
+   240→                    r["net_edge_pct"] = round(abs(rate) - borrow_period - leg_fee, 4)
+   241→                rows.append(r)
+   242→            nb[key] = rows
+   243→        out.append(nb)
+   244→    return out
+   245→
+   246→
+   247→def _recalc_unified_fees(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+   248→    from core.fee_providers import resolve_venue_fee  # noqa: E402
+   249→
+   250→    policy = _fee_policy()
+   251→    out: list[dict[str, Any]] = []
+   252→    for row in results:
+   253→        base = str(row.get("base", ""))
+   254→        sym = f"{base}USDT"
+   255→        fv = str(row.get("futures_venue", ""))
+   256→        sv = str(row.get("spot_venue", fv))
+   257→        spot_pct = float(
+   258→            resolve_venue_fee(sv, leg="spot", symbol=sym, policy=policy)["taker_pct"]
+   259→        )
+   260→        fut_pct = float(
+   261→            resolve_venue_fee(fv, leg="futures", symbol=sym, policy=policy)[
+   262→                "taker_pct"
+   263→            ]
+   264→        )
+   265→        new_fee = spot_pct + fut_pct
+   266→        old_fee = float(row.get("fee_pct", 0) or 0)
+   267→        old_net = float(row.get("net_edge_pct", 0) or 0)
+   268→        r = dict(row)
+   269→        r["spot_fee_pct"] = round(spot_pct, 4)
+   270→        r["futures_fee_pct"] = round(fut_pct, 4)
+   271→        r["fee_pct"] = round(new_fee, 4)
+   272→        r["net_edge_pct"] = round(old_net + old_fee - new_fee, 4)
+   273→        out.append(r)
+   274→    out.sort(key=lambda x: -(x.get("net_edge_pct") or 0))
+   275→    return out
+   276→
+   277→
+   278→def _row_real_edge(row: dict[str, Any]) -> float:
+   279→    """Basis-adjusted edge used for filtering/ranking.
+   280→
+   281→    real_edge = net funding edge − cross-venue mark divergence. A pair whose
+   282→    funding edge is offset by a dislocated mark price (high mark_spread) is not
+   283→    a clean opportunity, so it is judged on this discounted figure. Falls back
+   284→    to net_edge − mark_spread when the field is absent (older cached scans).
+   285→    """
+   286→    re = row.get("real_edge_pct")
+   287→    if re is not None:
+   288→        return float(re)
+   289→    return float(row.get("net_edge_pct", 0) or 0) - float(
+   290→        row.get("mark_spread_pct", 0) or 0
+   291→    )
+   292→
+   293→
+   294→def _row_edge_threshold(
+   295→    row: dict[str, Any],
+   296→    min_edge: float,
+   297→    min_edge_1h: float | None,
+   298→    min_edge_mismatch: float | None,
+   299→) -> float:
+   300→    """Per-row net-edge bar by settlement-interval group."""
+   301→    from core.strategy_config import row_edge_threshold  # noqa: E402
+   302→
+   303→    return row_edge_threshold(row, min_edge, min_edge_1h, min_edge_mismatch)
+   304→
+   305→
+   306→def _basis_risk_level(row: dict[str, Any], edge_threshold: float) -> str:
+   307→    """Classify mark/basis risk for display — does not gate inclusion.
+   308→
+   309→    clean: real edge clears the strategy bar (conservative executable margin).
+   310→    caution: net edge passes but real edge is below bar yet still ≥ 0.
+   311→    high: mark divergence exceeds net funding edge (negative real edge).
+   312→    """
+   313→    real = _row_real_edge(row)
+   314→    if real >= edge_threshold:
+   315→        return "clean"
+   316→    if real >= 0:
+   317→        return "caution"
+   318→    return "high"
+   319→
+   320→
+   321→def _annotate_basis_risk(
+   322→    row: dict[str, Any],
+   323→    min_edge: float,
+   324→    min_edge_1h: float | None,
+   325→    min_edge_mismatch: float | None,
+   326→) -> dict[str, Any]:
+   327→    out = dict(row)
+   328→    thr = _row_edge_threshold(row, min_edge, min_edge_1h, min_edge_mismatch)
+   329→    out["basis_risk_level"] = _basis_risk_level(row, thr)
+   330→    return out
+   331→
+   332→
+   333→def _apply_group_thresholds(
+   334→    result: dict[str, Any],
+   335→    min_edge: float,
+   336→    min_edge_1h: float | None,
+   337→    min_edge_mismatch: float | None = None,
+   338→) -> dict[str, Any]:
+   339→    """Re-filter scan output on net funding edge with per-interval-group thresholds.
+   340→
+   341→    Rows that pass on net edge but have large cross-venue mark divergence are
+   342→    kept and tagged via ``basis_risk_level`` so the UI can surface basis risk
+   343→    and let the user decide. Sorting still favours higher real edge. 1h-group
+   344→    pairs may use the lower min_edge_1h; cross-interval (settle_mismatch)
+   345→    pairs must clear the higher min_edge_mismatch risk premium.
+   346→    """
+   347→
+   348→    def _keep(row: dict[str, Any]) -> bool:
+   349→        net = float(row.get("net_edge_pct", 0) or 0)
+   350→        return net >= _row_edge_threshold(
+   351→            row, min_edge, min_edge_1h, min_edge_mismatch
+   352→        )
+   353→
+   354→    def _process(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+   355→        kept = [
+   356→            _annotate_basis_risk(r, min_edge, min_edge_1h, min_edge_mismatch)
+   357→            for r in rows
+   358→            if _keep(r)
+   359→        ]
+   360→        kept.sort(key=lambda x: -_row_real_edge(x))
+   361→        return kept
+   362→
+   363→    out = dict(result)
+   364→    out["forward"] = _process(result.get("forward", []))
+   365→    out["reverse"] = _process(result.get("reverse", []))
+   366→    out["total_spreads_found"] = len(out["forward"]) + len(out["reverse"])
+   367→    return out
+   368→
+   369→
+   370→def _empty_pure() -> dict[str, Any]:
+   371→    """Empty scan result shape (no placeholder rows)."""
+   372→    return {
+   373→        "venues": [],
+   374→        "total_assets_scanned": 0,
+   375→        "total_spreads_found": 0,
+   376→        "forward": [],
+   377→        "reverse": [],
+   378→        "venue_pair_stats": [],
+   379→        "timestamp": None,
+   380→    }
+   381→
+   382→
+   383→def _scanner_available(strategy: str) -> bool:
+   384→    if strategy == "pure":
+   385→        return _scan_pure_fn is not None
+   386→    if strategy == "carry":
+   387→        return _scan_carry_fn is not None
+   388→    if strategy == "unified":
+   389→        return _unified_carry_cls is not None
+   390→    return False
+   391→
+   392→
+   393→# ---------------------------------------------------------------------------
+   394→# Routes: Pure Futures Spread
+   395→# ---------------------------------------------------------------------------
+   396→
+   397→
+   398→@router.get("/scanner/status")
+   399→async def scanner_status(
+   400→    strategy: str = Query("pure", enum=["pure", "carry", "unified"]),
+   401→):
+   402→    """Return current scanner status for the requested strategy."""
+   403→    live = False
+   404→    scanning = strategy in _scanning_strategies
+   405→    has_data = False
+   406→    last_ts = 0.0
+   407→
+   408→    if strategy == "pure":
+   409→        live = _scan_pure_fn is not None
+   410→        has_data = _pure_results is not None
+   411→        last_ts = _pure_ts
+   412→    elif strategy == "carry":
+   413→        live = _scan_carry_fn is not None
+   414→        has_data = len(_carry_results) > 0
+   415→        last_ts = _carry_ts
+   416→    elif strategy == "unified":
+   417→        live = _unified_carry_cls is not None
+   418→        has_data = len(_unified_results) > 0
+   419→        last_ts = _unified_ts
+   420→
+   421→    ts = (
+   422→        datetime.fromtimestamp(last_ts, tz=timezone.utc).isoformat()
+   423→        if last_ts
+   424→        else None
+   425→    )
+   426→    return {
+   427→        "success": True,
+   428→        "data": {
+   429→            "scanning": scanning,
+   430→            "last_scan_time": ts,
+   431→            "has_data": has_data,
+   432→            "live": live,
+   433→        },
+   434→    }
+   435→
+   436→
+   437→@router.get("/scanner/opportunities")
+   438→async def scanner_opportunities(
+   439→    strategy: str = Query("pure", enum=["pure", "carry", "unified"]),
+   440→    venues: str | None = Query(
+   441→        None, description="Comma-separated venue ids; cache must match to return data"
+   442→    ),
+   443→):
+   444→    """Return latest cached scan results (empty until a real scan completes)."""
+   445→    available = _scanner_available(strategy)
+   446→    req_venues = (
+   447→        [v.strip().lower() for v in venues.split(",") if v.strip()] if venues else None
+   448→    )
+   449→
+   450→    if strategy == "pure":
+   451→        if _pure_results is not None:
+   452→            cached_v = _pure_results.get("venues") or []
+   453→            if req_venues is not None and not _venue_sets_match(req_venues, cached_v):
+   454→                return {
+   455→                    "success": True,
+   456→                    "data": _empty_pure(),
+   457→                    "live": available,
+   458→                    "has_data": False,
+   459→                    "venues_mismatch": True,
+   460→                }
+   461→            return {
+   462→                "success": True,
+   463→                "data": _pure_results,
+   464→                "live": available,
+   465→                "has_data": True,
+   466→            }
+   467→        return {
+   468→            "success": True,
+   469→            "data": _empty_pure(),
+   470→            "live": available,
+   471→            "has_data": False,
+   472→        }
+   473→
+   474→    if strategy == "carry":
+   475→        if _carry_results:
+   476→            cached_v = [r.get("venue", "") for r in _carry_results if r.get("venue")]
+   477→            if req_venues is not None and not _venue_sets_match(req_venues, cached_v):
+   478→                return {
+   479→                    "success": True,
+   480→                    "data": [],
+   481→                    "live": available,
+   482→                    "has_data": False,
+   483→                    "venues_mismatch": True,
+   484→                }
+   485→            return {
+   486→                "success": True,
+   487→                "data": _carry_results,
+   488→                "live": available,
+   489→                "has_data": True,
+   490→            }
+   491→        return {"success": True, "data": [], "live": available, "has_data": False}
+   492→
+   493→    if strategy == "unified":
+   494→        if _unified_results:
+   495→            return {
+   496→                "success": True,
+   497→                "data": _unified_results,
+   498→                "live": available,
+   499→                "has_data": True,
+   500→            }
+   501→        return {"success": True, "data": [], "live": available, "has_data": False}
+   502→
+   503→    return {"success": False, "error": f"Unknown strategy: {strategy}"}
+   504→
+   505→
+   506→@router.post("/scanner/trigger")
+   507→async def scanner_trigger(
+   508→    strategy: str = Query("pure", enum=["pure", "carry", "unified"]),
+   509→    venues: str | None = Query(
+   510→        None, description="Comma-separated venue ids (overrides saved scan_venues)"
+   511→    ),
+   512→):
+   513→    """Trigger a scan for the specified strategy."""
+   514→    global \
+   515→        _pure_results, \
+   516→        _pure_ts, \
+   517→        _carry_results, \
+   518→        _carry_ts, \
+   519→        _unified_results, \
+   520→        _unified_ts
+   521→
+   522→    # When called directly from Python (background loop / scan-all) instead of
+   523→    # via HTTP, unsupplied params arrive as FastAPI Query objects — normalize.
+   524→    if not isinstance(strategy, str):
+   525→        strategy = "pure"
+   526→    if not isinstance(venues, str):
+   527→        venues = None
+   528→
+   529→    if strategy in _scanning_strategies:
+   530→        return {"success": False, "error": "Scan already in progress"}
+   531→
+   532→    _scanning_strategies.add(strategy)
+   533→    try:
+   534→        loop = asyncio.get_running_loop()
+   535→
+   536→        min_spread, min_edge, max_mark = _scan_thresholds()
+   537→
+   538→        if strategy == "pure":
+   539→            if _scan_pure_fn is None:
+   540→                return {
+   541→                    "success": False,
+   542→                    "error": "Pure futures scanner unavailable",
+   543→                    "live": False,
+   544→                }
+   545→            venue_list = [
+   546→                v
+   547→                for v in _parse_venue_list(venues, PURE_DEFAULT_VENUES)
+   548→                if v in PURE_ALL_VENUES
+   549→            ] or list(PURE_DEFAULT_VENUES)
+   550→            edge_1h = _min_edge_1h()
+   551→            edge_mismatch = _min_edge_mismatch()
+   552→            scan_min_edge = (
+   553→                min(min_edge, edge_1h) if edge_1h is not None else min_edge
+   554→            )
+   555→
+   556→            def _run_pure() -> dict[str, Any]:
+   557→                raw = _scan_pure_fn(
+   558→                    venues=venue_list,
+   559→                    min_spread=min_spread,
+   560→                    min_edge=scan_min_edge,
+   561→                    max_mark_spread_pct=max_mark,
+   562→                    fee_policy=_fee_policy(),
+   563→                )
+   564→                return _apply_group_thresholds(raw, min_edge, edge_1h, edge_mismatch)
+   565→
+   566→            result = await loop.run_in_executor(None, _run_pure)
+   567→            _pure_results = result
+   568→            _pure_ts = time.time()
+   569→            await _broadcast("scanner.update", result)
+   570→            return {"success": True, "data": result, "live": True}
+   571→
+   572→        elif strategy == "carry":
+   573→            if _scan_carry_fn is None:
+   574→                return {"success": False, "error": "Cash-and-carry scanner unavailable"}
+   575→
+   576→            # Scan each venue in parallel via thread pool
+   577→            # Carry needs spot + borrow — drop perp-only venues (HL/aster/lighter)
+   578→            carry_venues = [
+   579→                v
+   580→                for v in _parse_venue_list(venues, CARRY_VENUES)
+   581→                if v in CARRY_VENUES
+   582→            ] or list(CARRY_VENUES)
+   583→
+   584→            def _scan_one_carry(v: str) -> dict[str, Any]:
+   585→                try:
+   586→                    r = _scan_carry_fn(
+   587→                        venue=v,
+   588→                        entry=min_spread,
+   589→                        exit_rate=min_edge,
+   590→                        universe_min=min_edge,
+   591→                        max_workers=8,
+   592→                        fee_policy=_fee_policy(),
+   593→                    )
+   594→                    # Simplify: keep only forward/reverse candidates + metadata
+   595→                    return {
+   596→                        "venue": v,
+   597→                        "total_pairs": r.get("total_pairs", 0),
+   598→                        "forward": r.get("forward_candidates", []),
+   599→                        "reverse": r.get("reverse_candidates", []),
+   600→                        "spot_fee_pct": r.get("spot_fee_pct", 0),
+   601→                        "futures_fee_pct": r.get("futures_fee_pct", 0),
+   602→                        "two_leg_fee_pct": r.get("two_leg_fee_pct", 0),
+   603→                        "fee_source": r.get("fee_source"),
+   604→                        "fee_tier": r.get("fee_tier"),
+   605→                    }
+   606→                except Exception as e:
+   607→                    return {"venue": v, "error": str(e), "forward": [], "reverse": []}
+   608→
+   609→            def _scan_all_carry() -> list[dict[str, Any]]:
+   610→                # Venues scan concurrently — each one already parallelizes its own IO
+   611→                from concurrent.futures import ThreadPoolExecutor
+   612→
+   613→                with ThreadPoolExecutor(max_workers=len(carry_venues)) as pool:
+   614→                    return list(pool.map(_scan_one_carry, carry_venues))
+   615→
+   616→            result = await loop.run_in_executor(None, _scan_all_carry)
+   617→            _carry_results = result
+   618→            _carry_ts = time.time()
+   619→            await _broadcast("scanner.update", {"strategy": "carry", "data": result})
+   620→            return {"success": True, "data": result, "live": True}
+   621→
+   622→        elif strategy == "unified":
+   623→            if _unified_carry_cls is None:
+   624→                return {"success": False, "error": "Unified carry scanner unavailable"}
+   625→
+   626→            unified_venues = [
+   627→                v
+   628→                for v in _parse_venue_list(venues, list(DEFAULT_VENUES))
+   629→                if v in CARRY_VENUES
+   630→            ] or list(DEFAULT_VENUES)
+   631→
+   632→            def _scan_unified() -> list[dict[str, Any]]:
+   633→                pool = _unified_carry_cls(
+   634→                    venues=unified_venues, fee_policy=_fee_policy()
+   635→                )
+   636→                pool.refresh()
+   637→                # scan_routes returns {"forward": [...], "reverse": [...]}, not base→routes
+   638→                grouped = pool.scan_routes(
+   639→                    entry=min_spread, universe_min=min_edge
+   640→                )
+   641→                result = []
+   642→                for routes in grouped.values():
+   643→                    for route in routes:
+   644→                        result.append(
+   645→                            {
+   646→                                "base": route.base,
+   647→                                "direction": route.direction,
+   648→                                "futures_venue": route.futures_venue,
+   649→                                "spot_venue": route.spot_venue
+   650→                                if not route.same_venue
+   651→                                else route.futures_venue,
+   652→                                "same_venue": route.same_venue,
+   653→                                "funding_rate_pct": round(route.funding_rate_pct, 4),
+   654→                                "annual_pct": round(route.annual_funding_pct, 1),
+   655→                                "spot_fee_pct": round(route.spot_fee_pct, 4),
+   656→                                "futures_fee_pct": round(route.futures_fee_pct, 4),
+   657→                                "fee_pct": round(route.total_fee_pct, 4),
+   658→                                "net_edge_pct": round(route.net_edge_pct, 4),
+   659→                                "borrow_annual_pct": round(route.borrow_annual_pct, 2),
+   660→                            }
+   661→                        )
+   662→
+   663→                result.sort(key=lambda x: -(x["net_edge_pct"] or 0))
+   664→                return result[:100]
+   665→
+   666→            result = await loop.run_in_executor(None, _scan_unified)
+   667→            _unified_results = result
+   668→            _unified_ts = time.time()
+   669→            await _broadcast("scanner.update", {"strategy": "unified", "data": result})
+   670→            return {"success": True, "data": result, "live": True}
+   671→
+   672→    except Exception as e:
+   673→        return {"success": False, "error": f"Scan failed: {e}"}
+   674→    finally:
+   675→        _scanning_strategies.discard(strategy)
+   676→
+   677→
+   678→@router.post("/scanner/scan-all")
+   679→async def scanner_scan_all():
+   680→    """Trigger all scanner types and return combined results."""
+   681→    results: dict[str, Any] = {}
+   682→
+   683→    # Pure futures (existing)
+   684→    try:
+   685→        r = await scanner_trigger(strategy="pure")
+   686→        results["pure"] = r.get("data") if r.get("success") else None
+   687→    except Exception:
+   688→        results["pure"] = None
+   689→
+   690→    # Cash and carry
+   691→    try:
+   692→        r = await scanner_trigger(strategy="carry")
+   693→        results["carry"] = r.get("data") if r.get("success") else None
+   694→    except Exception:
+   695→        results["carry"] = None
+   696→
+   697→    # Unified cross-venue
+   698→    try:
+   699→        r = await scanner_trigger(strategy="unified")
+   700→        results["unified"] = r.get("data") if r.get("success") else None
+   701→    except Exception:
+   702→        results["unified"] = None
+   703→
+   704→    return {"success": True, "data": results}
+   705→
+   706→
+   707→@router.post("/scanner/recalc-fees")
+   708→async def scanner_recalc_fees():
+   709→    """Recompute net edge on cached scan results using current fee policy (no re-scan)."""
+   710→    global _pure_results, _carry_results, _unified_results
+   711→
+   712→    min_spread, min_edge, _ = _scan_thresholds()
+   713→    edge_1h = _min_edge_1h()
+   714→    edge_mismatch = _min_edge_mismatch()
+   715→    updated: dict[str, Any] = {}
+   716→
+   717→    if _pure_results is not None:
+   718→        recalc = _recalc_pure_fees(_pure_results)
+   719→        _pure_results = _apply_group_thresholds(
+   720→            recalc, min_edge, edge_1h, edge_mismatch
+   721→        )
+   722→        updated["pure"] = _pure_results
+   723→
+   724→    if _carry_results:
+   725→        _carry_results = _recalc_carry_fees(_carry_results)
+   726→        updated["carry"] = _carry_results
+   727→
+   728→    if _unified_results:
+   729→        _unified_results = _recalc_unified_fees(_unified_results)
+   730→        updated["unified"] = _unified_results
+   731→
+   732→    if not updated:
+   733→        return {"success": False, "error": "No cached scan results to recalculate"}
+   734→
+   735→    await _broadcast("scanner.update", {"recalc_fees": True, "data": updated})
+   736→    return {"success": True, "data": updated}
+   737→
+   738→
+   739→async def _broadcast(event: str, data: dict[str, Any]) -> None:
+   740→    try:
+   741→        from server.main import push_event
+   742→
+   743→        await push_event(event, data)
+   744→    except Exception:
+   745→        pass
+   746→
