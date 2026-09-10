@@ -677,3 +677,28 @@ Stage Summary:
 - Everything from here is mechanical: daily verify-only check = run `python3 scripts/analysis/phase2_report.py` + read its integrity section; it is rerunnable and produces the full user metric table at any point (Day 3 interim read, Day 5-7 final report + A/B/C).
 - Analyzer command for daily checks: cd /home/z/funding-arb && .venv/bin/python scripts/analysis/phase2_report.py (funding recon cached; --no-funding for offline).
 - Baseline untouched: engine still zero changes since 15d8e58; no thresholds/gates/fees/exchanges/strategy modified; paper-data branch growing from 3 collectors.
+
+---
+Task ID: benchmark-factcheck
+Agent: main (Z.ai Code)
+Task: Fact-check the user's external benchmark comparison (Hummingbot / MRowhani / frytegg / vooi / Arbitrage-Trading-Hub) and the local-repo claims. Read-only verification; zero trading-system changes.
+
+Work Log:
+- Local repo verified: 117 commits (user said 106 — outdated by 11); all strategies confirmed (Pure Futures / C&C / Unified C&C / Cross-asset per README table + code files); 4 CEX + 5 perp DEX venue adapters; fee-aware real_edge; Vue dashboard + Vercel demo + Next.js paper monitor; paper/live + backtest.
+- DRIFT/REBALANCE FINDING (correction to user's scorecard): rebalance_pure_futures_pair EXISTS in pure_futures_executor.py — trims oversized leg on quantity mismatch (partial liquidation/ADL), live mode reads actual quantities from exchange API; watcher auto_rebalance wired; equal-qty case correctly identified as untradeable mark-price drift (HOLD). User's 5/10 "hole" undersells this; missing piece is ENTRY-time partial-fill repair = FAZA 3 spec. GAP-MAP ("drift/qty-rebalance strongest") reconfirmed.
+- Reconciliation: ledger persistence + locks exist; NO boot-time exchange-vs-local reconciliation loop → user's 7/10 fair. Risk guardian: run_cash_and_carry.py local mode only → 6/10 fair.
+- External verification (git ls-remote + shallow clones into /home/z/bench-check + GitHub API + raw.githubusercontent probes):
+  * hummingbot/hummingbot: 27,932 commits / 19,955 stars — user's "skoraj 28.000" EXACT. strategy_v2 confirmed: 8 executor types (arbitrage, dca, grid, lp, order, position, twap, xemm) + controllers/ + executor_orchestrator.py.
+  * Triple-barrier CONFIRMED in code: position_executor.py = 38 triple_barrier mentions, stop_loss 15, take_profit 68, time_limit 9.
+  * hummingbot/condor: real — Telegram bot + trading via Hummingbot API; AI Agents ("each can author its own tick strategy... run autonomously with dry-run support"), MCP tools, /agent assistant. User's claim TRUE in substance.
+  * MRowhani/basis-funding-arbitrage-bot: real, Rust, 81 files / 32,164 lines. README verbatim: "partial-fill handling, one-leg-filled repair, and emergency unwind"; code: S3OneLegFailure, flatten_orphan_leg, reconciliation tick/loop in ssot/run, models Partial/Repaired/EmergencyClose/Repair/Emergency. Explicit disclaimer: "research and engineering software... does not include... historical trading results" — user's characterization TRUE. Venues: KuCoin+MEXC only, spot-perp basis (not perp-perp).
+  * frytegg/funding-engine: real, TS, 15 backend src files. ALL five user claims verified in code: maxPositionSize, capitalAllocation ($1250/exchange), killSwitchThresholds {nearLiquidation 80%, maxDrawdown 10%}, single-leg detection (PositionMonitor.ts:93 → executeKillSwitch). Caveats: README pushes live trading ("testnet flags false by default"), NO backtest/paper pipeline, small codebase.
+  * vooi-app/vooi-funding-bot-example: real — production funding bot via VOOI Perps API (HL+Lighter, Aster off), hourly scans, NDJSON logs.
+  * Arbitrage-Trading-Hub/funding-rate-arbitrage-bot: DOES NOT EXIST (git ls-remote: not found; web search: no such repo) — FABRICATED reference. No load-bearing claim rests on it.
+- Collectors health during check: runner PID 12976 alive, journal 56 lines, actions 15 cycles (Day 0). Trading system untouched (verification read-only).
+
+Stage Summary:
+- User's benchmark verdict: ~90% TRUE and directionally correct — matches our own GAP-MAP (production execution layers are the gap, research/validation is our strength). One of five references fabricated; local drift/rebalance undersold; commit count off by 11; funding-persistence measurement already exists (phase2 analyzer) so "regime model" is an upgrade, not greenfield.
+- Recommended post-FAZA-2 order confirmed with 2 adjustments: (1) merge hedge-drift/rebalance into partial-fill workstream (post-entry trim already exists — only entry-time repair missing); (2) funding regime model + capital allocator as one later workstream (persistence metrics already feed it).
+- /home/z/bench-check clones kept as FAZA 3 reference material (MRowhani executor state machine is the concrete implementation reference).
+- Discipline unchanged: nothing starts before Day 7 A/B/C decision; if C, the entire roadmap is archived.
