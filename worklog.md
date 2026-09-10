@@ -702,3 +702,27 @@ Stage Summary:
 - Recommended post-FAZA-2 order confirmed with 2 adjustments: (1) merge hedge-drift/rebalance into partial-fill workstream (post-entry trim already exists — only entry-time repair missing); (2) funding regime model + capital allocator as one later workstream (persistence metrics already feed it).
 - /home/z/bench-check clones kept as FAZA 3 reference material (MRowhani executor state machine is the concrete implementation reference).
 - Discipline unchanged: nothing starts before Day 7 A/B/C decision; if C, the entire roadmap is archived.
+
+---
+Task ID: lab-architecture-review
+Agent: main (Z.ai Code)
+Task: User proposed the two-repo architecture (funding-arb = locked baseline experiment; separate bench-check repo = development laboratory for production-layer features, transfer into funding-arb only after positive A/B). Task: independently re-verify the benchmark claims and analyze whether the proposal is methodologically correct.
+
+Work Log:
+- Independent re-verification of all 5 claimed benchmark repos (fresh evidence: GitHub HTTP status codes, org page check, raw.githubusercontent README fetch, web search, star counts):
+  * hummingbot/hummingbot: HTTP 200, 19,955 stars; funding-arb strategy confirmed via release-notes 1.27.0 ("New Strategy: Funding Rate Arbitrage").
+  * MRowhani/basis-funding-arbitrage-bot: HTTP 200, 0 stars (new research repo, copyright 2026); README verbatim confirms "partial-fill handling, one-leg-filled repair, and emergency unwind", staged exit ladders, reconciliation in orchestrator loop, liquidation-distance tiers, reserved rate-limit budget for emergency close/repair. All feature claims TRUE.
+  * frytegg/funding-engine: HTTP 200, 1 star; kill switch TRUE (liq proximity 80%, drawdown 10%, single-leg detection, size violations) — BUT README admits only Bybit implemented; Bitget/KuCoin/Hyperliquid config-only. Weaker reference than benchmark implied.
+  * vooi-app/vooi-funding-bot-example: HTTP 200, 13 stars; reconciliation + orphan detection/close, on-venue bracket SL/TP, pair cooldown ledger all TRUE; atomic two-leg is a VOOI API (venue-side) feature, not engine-side recovery. AI-assisted vendor example.
+  * Arbitrage-Trading-Hub/funding-rate-arbitrage-bot: repo 404 AND org page 404; web search returns no such repo (only similarly-named unrelated ones: aoki-h-jp, 50shadesofgwei, ksmit323). CONFIRMED FABRICATED (second independent confirmation of previous benchmark-factcheck).
+- Cross-checked all findings against the earlier benchmark-factcheck section (which had cloned repos and verified code-level claims: S3OneLegFailure, executeKillSwitch, triple_barrier x38, etc.) — 100% consistent, benchmark now DOUBLE-VERIFIED.
+- Analyzed the two-repo proposal: verdict = methodologically correct (measurement isolation is physical at repo level; lab work has zero data dependency on the live experiment; uses Day 0-7 waiting time; matches already-committed canon: FAZA 3 spec 486335a is design-only, gated on A/B/C).
+- Defined 7 guardrails for the lab: (1) attention priority rule — collector incidents always beat lab bugs; (2) lab paper/sandbox-only, no trade-enabled keys until post-A/B integration; (3) one-way data — lab reads only synthetic + already-published paper-data snapshots, never runner state; (4) frozen interface contract — Python module, same venue-adapter abstraction, drop-in port boundary (MRowhani Rust = design reference only); (5) per-module failure-injection test gates ("tested" vs "written"); (6) A/B/C criteria stay frozen, no lab-driven goalpost moves; (7) if C: root-cause readout BEFORE archiving (archive, not delete).
+- Carried over 2 roadmap adjustments from fact-check: merge hedge-drift/rebalance into the partial-fill workstream (rebalance_pure_futures_pair already exists — only entry-time repair missing); funding regime + capital allocator as one later workstream; plus reconciliation adjacent to recovery (it is the recovery layer's data source).
+- Health check: funding-arb working tree clean at 0373f5d, engine zero changes since 15d8e58, runner PID 12976 alive (since 14:36), reference clones intact in /home/z/bench-check (condor/frytegg/mrowhani/vooi). No code changed anywhere this session.
+
+Stage Summary:
+- User's benchmark: 4/5 references real with accurate feature claims, 1 fabricated (Arbitrage-Trading-Hub — must be dropped from any future comparison). Double-verified.
+- User's two-repo architecture: APPROVED as correct — with the 7 guardrails and the 3 roadmap adjustments above it is textbook experiment isolation.
+- Key confirmation for the user's self-assessment: "missing = production-execution layer, not research engine" is TRUE against both the external references and the local GAP-MAP/code audit.
+- Lab scaffolding (repo structure, failure-injection harness, constraints-pinned README) is offered but NOT started — per the user's own rule, and to keep this session read-only.
