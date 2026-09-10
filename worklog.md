@@ -648,3 +648,32 @@ Stage Summary:
 - Timeline: day 0 (now) → daily verify-only check-ins → day 3 interim funnel
   read → day 5-7 full FAZA 2 report with retroactive funding reconstruction →
   A/B/C decision → (if A/B) FAZA 3 implementation per the spec.
+
+---
+Task ID: phase2-analyzer
+Agent: main (Z.ai Code)
+Task: Build the FAZA 2 read-only analyzer (BACKTEST vs PAPER report) — the single piece of development work allowed during the paper baseline window, per user's explicit approval. No trading-system changes.
+
+Work Log:
+- Explored live data formats: sandbox journal.jsonl (cycle records with actions/fills/candidates), positions.json (full lifecycle incl. close_info), paper-data branch (github-actions/journal.jsonl appended per 5-min cycle + root sandbox snapshots), backtest_analysis.json (27,876 rows / 0 pass), funding_reconstruction_probe.json (method: get_funding_provider(venue).fetch_since, filter [opened_at, closed_at], long receives when rate<0 / short pays).
+- Confirmed journal cadence ~5 min/cycle; 18 pre-baseline manual cycles (scan_total=1) identified and excluded from funnel (counted only from locked baseline 14:36 UTC).
+- WROTE scripts/analysis/phase2_report.py (committed 0373f5d, pushed to origin/main — new files only, zero engine changes, docs-sync check passed):
+  * READ-ONLY by construction: writes only scripts/data/phase2/; never touches runner state, collector meta, or paper-data collection.
+  * Funding reconstruction reuses project's own backtest.funding_providers + core.fee_providers (same numbers as engine); cached per position id (funding_cache.json).
+  * PnL ledger from journal fills (exact prices, not mark estimates): price = (close_long-open_long)+(open_short-close_short); fees = negative PnL contribution (-trade_usd*rt_pct/100); funding = Σ per-settlement cashflow (long: -rate*N, short: +rate*N).
+  * Edge retention: expected_lifetime_pct = entry gap × settlements_in_hold − RT fees vs realized net% (apples-to-apples).
+  * CONTINUITY AUDIT per user's mandate (not push counts): journal ts monotonicity, duplicate ts/position-ids, parse errors (tolerates concurrent-append partial tail), positions↔journal consistency, paper-data snapshot line-count resets (data-loss proof across touching commits), duplicate lines in latest files, actions 5-min cadence coverage, supervisor/snapshot-pusher meta health.
+  * User's full metric table (BACKTEST vs PAPER): signal/candidate/reject-funnel/entry/exit counts, funding/price/fees/net PnL, expected/realized edge + retention, hold duration, funding persistence, opportunity persistence, A/B/C decision-support block with locked rules + INTERIM stamp.
+- Fixed during dev: fee sign bug (net was adding fees — first run printed 9.4, correct 5.10), funnel baseline filter, retention table alignment, ambiguous pair display (now "RVN long@okx short@bybit" style), post-baseline-only gap reporting.
+- Ran analyzer (2 runs + fresh funding recon): sandbox funnel 35 cycles / 79,837 scan rows / 303 candidates / 41 rejects (depth 24, absurd mark-spread 10, other 7) / 4 entries / 2 exits (report time) / 3 exits by 17:21; actions funnel 12-13 cycles / 3,314+ rows / 12+ candidates; integrity all green (0 parse errors, 0 branch resets, 0 duplicates, supervisor alive).
+- Day-0 interim results: 2 closed positions BOTH net positive — RVN-okx-bybit +3.53 (price 0.64, fees -1.05, funding +3.94), RVN-okx-bitget +1.57 (price -1.07, fees -1.10, funding +3.74); total net +5.10; avg edge retention 156.6%; funding persistence 2/2 settlements kept sign; opportunity persistence: KR200 60% of cycles with 21-cycle streak (still open), SOPH entered on first appearance.
+- Third lifecycle completed during the session: SOPH-bybit-bitget closed 17:21 at edge 0.0093 (edge_below_exit) — will appear in next analyzer run.
+- Pushed Day-0 interim report checkpoint to paper-data branch via one-off plumbing push (636adcc; also 7242445 duplicate from a tool-error-masked first attempt — identical content, no resets): paper-data/phase2/{report-day0.md,report-day0.json,funding_cache.json}.
+- OBSERVATION (not fixed, pre-existing): ci.yml push/pull_request triggers reference branch "ain]" (nonexistent — looks like corrupted "main]"); CI stays green via nightly cron + workflow_dispatch which is exactly what the in-file comment documents; zero trading impact; flagged to user, left untouched per discipline.
+- Final health: runner PID 12976 alive since 14:36 (supervisor fresh); journal 54 lines and growing; positions 4 total / 1 open (KR200) / 3 closed; actions 13 cycles; hourly snapshot pusher 1/1 pushed (next ~18:07).
+
+Stage Summary:
+- FAZA 2 analyzer is built, committed (0373f5d), and battle-tested on Day-0 data — the only allowed development work during baseline is now DONE.
+- Everything from here is mechanical: daily verify-only check = run `python3 scripts/analysis/phase2_report.py` + read its integrity section; it is rerunnable and produces the full user metric table at any point (Day 3 interim read, Day 5-7 final report + A/B/C).
+- Analyzer command for daily checks: cd /home/z/funding-arb && .venv/bin/python scripts/analysis/phase2_report.py (funding recon cached; --no-funding for offline).
+- Baseline untouched: engine still zero changes since 15d8e58; no thresholds/gates/fees/exchanges/strategy modified; paper-data branch growing from 3 collectors.
