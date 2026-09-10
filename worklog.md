@@ -535,3 +535,68 @@ Stage Summary:
   thresholds/strategy/venues/execution logic NOT modified.
 - First closed paper position lifecycle recorded; funding-during-hold data gap
   identified for the FAZA 2 report.
+
+---
+Task ID: PHASE-2-COMPLETENESS-AUDIT
+Agent: Z.ai Code (lead)
+Task: User asked for a full completeness audit ("ali smo vse naredili kaj smo
+raziskali ce ne preveri naredi"), confirmed the GitHub collector approach, elevated
+independent signal replication (RVN/KR200 across environments) as the key proof,
+praised gate behavior (RVN mark-spread reject + KR200 dynamic depth pass) as
+EXECUTABLE vs SIGNAL edge, and defined the FAZA 2 funding framework (ENTRY FUNDING /
+HOLD FUNDING PATH / EXIT FUNDING / REALIZED FUNDING PNL). Discipline: no system
+changes; "naredi ničesar" to the trading engine.
+
+Work Log:
+- AUDIT of every commitment in this conversation: P0 hardening ✓ (pushed, CI green),
+  7-step plan position ✓ (step 5 in progress), GitHub/Vercel/README ✓, 30d backtest
+  + analysis ✓, E2E suite (539) ✓, supervised paper runner ✓ (2h10m, PID stable),
+  dashboard ✓, paper-data branch ✓, GitHub Actions collector + heartbeat ✓
+  (dispatches 16:31/16:36/16:41 — exact 5-min cadence; CI green on 8446ab1),
+  tester package ✓ (docs), baseline lock + A/B/C + gap map ✓ (worklog).
+- TWO GAPS FOUND, BOTH FIXED:
+  1. Main README lacked the tester comparability gotcha → docs-only commit e071f9a
+     (strategy_config.json {trade_usd:500} note in Paper section; a tester without
+     it collects an incomparable funnel: 3x larger depth-gate requirement).
+  2. Sandbox lifecycle data (2 closed positions — the most valuable dataset) was
+     only on sandbox disk since the last snapshot → fresh snapshot pushed to
+     paper-data branch (f240e85, on top of bot's concurrent cycle commits; first
+     push hit non-fast-forward because the github-actions bot pushes concurrently —
+     refetched tip and rebuilt, proving the two-writer scheme coexists).
+- FUNDING-DURING-HOLD GAP (user's only flagged item): verified RETROACTIVELY
+  RECONSTRUCTABLE via the project's own funding providers (read-only probe, zero
+  system changes): get_funding_provider(venue).fetch_since(symbol, open_ms) →
+  filter [opened_at, closed_at] → long receives when rate<0 / short when rate>0.
+  Probe result saved to funding-arb/data/funding_reconstruction_probe.json +
+  pushed in snapshot. THE HEADLINE: first COMPLETE lifecycle PnL of the project —
+  closed position pf-RVN-okx-bybit ($500, hold 50 min): price +$0.64, RT taker
+  fees −$1.05, REALIZED FUNDING +$3.94 (okx settled exactly at the signaled −1.0%
+  — signal is persistent, not a glitch; bybit settled −0.2121% vs −0.3657% at
+  entry — spread widened) → NET ≈ +$3.53 (+0.71% / 50 min). Single data point,
+  mark approximated at entry prices, but the full chain SIGNAL→FEE→DEPTH→ENTRY→
+  HOLD→FUNDING→EXIT→NET is now provably measurable end-to-end.
+- User's FAZA 2 framework recorded as the report spec: per-opportunity chain =
+  signal edge → fee-adjusted edge → mark spread → depth → pre-submit funding →
+  paper entry → actual hold → funding received → exit → fees → slippage → net PnL;
+  funding columns = entry funding / hold funding path / exit funding / realized
+  funding PnL (retroactive reconstruction path verified above); the governing
+  question: does the model find edge that only exists on paper, or edge that
+  survives the entire execution lifecycle?
+- Also noted: user's verdict adopted as project positioning — empirical funnel
+  from signal to realized result is the differentiator vs feature-parity bots;
+  temptations explicitly rejected: more venues, AI/ML, new dashboards, 50 new
+  strategies, threshold optimization.
+
+Stage Summary:
+- Completeness audit: everything researched/planned is now DONE or verifiably IN
+  PROGRESS (paper collection); two found gaps fixed (README docs + data snapshot).
+- Funding gap resolution: NO live changes (discipline held) — reconstruction
+  verified retroactively; first complete lifecycle PnL is net-positive (+0.71%/50min
+  on RVN okx/bybit) with funding being the dominant PnL component (as theory
+  predicts for funding arb).
+- Repo state: main = e071f9a (docs only since 8446ab1; trading engine untouched),
+  paper-data = f240e85 (sandbox snapshot + autonomous github-actions cycles),
+  CI green, heartbeat cadence exact, collectors: sandbox 46 journal lines /
+  2 closed + 2 open positions; github-actions 6+ cycles.
+- Next: nothing — let the collectors run (day 0 → day 3-7), then FAZA 2 report
+  per the recorded spec.
