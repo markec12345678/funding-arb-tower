@@ -254,3 +254,58 @@ Stage Summary:
 - Paper validation running under supervisor (survives sandbox process reaping); gates active in paper mode; funnel + first simulated position accumulating in scripts/data/pure-futures/{journal.jsonl,positions.json}.
 - Monitoring dashboard browser-verified at / (only user-visible route).
 - Next: let paper run 3-7 days; compare backtest vs paper; only then minimal live test.
+
+---
+Task ID: PHASE-2-WAIT
+Agent: Z.ai Code (lead)
+Date: paper day 0 (runner started 14:36 UTC)
+
+Task: Per user directive — change NOTHING, add NOTHING; verify the paper data-collection
+machine is healthy and self-sustaining for the 3-7 day paper period; confirm the
+backtest↔paper comparison milestone is fully prepared. (User accepted backtest verdict:
+majors have no post-fee edge = correct engine behavior; the research question is now
+whether the small-cap/event segment survives execution filters in paper mode.)
+
+Work Log:
+- VERIFICATION ONLY — zero code changes, zero commits (working tree clean at main 45e9541).
+- Git health: main = 45e9541, up to date with origin, clean tree; p0-hardening merged.
+- Paper runner health: PID 12976 alive (run_pure_futures_spread.py --watch 5 --verbose),
+  stable >12 min, RSS 75MB, cycle cadence confirmed 5 min (journal cycles 14:36→14:41→14:46).
+- Supervisor health: instrumentation-node.ts ticker live (paper_runner.meta.json last_check
+  advances every 20s; respawns frozen at 4 — no crashes since stabilization).
+- Data durability: journal.jsonl APPENDS across respawns (22 entries spanning 13:06→14:46,
+  incl. test-noise cycles excluded by /api/status scan_total>=50 filter); positions.json
+  atomic (positions.lock present); strategy_config.json trade_usd=500 fix holding — the
+  live position records notional $500 (silent 5000 override fully defeated).
+- Gate chain PROVEN in live journal (PUFFER/KR200/RVN attempts): depth check →
+  funding re-check (re-fetched at execution time) → dry-run open; RVN attempt shows
+  full pass-through: "depth ok → re-check spread 0.4339% ≥ floor → [DRY-RUN] open".
+- Exit machinery armed: run_once is exit-first every cycle (close when edge ≤ exit
+  threshold 0.01% or pair vanishes from scan) → paper exits + PnL will land in journal.
+- Live funnel snapshot at verification time (6 live cycles):
+  13,700 scan rows → 60 candidates (spread+fee gate) → 14 attempts → 13 rejected →
+  1 paper position open (pf-RVN-okx-bitget, reverse, qty 214408, $500).
+  Rejection breakdown: depth gate ×8 (thin books: KR200 short@okx $128-147,
+  PUFFER legs), stale/delisted perp price ×5 (binance short leg short=0.0).
+  Recurring signal bases: PUFFER(5) KR200(6) RVN(3); net_edge range 0.28-0.61%.
+- Dashboard browser-verified (agent-browser, 390px + 1440px): live funnel bars,
+  rejection histogram, cycles table, positions ledger ($500 RVN), runner status line,
+  zero console errors, no horizontal overflow, footer correct on long page.
+  Screenshots: /home/z/my-project/data-dashboard-{mobile,desktop}.png.
+- Accrual-rate estimate for planning: ~288 cycles/day → ~720k scan rows/day,
+  ~2.9k candidates/day, journal ~375KB/day (trivial disk). Comparison-ready data
+  sources on disk: data/backtest_analysis.json (backtest side) +
+  scripts/data/pure-futures/{journal.jsonl,positions.json} (paper side).
+
+Stage Summary:
+- Paper collection machine verified fully autonomous: runner + supervisor + atomic
+  ledgers + dashboard all green; nothing added or changed per user instruction.
+- Early signal (day 0, non-conclusive): small-cap/event candidates DO pass the fee
+  gate (unlike majors), but the execution layer (depth on thin books, stale/delisted
+  legs) rejects most — exactly the "does edge survive execution filters" measurement
+  the paper period is designed to answer.
+- Milestone BACKTEST ↔ PAPER COMPARISON is data-ready: all inputs persist on disk;
+  report template (kandidati/fee-gate/depth/recheck/entries/exits/gross edge/fees/
+  slippage/net PnL/maxDD/avg hold) + decision framework A/B/C locked in user's plan.
+- No live trading; no strategy changes; no new features. Next action = wait 3-7 days,
+  then produce the comparison report from journal + backtest analysis.
