@@ -428,3 +428,48 @@ Stage Summary:
 - Interaction with A/B/C decision recorded: decision C would retire the roadmap's
   execution upgrades as moot; decision B points exactly at P0 items; decision A makes
   P0 items prerequisites for real capital.
+
+---
+Task ID: PHASE-2-DURABILITY
+Agent: Z.ai Code (lead)
+Task: User asked how collection works given it runs locally while code is on GitHub,
+and proposed handing the paper run to an external crypto-user tester while we develop.
+Action taken: data-durability backup + runnability verification for external tester.
+Zero code changes, zero commits to main.
+
+Work Log:
+- Explained/verified architecture truth: collection runs ONLY in this sandbox
+  (python runner + instrumentation supervisor); GitHub holds code/CI/gh-pages demo;
+  Actions collects nothing. scripts/data/ (journal, positions, strategy_config) is
+  GITIGNORED — journal existed only on sandbox disk until this task.
+- Created durable backup: orphan-style branch `paper-data` on GitHub (commit 7bfdb3c)
+  built via git plumbing (hash-object + update-index --cacheinfo + commit-tree +
+  update-ref) — zero working-tree interference, runner untouched, main still clean.
+  Contents: paper-data/{README.md, journal.jsonl, positions.json, strategy_config.json,
+  backtest_analysis.json, backtest_30d_btc_eth_sol.json, paper_runner.log}.
+  Journal is append-only → future snapshots diff as appended lines only.
+- Secret scan of all pushed files before push: no api keys/secrets/tokens/passphrases
+  (paper mode data = public market data only). Verified post-push: working tree clean,
+  branch = main, runner PID 12976 still alive (35+ min).
+- External-tester runnability verified: README.md already documents the paper commands
+  (lines 118-146), setup.sh prints them; paper mode needs NO API keys (public-data
+  gates; margin gate is live-only; dry_run default; live requires FARB_LIVE=1).
+- CRITICAL GOTCHA documented for tester handoff: scripts/data/strategy_config.json
+  {"trade_usd": 500} is gitignored → fresh clone lacks it → DEFAULT_STRATEGY silently
+  raises notional to 5000 USD/pair (the exact silent-override bug caught on day 0).
+  Tester MUST create this file before starting; instruction embedded in paper-data
+  branch README.
+- User's tester proposal assessed POSITIVE: external machine = true 24/7 uptime
+  (sandbox has no 7-day SLA), independent execution environment (different IP/latency),
+  real-user validation; sandbox keeps collecting meanwhile = redundancy + two
+  independent samples for the A/B/C decision.
+
+Stage Summary:
+- Paper data now durable on GitHub (paper-data branch, snapshot 7bfdb3c = day0 +35min,
+  27 cycles, RVN open). Future snapshots: repeat plumbing push with -p parent.
+- Tester handoff package ready: repo public + README commands + paper-data README with
+  the strategy_config.json gotcha. Tester contributes journal.jsonl back (file/PR).
+- Division of labor proposed: TESTER runs 3-7 days; MIDVA do FAZA 2 analysis when data
+  arrives + FAZA 3 partial-fill spec meanwhile; sandbox collects in parallel.
+- Discipline intact: no code changes, main untouched at 45e9541, thresholds/venues/
+  features untouched.
