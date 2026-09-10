@@ -600,3 +600,51 @@ Stage Summary:
   2 closed + 2 open positions; github-actions 6+ cycles.
 - Next: nothing — let the collectors run (day 0 → day 3-7), then FAZA 2 report
   per the recorded spec.
+
+---
+Task ID: PHASE-2-HARDEN-DATA + FAZA3-SPEC
+Agent: Z.ai Code (lead)
+Task: User: "odlicno kaj delamo naprej". Answer executed: (1) close the last
+durability gap — automate hourly backup of sandbox lifecycle data to the
+paper-data branch; (2) write the FAZA 3 spec (Partial-Fill / One-Leg Recovery)
+as design-only docs. Trading engine untouched.
+
+Work Log:
+- BUILT hourly auto-snapshot: my-project/scripts/push-paper-snapshot.sh (git
+  plumbing on temp index; never touches funding-arb working tree; fetch+retry
+  x3 handles concurrent pushes from the github-actions bot) +
+  my-project/src/server/paper-snapshot.ts (hourly throttle, state persisted to
+  funding-arb/data/paper_snapshot.meta.json — separate file deliberately, so
+  the old in-memory supervisor tick cannot clobber it). Activation via route
+  side-effect import (hot-reload in the RUNNING dev server — dashboard polling
+  recompiled the route automatically; module verified live: runs=1 ok=1 pushed)
+  + instrumentation import for next boot; globalThis guard.
+- MANUAL + AUTO both pushed snapshots (9464bc9 module-init, 59bb4e3 manual
+  test) — script and module independently proven; paper-data branch now has
+  continuous lifecycle backups (~hourly) in addition to the ~5-min stateless
+  funnel cycles from github-actions.
+- WROTE funding-arb/plans/partial-fill-recovery-plan.md (154 lines, docs-only
+  commit 486335a): FAZA 3 spec anchored to verified code locations —
+  PAIR_PENDING → LEG_A_FILLED → LEG_B_FILLED/LEG_B_PARTIAL → REPAIR(trim
+  default | retry opt-in) → HEDGED | EMERGENCY_UNWIND → UNWOUNDED; repair
+  policy reuses the watcher's proven trim order-construction at entry time;
+  ledger gains state + leg_fills{qty,avg_px,fee_usd,ts} + repairs[] with
+  read-time synthesis for legacy positions (no migration); paper-mode parity
+  (state machine runs in paper; repair/emergency paths covered via fake-venue
+  partial-fill injection); test plan (~25 new tests, hermetic offline);
+  acceptance criteria incl. elimination of resting 'naked'; explicitly gated
+  on FAZA 2 A/B/C decision (archived if C).
+- Verification: bun run lint clean; runner 2h22m stable; journal 49 lines;
+  positions 2 open / 2 closed; heartbeat cadence exact (16:51, 16:56);
+  route 200; funding-arb tree clean.
+
+Stage Summary:
+- Both "what's next" deliverables done: durability gap closed (hourly auto
+  snapshot live in the running server) + FAZA 3 implementation contract
+  written and committed (docs-only).
+- System now fully autonomous on ALL layers: collection (3 collectors),
+  GitHub trigger (heartbeat), lifecycle backup (hourly snapshot), monitoring
+  (dashboard). Human input needed only at FAZA 2 report time.
+- Timeline: day 0 (now) → daily verify-only check-ins → day 3 interim funnel
+  read → day 5-7 full FAZA 2 report with retroactive funding reconstruction →
+  A/B/C decision → (if A/B) FAZA 3 implementation per the spec.

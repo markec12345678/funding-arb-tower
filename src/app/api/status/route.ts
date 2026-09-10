@@ -3,12 +3,13 @@ import { execSync } from "child_process";
 import { readFileSync, existsSync, statSync } from "fs";
 import path from "path";
 
-// Side-effect import: activates the GitHub paper-collector heartbeat inside
-// this (long-lived) dev-server process. Route modules hot-reload in dev, so
-// this is the activation path for an already-running server; at server boot
-// instrumentation-node.ts activates it as well. Guarded by globalThis — only
-// one heartbeat exists per process regardless of module copies.
+// Side-effect imports: activate the GitHub paper-collector heartbeat and the
+// hourly paper-data snapshot inside this (long-lived) dev-server process.
+// Route modules hot-reload in dev, so this is the activation path for an
+// already-running server; at server boot instrumentation-node.ts activates
+// them as well. Both are guarded by globalThis — one instance per process.
 import "@/server/gh-heartbeat";
+import "@/server/paper-snapshot";
 
 export const dynamic = "force-dynamic";
 

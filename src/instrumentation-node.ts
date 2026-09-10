@@ -22,6 +22,7 @@
 import { spawn, execSync } from "child_process";
 import { openSync, writeFileSync, readFileSync, existsSync } from "fs";
 import "@/server/gh-heartbeat";
+import "@/server/paper-snapshot";
 
 const g = globalThis as any;
 if (!g.__fundingArbPaperSupervisor) {
