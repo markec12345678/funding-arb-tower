@@ -1,0 +1,276 @@
+   480→Task: User: "na githubu nemore zbirat podatkov" → prove GitHub CAN collect, then
+   481→"nadaljuj kjer si ostal" → finish autonomous GitHub-side paper collection.
+   482→
+   483→Work Log:
+   484→- Built .github/workflows/paper-collector.yml on funding-arb main: checkout → pip
+   485→  requirements → mkdir scripts/data + strategy_config.json {trade_usd:500} (the
+   486→  known silent-override gotcha) → run_pure_futures_spread.py --once → APPEND
+   487→  journal line + positions snapshot to paper-data branch under
+   488→  paper-data/github-actions/ (clone paper-data, concat journal, push). Triggers:
+   489→  cron 3,8,...,58 * * * * + workflow_dispatch + repository_dispatch(paper-cycle).
+   490→- Commits: 673afa8 (workflow), dc1108e (mkdir fix — fresh checkout lacks gitignored
+   491→  dirs; caught from first failed run's logs), 8446ab1 (repository_dispatch bridge
+   492→  + schedule-registration refresh). Push events now enqueue CI runs on this fork
+   493→  (restriction from earlier session no longer holds — both commits ran CI green).
+   494→- First dispatch run FAILED at "Prepare local paper config" (missing dir) → fixed
+   495→  (dc1108e) → second dispatch run SUCCESS: full 4-venue scan (290 rows) from a
+   496→  GitHub/Azure IP, 2 candidates, gates live (RVN aborted on mark-spread 1.04%>1.0%,
+   497→  KR200 aborted on depth $532<need $1500) — the top sandbox signals (RVN/KR200)
+   498→  REPLICATE from an independent environment; scan_total ~290 vs sandbox ~2500 =
+   499→  shared-IP venue rate limiting (documented as caveat; each line records its own
+   500→  scan_total so rates normalize per-row).
+   501→- Scheduled runs refused to fire (repo fork:true; enable API PUT → state active
+   502→  for paper-collector.yml + ci.yml, but fork cron registration lags: slots
+   503→  16:03-16:28 all missed). No crond/systemd in sandbox → built guaranteed
+   504→  heartbeat: src/server/gh-heartbeat.ts (new module, my-project) fires
+   505→  repository_dispatch every 5 min, token read at runtime from funding-arb git
+   506→  remote config (never in source). Activation problem solved via dev-mode route
+   507→  hot-reload: side-effect import in /api/status route (instrumentation does NOT
+   508→  hot-reload — verified empty meta) + import in instrumentation-node.ts for next
+   509→  boot; globalThis guard = single instance per process; supervisor tick now
+   510→  read-modify-writes meta (preserves gh_* fields; old in-memory tick transiently
+   511→  clobbers them until next boot — harmless, heartbeat keeps state in memory).
+   512→- END-TO-END VERIFIED: heartbeat fired 16:31:58 (http 204) → run 16:32:04 success
+   513→  → cycle appended (2b5439a). GitHub-side journal now 3 cycles and growing ~every
+   514→  5 min autonomously. bun run lint clean; dev.log clean; dashboard /api/status 200.
+   515→- paper-data branch docs updated (plumbing push 1c95e70): 3 collectors documented
+   516→  (sandbox snapshots / github-actions continuous / tester planned) + STATELESS
+   517→  caveat: each Actions run starts empty → github sample measures the funnel only
+   518→  (no position lifecycle); lifecycle data comes from persistent collectors.
+   519→- SANDBOX COLLECTOR MILESTONES meanwhile: first CLOSED position —
+   520→  pf-RVN-okx-bybit reverse $500: open 15:51:53 → close 16:41:53 (hold 50 min),
+   521→  exit trigger = pair vanished from scan (edge -999 path), close legs okx@0.002304
+   522→  / bybit@0.002295 vs open 0.002329/0.002323 → price PnL ≈ +$0.64 before fees
+   523→  (~$1.05 RT taker) → net ≈ -$0.41 + funding unrecorded (gap: ledger lacks
+   524→  funding-accrued-during-hold; flagged for FAZA 2 analysis). 4 opens total,
+   525→  3 open now (RVN okx/bitget, SOPH bybit/bitget, KR200 bitget/okx — KR200 passed
+   526→  depth this time: dynamic book, gates correctly adaptive not static).
+   527→
+   528→Stage Summary:
+   529→- GitHub CAN and now DOES collect: autonomous ~5-min cadence via repository_dispatch
+   530→  heartbeat (cron bridge may arm later; harmless double-cadence if it does).
+   531→- Three independent collectors live: sandbox (persistent, lifecycle data),
+   532→  GitHub Actions (stateless funnel sample, reduced universe), tester (handoff
+   533→  package ready from previous stage).
+   534→- Trading repo untouched apart from CI workflow files (3 commits, all CI green);
+   535→  thresholds/strategy/venues/execution logic NOT modified.
+   536→- First closed paper position lifecycle recorded; funding-during-hold data gap
+   537→  identified for the FAZA 2 report.
+   538→
+   539→---
+   540→Task ID: PHASE-2-COMPLETENESS-AUDIT
+   541→Agent: Z.ai Code (lead)
+   542→Task: User asked for a full completeness audit ("ali smo vse naredili kaj smo
+   543→raziskali ce ne preveri naredi"), confirmed the GitHub collector approach, elevated
+   544→independent signal replication (RVN/KR200 across environments) as the key proof,
+   545→praised gate behavior (RVN mark-spread reject + KR200 dynamic depth pass) as
+   546→EXECUTABLE vs SIGNAL edge, and defined the FAZA 2 funding framework (ENTRY FUNDING /
+   547→HOLD FUNDING PATH / EXIT FUNDING / REALIZED FUNDING PNL). Discipline: no system
+   548→changes; "naredi ničesar" to the trading engine.
+   549→
+   550→Work Log:
+   551→- AUDIT of every commitment in this conversation: P0 hardening ✓ (pushed, CI green),
+   552→  7-step plan position ✓ (step 5 in progress), GitHub/Vercel/README ✓, 30d backtest
+   553→  + analysis ✓, E2E suite (539) ✓, supervised paper runner ✓ (2h10m, PID stable),
+   554→  dashboard ✓, paper-data branch ✓, GitHub Actions collector + heartbeat ✓
+   555→  (dispatches 16:31/16:36/16:41 — exact 5-min cadence; CI green on 8446ab1),
+   556→  tester package ✓ (docs), baseline lock + A/B/C + gap map ✓ (worklog).
+   557→- TWO GAPS FOUND, BOTH FIXED:
+   558→  1. Main README lacked the tester comparability gotcha → docs-only commit e071f9a
+   559→     (strategy_config.json {trade_usd:500} note in Paper section; a tester without
+   560→     it collects an incomparable funnel: 3x larger depth-gate requirement).
+   561→  2. Sandbox lifecycle data (2 closed positions — the most valuable dataset) was
+   562→     only on sandbox disk since the last snapshot → fresh snapshot pushed to
+   563→     paper-data branch (f240e85, on top of bot's concurrent cycle commits; first
+   564→     push hit non-fast-forward because the github-actions bot pushes concurrently —
+   565→     refetched tip and rebuilt, proving the two-writer scheme coexists).
+   566→- FUNDING-DURING-HOLD GAP (user's only flagged item): verified RETROACTIVELY
+   567→  RECONSTRUCTABLE via the project's own funding providers (read-only probe, zero
+   568→  system changes): get_funding_provider(venue).fetch_since(symbol, open_ms) →
+   569→  filter [opened_at, closed_at] → long receives when rate<0 / short when rate>0.
+   570→  Probe result saved to funding-arb/data/funding_reconstruction_probe.json +
+   571→  pushed in snapshot. THE HEADLINE: first COMPLETE lifecycle PnL of the project —
+   572→  closed position pf-RVN-okx-bybit ($500, hold 50 min): price +$0.64, RT taker
+   573→  fees −$1.05, REALIZED FUNDING +$3.94 (okx settled exactly at the signaled −1.0%
+   574→  — signal is persistent, not a glitch; bybit settled −0.2121% vs −0.3657% at
+   575→  entry — spread widened) → NET ≈ +$3.53 (+0.71% / 50 min). Single data point,
+   576→  mark approximated at entry prices, but the full chain SIGNAL→FEE→DEPTH→ENTRY→
+   577→  HOLD→FUNDING→EXIT→NET is now provably measurable end-to-end.
+   578→- User's FAZA 2 framework recorded as the report spec: per-opportunity chain =
+   579→  signal edge → fee-adjusted edge → mark spread → depth → pre-submit funding →
+   580→  paper entry → actual hold → funding received → exit → fees → slippage → net PnL;
+   581→  funding columns = entry funding / hold funding path / exit funding / realized
+   582→  funding PnL (retroactive reconstruction path verified above); the governing
+   583→  question: does the model find edge that only exists on paper, or edge that
+   584→  survives the entire execution lifecycle?
+   585→- Also noted: user's verdict adopted as project positioning — empirical funnel
+   586→  from signal to realized result is the differentiator vs feature-parity bots;
+   587→  temptations explicitly rejected: more venues, AI/ML, new dashboards, 50 new
+   588→  strategies, threshold optimization.
+   589→
+   590→Stage Summary:
+   591→- Completeness audit: everything researched/planned is now DONE or verifiably IN
+   592→  PROGRESS (paper collection); two found gaps fixed (README docs + data snapshot).
+   593→- Funding gap resolution: NO live changes (discipline held) — reconstruction
+   594→  verified retroactively; first complete lifecycle PnL is net-positive (+0.71%/50min
+   595→  on RVN okx/bybit) with funding being the dominant PnL component (as theory
+   596→  predicts for funding arb).
+   597→- Repo state: main = e071f9a (docs only since 8446ab1; trading engine untouched),
+   598→  paper-data = f240e85 (sandbox snapshot + autonomous github-actions cycles),
+   599→  CI green, heartbeat cadence exact, collectors: sandbox 46 journal lines /
+   600→  2 closed + 2 open positions; github-actions 6+ cycles.
+   601→- Next: nothing — let the collectors run (day 0 → day 3-7), then FAZA 2 report
+   602→  per the recorded spec.
+   603→
+   604→---
+   605→Task ID: PHASE-2-HARDEN-DATA + FAZA3-SPEC
+   606→Agent: Z.ai Code (lead)
+   607→Task: User: "odlicno kaj delamo naprej". Answer executed: (1) close the last
+   608→durability gap — automate hourly backup of sandbox lifecycle data to the
+   609→paper-data branch; (2) write the FAZA 3 spec (Partial-Fill / One-Leg Recovery)
+   610→as design-only docs. Trading engine untouched.
+   611→
+   612→Work Log:
+   613→- BUILT hourly auto-snapshot: my-project/scripts/push-paper-snapshot.sh (git
+   614→  plumbing on temp index; never touches funding-arb working tree; fetch+retry
+   615→  x3 handles concurrent pushes from the github-actions bot) +
+   616→  my-project/src/server/paper-snapshot.ts (hourly throttle, state persisted to
+   617→  funding-arb/data/paper_snapshot.meta.json — separate file deliberately, so
+   618→  the old in-memory supervisor tick cannot clobber it). Activation via route
+   619→  side-effect import (hot-reload in the RUNNING dev server — dashboard polling
+   620→  recompiled the route automatically; module verified live: runs=1 ok=1 pushed)
+   621→  + instrumentation import for next boot; globalThis guard.
+   622→- MANUAL + AUTO both pushed snapshots (9464bc9 module-init, 59bb4e3 manual
+   623→  test) — script and module independently proven; paper-data branch now has
+   624→  continuous lifecycle backups (~hourly) in addition to the ~5-min stateless
+   625→  funnel cycles from github-actions.
+   626→- WROTE funding-arb/plans/partial-fill-recovery-plan.md (154 lines, docs-only
+   627→  commit 486335a): FAZA 3 spec anchored to verified code locations —
+   628→  PAIR_PENDING → LEG_A_FILLED → LEG_B_FILLED/LEG_B_PARTIAL → REPAIR(trim
+   629→  default | retry opt-in) → HEDGED | EMERGENCY_UNWIND → UNWOUNDED; repair
+   630→  policy reuses the watcher's proven trim order-construction at entry time;
+   631→  ledger gains state + leg_fills{qty,avg_px,fee_usd,ts} + repairs[] with
+   632→  read-time synthesis for legacy positions (no migration); paper-mode parity
+   633→  (state machine runs in paper; repair/emergency paths covered via fake-venue
+   634→  partial-fill injection); test plan (~25 new tests, hermetic offline);
+   635→  acceptance criteria incl. elimination of resting 'naked'; explicitly gated
+   636→  on FAZA 2 A/B/C decision (archived if C).
+   637→- Verification: bun run lint clean; runner 2h22m stable; journal 49 lines;
+   638→  positions 2 open / 2 closed; heartbeat cadence exact (16:51, 16:56);
+   639→  route 200; funding-arb tree clean.
+   640→
+   641→Stage Summary:
+   642→- Both "what's next" deliverables done: durability gap closed (hourly auto
+   643→  snapshot live in the running server) + FAZA 3 implementation contract
+   644→  written and committed (docs-only).
+   645→- System now fully autonomous on ALL layers: collection (3 collectors),
+   646→  GitHub trigger (heartbeat), lifecycle backup (hourly snapshot), monitoring
+   647→  (dashboard). Human input needed only at FAZA 2 report time.
+   648→- Timeline: day 0 (now) → daily verify-only check-ins → day 3 interim funnel
+   649→  read → day 5-7 full FAZA 2 report with retroactive funding reconstruction →
+   650→  A/B/C decision → (if A/B) FAZA 3 implementation per the spec.
+   651→
+   652→---
+   653→Task ID: phase2-analyzer
+   654→Agent: main (Z.ai Code)
+   655→Task: Build the FAZA 2 read-only analyzer (BACKTEST vs PAPER report) — the single piece of development work allowed during the paper baseline window, per user's explicit approval. No trading-system changes.
+   656→
+   657→Work Log:
+   658→- Explored live data formats: sandbox journal.jsonl (cycle records with actions/fills/candidates), positions.json (full lifecycle incl. close_info), paper-data branch (github-actions/journal.jsonl appended per 5-min cycle + root sandbox snapshots), backtest_analysis.json (27,876 rows / 0 pass), funding_reconstruction_probe.json (method: get_funding_provider(venue).fetch_since, filter [opened_at, closed_at], long receives when rate<0 / short pays).
+   659→- Confirmed journal cadence ~5 min/cycle; 18 pre-baseline manual cycles (scan_total=1) identified and excluded from funnel (counted only from locked baseline 14:36 UTC).
+   660→- WROTE scripts/analysis/phase2_report.py (committed 0373f5d, pushed to origin/main — new files only, zero engine changes, docs-sync check passed):
+   661→  * READ-ONLY by construction: writes only scripts/data/phase2/; never touches runner state, collector meta, or paper-data collection.
+   662→  * Funding reconstruction reuses project's own backtest.funding_providers + core.fee_providers (same numbers as engine); cached per position id (funding_cache.json).
+   663→  * PnL ledger from journal fills (exact prices, not mark estimates): price = (close_long-open_long)+(open_short-close_short); fees = negative PnL contribution (-trade_usd*rt_pct/100); funding = Σ per-settlement cashflow (long: -rate*N, short: +rate*N).
+   664→  * Edge retention: expected_lifetime_pct = entry gap × settlements_in_hold − RT fees vs realized net% (apples-to-apples).
+   665→  * CONTINUITY AUDIT per user's mandate (not push counts): journal ts monotonicity, duplicate ts/position-ids, parse errors (tolerates concurrent-append partial tail), positions↔journal consistency, paper-data snapshot line-count resets (data-loss proof across touching commits), duplicate lines in latest files, actions 5-min cadence coverage, supervisor/snapshot-pusher meta health.
+   666→  * User's full metric table (BACKTEST vs PAPER): signal/candidate/reject-funnel/entry/exit counts, funding/price/fees/net PnL, expected/realized edge + retention, hold duration, funding persistence, opportunity persistence, A/B/C decision-support block with locked rules + INTERIM stamp.
+   667→- Fixed during dev: fee sign bug (net was adding fees — first run printed 9.4, correct 5.10), funnel baseline filter, retention table alignment, ambiguous pair display (now "RVN long@okx short@bybit" style), post-baseline-only gap reporting.
+   668→- Ran analyzer (2 runs + fresh funding recon): sandbox funnel 35 cycles / 79,837 scan rows / 303 candidates / 41 rejects (depth 24, absurd mark-spread 10, other 7) / 4 entries / 2 exits (report time) / 3 exits by 17:21; actions funnel 12-13 cycles / 3,314+ rows / 12+ candidates; integrity all green (0 parse errors, 0 branch resets, 0 duplicates, supervisor alive).
+   669→- Day-0 interim results: 2 closed positions BOTH net positive — RVN-okx-bybit +3.53 (price 0.64, fees -1.05, funding +3.94), RVN-okx-bitget +1.57 (price -1.07, fees -1.10, funding +3.74); total net +5.10; avg edge retention 156.6%; funding persistence 2/2 settlements kept sign; opportunity persistence: KR200 60% of cycles with 21-cycle streak (still open), SOPH entered on first appearance.
+   670→- Third lifecycle completed during the session: SOPH-bybit-bitget closed 17:21 at edge 0.0093 (edge_below_exit) — will appear in next analyzer run.
+   671→- Pushed Day-0 interim report checkpoint to paper-data branch via one-off plumbing push (636adcc; also 7242445 duplicate from a tool-error-masked first attempt — identical content, no resets): paper-data/phase2/{report-day0.md,report-day0.json,funding_cache.json}.
+   672→- OBSERVATION (not fixed, pre-existing): ci.yml push/pull_request triggers reference branch "ain]" (nonexistent — looks like corrupted "main]"); CI stays green via nightly cron + workflow_dispatch which is exactly what the in-file comment documents; zero trading impact; flagged to user, left untouched per discipline.
+   673→- Final health: runner PID 12976 alive since 14:36 (supervisor fresh); journal 54 lines and growing; positions 4 total / 1 open (KR200) / 3 closed; actions 13 cycles; hourly snapshot pusher 1/1 pushed (next ~18:07).
+   674→
+   675→Stage Summary:
+   676→- FAZA 2 analyzer is built, committed (0373f5d), and battle-tested on Day-0 data — the only allowed development work during baseline is now DONE.
+   677→- Everything from here is mechanical: daily verify-only check = run `python3 scripts/analysis/phase2_report.py` + read its integrity section; it is rerunnable and produces the full user metric table at any point (Day 3 interim read, Day 5-7 final report + A/B/C).
+   678→- Analyzer command for daily checks: cd /home/z/funding-arb && .venv/bin/python scripts/analysis/phase2_report.py (funding recon cached; --no-funding for offline).
+   679→- Baseline untouched: engine still zero changes since 15d8e58; no thresholds/gates/fees/exchanges/strategy modified; paper-data branch growing from 3 collectors.
+   680→
+   681→---
+   682→Task ID: benchmark-factcheck
+   683→Agent: main (Z.ai Code)
+   684→Task: Fact-check the user's external benchmark comparison (Hummingbot / MRowhani / frytegg / vooi / Arbitrage-Trading-Hub) and the local-repo claims. Read-only verification; zero trading-system changes.
+   685→
+   686→Work Log:
+   687→- Local repo verified: 117 commits (user said 106 — outdated by 11); all strategies confirmed (Pure Futures / C&C / Unified C&C / Cross-asset per README table + code files); 4 CEX + 5 perp DEX venue adapters; fee-aware real_edge; Vue dashboard + Vercel demo + Next.js paper monitor; paper/live + backtest.
+   688→- DRIFT/REBALANCE FINDING (correction to user's scorecard): rebalance_pure_futures_pair EXISTS in pure_futures_executor.py — trims oversized leg on quantity mismatch (partial liquidation/ADL), live mode reads actual quantities from exchange API; watcher auto_rebalance wired; equal-qty case correctly identified as untradeable mark-price drift (HOLD). User's 5/10 "hole" undersells this; missing piece is ENTRY-time partial-fill repair = FAZA 3 spec. GAP-MAP ("drift/qty-rebalance strongest") reconfirmed.
+   689→- Reconciliation: ledger persistence + locks exist; NO boot-time exchange-vs-local reconciliation loop → user's 7/10 fair. Risk guardian: run_cash_and_carry.py local mode only → 6/10 fair.
+   690→- External verification (git ls-remote + shallow clones into /home/z/bench-check + GitHub API + raw.githubusercontent probes):
+   691→  * hummingbot/hummingbot: 27,932 commits / 19,955 stars — user's "skoraj 28.000" EXACT. strategy_v2 confirmed: 8 executor types (arbitrage, dca, grid, lp, order, position, twap, xemm) + controllers/ + executor_orchestrator.py.
+   692→  * Triple-barrier CONFIRMED in code: position_executor.py = 38 triple_barrier mentions, stop_loss 15, take_profit 68, time_limit 9.
+   693→  * hummingbot/condor: real — Telegram bot + trading via Hummingbot API; AI Agents ("each can author its own tick strategy... run autonomously with dry-run support"), MCP tools, /agent assistant. User's claim TRUE in substance.
+   694→  * MRowhani/basis-funding-arbitrage-bot: real, Rust, 81 files / 32,164 lines. README verbatim: "partial-fill handling, one-leg-filled repair, and emergency unwind"; code: S3OneLegFailure, flatten_orphan_leg, reconciliation tick/loop in ssot/run, models Partial/Repaired/EmergencyClose/Repair/Emergency. Explicit disclaimer: "research and engineering software... does not include... historical trading results" — user's characterization TRUE. Venues: KuCoin+MEXC only, spot-perp basis (not perp-perp).
+   695→  * frytegg/funding-engine: real, TS, 15 backend src files. ALL five user claims verified in code: maxPositionSize, capitalAllocation ($1250/exchange), killSwitchThresholds {nearLiquidation 80%, maxDrawdown 10%}, single-leg detection (PositionMonitor.ts:93 → executeKillSwitch). Caveats: README pushes live trading ("testnet flags false by default"), NO backtest/paper pipeline, small codebase.
+   696→  * vooi-app/vooi-funding-bot-example: real — production funding bot via VOOI Perps API (HL+Lighter, Aster off), hourly scans, NDJSON logs.
+   697→  * Arbitrage-Trading-Hub/funding-rate-arbitrage-bot: DOES NOT EXIST (git ls-remote: not found; web search: no such repo) — FABRICATED reference. No load-bearing claim rests on it.
+   698→- Collectors health during check: runner PID 12976 alive, journal 56 lines, actions 15 cycles (Day 0). Trading system untouched (verification read-only).
+   699→
+   700→Stage Summary:
+   701→- User's benchmark verdict: ~90% TRUE and directionally correct — matches our own GAP-MAP (production execution layers are the gap, research/validation is our strength). One of five references fabricated; local drift/rebalance undersold; commit count off by 11; funding-persistence measurement already exists (phase2 analyzer) so "regime model" is an upgrade, not greenfield.
+   702→- Recommended post-FAZA-2 order confirmed with 2 adjustments: (1) merge hedge-drift/rebalance into partial-fill workstream (post-entry trim already exists — only entry-time repair missing); (2) funding regime model + capital allocator as one later workstream (persistence metrics already feed it).
+   703→- /home/z/bench-check clones kept as FAZA 3 reference material (MRowhani executor state machine is the concrete implementation reference).
+   704→- Discipline unchanged: nothing starts before Day 7 A/B/C decision; if C, the entire roadmap is archived.
+   705→
+   706→---
+   707→Task ID: lab-architecture-review
+   708→Agent: main (Z.ai Code)
+   709→Task: User proposed the two-repo architecture (funding-arb = locked baseline experiment; separate bench-check repo = development laboratory for production-layer features, transfer into funding-arb only after positive A/B). Task: independently re-verify the benchmark claims and analyze whether the proposal is methodologically correct.
+   710→
+   711→Work Log:
+   712→- Independent re-verification of all 5 claimed benchmark repos (fresh evidence: GitHub HTTP status codes, org page check, raw.githubusercontent README fetch, web search, star counts):
+   713→  * hummingbot/hummingbot: HTTP 200, 19,955 stars; funding-arb strategy confirmed via release-notes 1.27.0 ("New Strategy: Funding Rate Arbitrage").
+   714→  * MRowhani/basis-funding-arbitrage-bot: HTTP 200, 0 stars (new research repo, copyright 2026); README verbatim confirms "partial-fill handling, one-leg-filled repair, and emergency unwind", staged exit ladders, reconciliation in orchestrator loop, liquidation-distance tiers, reserved rate-limit budget for emergency close/repair. All feature claims TRUE.
+   715→  * frytegg/funding-engine: HTTP 200, 1 star; kill switch TRUE (liq proximity 80%, drawdown 10%, single-leg detection, size violations) — BUT README admits only Bybit implemented; Bitget/KuCoin/Hyperliquid config-only. Weaker reference than benchmark implied.
+   716→  * vooi-app/vooi-funding-bot-example: HTTP 200, 13 stars; reconciliation + orphan detection/close, on-venue bracket SL/TP, pair cooldown ledger all TRUE; atomic two-leg is a VOOI API (venue-side) feature, not engine-side recovery. AI-assisted vendor example.
+   717→  * Arbitrage-Trading-Hub/funding-rate-arbitrage-bot: repo 404 AND org page 404; web search returns no such repo (only similarly-named unrelated ones: aoki-h-jp, 50shadesofgwei, ksmit323). CONFIRMED FABRICATED (second independent confirmation of previous benchmark-factcheck).
+   718→- Cross-checked all findings against the earlier benchmark-factcheck section (which had cloned repos and verified code-level claims: S3OneLegFailure, executeKillSwitch, triple_barrier x38, etc.) — 100% consistent, benchmark now DOUBLE-VERIFIED.
+   719→- Analyzed the two-repo proposal: verdict = methodologically correct (measurement isolation is physical at repo level; lab work has zero data dependency on the live experiment; uses Day 0-7 waiting time; matches already-committed canon: FAZA 3 spec 486335a is design-only, gated on A/B/C).
+   720→- Defined 7 guardrails for the lab: (1) attention priority rule — collector incidents always beat lab bugs; (2) lab paper/sandbox-only, no trade-enabled keys until post-A/B integration; (3) one-way data — lab reads only synthetic + already-published paper-data snapshots, never runner state; (4) frozen interface contract — Python module, same venue-adapter abstraction, drop-in port boundary (MRowhani Rust = design reference only); (5) per-module failure-injection test gates ("tested" vs "written"); (6) A/B/C criteria stay frozen, no lab-driven goalpost moves; (7) if C: root-cause readout BEFORE archiving (archive, not delete).
+   721→- Carried over 2 roadmap adjustments from fact-check: merge hedge-drift/rebalance into the partial-fill workstream (rebalance_pure_futures_pair already exists — only entry-time repair missing); funding regime + capital allocator as one later workstream; plus reconciliation adjacent to recovery (it is the recovery layer's data source).
+   722→- Health check: funding-arb working tree clean at 0373f5d, engine zero changes since 15d8e58, runner PID 12976 alive (since 14:36), reference clones intact in /home/z/bench-check (condor/frytegg/mrowhani/vooi). No code changed anywhere this session.
+   723→
+   724→Stage Summary:
+   725→- User's benchmark: 4/5 references real with accurate feature claims, 1 fabricated (Arbitrage-Trading-Hub — must be dropped from any future comparison). Double-verified.
+   726→- User's two-repo architecture: APPROVED as correct — with the 7 guardrails and the 3 roadmap adjustments above it is textbook experiment isolation.
+   727→- Key confirmation for the user's self-assessment: "missing = production-execution layer, not research engine" is TRUE against both the external references and the local GAP-MAP/code audit.
+   728→- Lab scaffolding (repo structure, failure-injection harness, constraints-pinned README) is offered but NOT started — per the user's own rule, and to keep this session read-only.
+   729→
+   730→---
+   731→Task ID: phase3-lab-foundation
+   732→Agent: main (Z.ai Code)
+   733→Task: Build the Phase 3 Laboratory foundation in /home/z/bench-check/phase3-lab per user's approved architecture: state machine, failure-injection harness, deterministic fake exchange, invariants, 50-100 corrupted-scenario test gate. funding-arb stays completely locked.
+   734→
+   735→Work Log:
+   736→- Read prior worklog sections (benchmark-factcheck, lab-architecture-review) — the 7 guardrails and frozen port boundary were the design inputs.
+   737→- Built the lab as a standalone Python package (stdlib only, zero deps, zero keys, no imports from funding-arb):
+   738→  * types.py — Order/Fill/Reject/PairSpec/Policy; integer Decimal quantities; logical-tick timestamps only.
+   739→  * states.py — the user's exact 8 states (PAIR_PENDING, LEG_A_FILLED, LEG_B_FILLED, LEG_B_PARTIAL, REPAIR, HEDGED, EMERGENCY_UNWIND, UNWOUND), 21 guarded edges, evidence requirement on PAIR_PENDING→UNWOUND; documented leg normalisation (A = first fully filled leg).
+   740→  * audit.py — append-only JSONL journal; fold() is the SINGLE state derivation (live engine and replay share it — divergence impossible by construction); per-order fill-ts monotonicity.
+   741→  * exchange/fake.py — deterministic fake exchange: scripted fills/partials/rejects per leg per phase, disconnect windows, constant-lag stale positions, late extra fills (only on FULL-completed entry orders — post-UNWOUND fills impossible by construction), funding sign flips, aggressive (market) unwind escalation; ground truth (true_positions) strictly separated from the API view (get_positions); query_fills for restart recovery (fetch_my_trades pattern); idempotent place by order_id; chaos_script(seed) generator.
+   742→  * engine.py — event-sourced PairEngine: write-ahead intents, simultaneous two-leg IOC entry, LEG_B_FILLED confirm loop with bounded stale-tolerant reconciliation, repair policy (attempt 1 top-up smaller leg, attempt ≥2 trim larger leg, abandon on flip/single-leg/dust/budget), emergency unwind with aggressive escalation, close_pair, restart() = replay + fill-gap recovery + resume with journaled budgets (repair attempts persist across restarts — tested).
+   743→  * invariants.py — I1 (HEDGED verified against venue ground truth), I2 (no PENDING→UNWOUND without per-order reject/cancel evidence + zero fills), I3 (fill shape + per-order monotonic ts), I4 (REPAIR entries ⟺ repair_entered audit events), I5 (file round-trip replay == live status + fold valid at ANY prefix) + terminal-safe check.
+   744→  * scenarios.py — harness with kill/revive restarts; 56-case explicit corrupted matrix (all failure families from user's spec + fraction/length/tick variants + combos); 24 seeded chaos scenarios; per-scenario expected terminal state (HEDGED/UNWOUND) where deterministic.
+   745→- Bugs found & fixed during bring-up (all by test failure, root-caused): (1) intent events lacked top-level ts (nested in order dict) → fold monotonicity crash; (2) global fill-ts monotonicity invalid for late-recovered fills → changed I3 semantics to per-order monotonic (documented); (3) abandoned repairs entered REPAIR without repair_entered audit → restructured into _resolve_mismatch (decide BEFORE entering REPAIR state), keeping I4 exact; (4) stale journal object references after engine restarts → checker/harness re-load from file; (5) get_positions tuple unpack on initial snapshot.
+   746→- Test results: 20 unit/integration tests OK + 80/80 corrupted scenarios PASS (56 explicit + 24 chaos) in ~1.4 s. Strongest assertions verified: restart-equivalence (normalized audit trails identical modulo discovery timestamps and restart markers), triple-restart budget persistence (repair_attempts=2 across 3 kills), replay-valid-at-every-prefix, determinism (identical journals on identical seeds).
+   747→- Scope boundaries documented in README (v0.2 candidates): external interference/ADL → ReconciliationConflict, mark-price drift rebalance, multi-pair portfolio, fee-aware topup-vs-trim cost model.
+   748→- Git: initialized /home/z/bench-check/phase3-lab as its own repo, commit 3508a95 (1830 lines). run_tests.sh = the foundation gate.
+   749→- funding-arb verification after all work: working tree CLEAN at 0373f5d, engine zero changes since 15d8e58, runner PID 12976 alive 3h53m, journal growing (67 lines). Experiment fully unpolluted.
+   750→
+   751→Stage Summary:
+   752→- The Phase 3 Laboratory foundation is BUILT and GREEN: 8-state machine + event-sourced recovery engine + deterministic failure-injection exchange + I1-I5 invariant checker + 80-scenario corruption gate, all passing.
+   753→- This is exactly the user's proposed order (state machine → harness → fake exchange → invariants → tests) with nothing production-facing started and nothing touching funding-arb.
+   754→- Next lab steps (only when user asks): Risk Guardian module (global kill-switch conditions from frytegg reference), Reconciliation loop (boot-time exchange-vs-local), then the ladder per README. funding-arb timeline unchanged: daily verify-only checks, Day 3 interim, Day 5-7 final A/B/C.
+   755→

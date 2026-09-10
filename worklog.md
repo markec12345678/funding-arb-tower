@@ -752,3 +752,103 @@ Stage Summary:
 - The Phase 3 Laboratory foundation is BUILT and GREEN: 8-state machine + event-sourced recovery engine + deterministic failure-injection exchange + I1-I5 invariant checker + 80-scenario corruption gate, all passing.
 - This is exactly the user's proposed order (state machine → harness → fake exchange → invariants → tests) with nothing production-facing started and nothing touching funding-arb.
 - Next lab steps (only when user asks): Risk Guardian module (global kill-switch conditions from frytegg reference), Reconciliation loop (boot-time exchange-vs-local), then the ladder per README. funding-arb timeline unchanged: daily verify-only checks, Day 3 interim, Day 5-7 final A/B/C.
+
+---
+Task ID: phase3-lab-reconciliation
+Agent: main (Z.ai Code)
+Task: User approved the next lab module: Reconciliation FIRST (architectural
+reason: Risk Guardian without a reliable actual-state picture makes wrong
+decisions — exchange truth → reconciliation → actual state → guardian →
+decision → repair/unwind). Requirements: deterministic scenario matrix
+(healthy / stale ledger / one leg / drift / orphan / stale-local / ADL /
+restart+change / late fill / duplicate fill / stale snapshot / partial API),
+pipeline OBSERVE→COMPARE→CLASSIFY→DECIDE→REPAIR|UNWIND|CONFLICT with every
+decision audited, reconciliation must never blindly repair, define the golden
+contract (Order/Fill/Position/ReconciliationResult/RepairAction/RiskDecision/
+AuditEvent) as the stable port boundary instead of porting MRowhani's Rust,
+and do NOT touch funding-arb.
+
+Work Log:
+- Read the full foundation (types/states/audit/engine/fake/invariants/
+  scenarios, 1830 lines) before writing anything; design slots reconciliation
+  ABOVE engine.poll (per-tick order: mutations → venue tick → reconcile+apply
+  → engine.poll) so exchange truth is established before decisions.
+- Built contracts.py — GOLDEN CONTRACT v1.0.0: Order/Fill (re-exported engine
+  types, Fill gains optional `side` so account trades are self-describing),
+  Position, ReconItem, RepairAction, ReconciliationResult, RiskLimits (the
+  user's 10-guard list incl. emergency repair budget), RiskDecision
+  (ALLOW/REDUCE/BLOCK/FLATTEN — types only, guardian module is the next rung),
+  AuditEvent envelope + KNOWN_EVENT_TYPES. CONTRACT_SCHEMA is HAND-PINNED
+  (not auto-derived) so tests/test_contracts.py genuinely fails on drift.
+- Built reconciliation.py (~560 lines): ReconciliationPolicy (conservative
+  defaults: drift tolerance 0, orphan=conflict, reconfirm required, evidence
+  sync always on); Reconciler with OBSERVE (snapshot tick + availability +
+  watermark trades), tick-aware COMPARE (expected-at-view: a lagged view is
+  compared against the ledger AS OF the view's tick — kills the phantom-drift
+  trap during active repair, unit-tested), 11-way CLASSIFY (HEALTHY,
+  DUPLICATE_TRADE, LATE_FILL, SNAPSHOT_STALE, VENUE_UNAVAILABLE, UNRECONCILED,
+  DRIFT, ONE_LEG, STALE_LOCAL, ORPHAN, EXTERNAL_REDUCTION), DECIDE with
+  RECONFIRM gate for unexplained shapes (stable second reading before acting),
+  APPLY (mutations only from journaled decisions; sync targets computed so the
+  ledger converges to venue NOW after the engine absorbs in-flight fills;
+  frozen conflict policy mutates nothing; orphan closer has its own audit
+  chain and never touches the pair ledger). External evidence NEVER
+  auto-repairs: default = sync + protective flatten + ESCALATE_CONFLICT.
+- Extended exchange/fake.py: account-level trade history (fetch_account_trades
+  with since-watermark + duplicate-delivery bug), inject_external_fill (ADL /
+  foreign actor — attributable), inject_position_adjustment (invisible —
+  unexplained), per-endpoint availability (positions/trades), runtime-mutable
+  position lag, get_positions_snapshot returning (view, view_tick),
+  ApiUnavailable, orphan-close order kind.
+- audit.py: venue_adjustment now APPLIES to the ledger in fold (old-value
+  checked — a tampered adjustment makes the journal unreplayable); recon
+  markers (recon_result/external_trade/orphan_close_order/orphan_close_fill)
+  accepted as pass-through. engine.py: protective_unwind (legal transitions
+  from every live state, sizes to the SYNCED ledger — the composition rule:
+  reconciliation makes the ledger honest, the engine's bounded machinery acts).
+- invariants.py: check_recon_invariants R1-R5 + R6 documented as
+  scenario-level (like the foundation's restart gate): R1 audit completeness,
+  R2 classify-before-act (every recon mutation covered by a preceding
+  decision), R3 no duplicate fill identities, R4 no repair after
+  EXTERNAL_REDUCTION until reclassified HEALTHY, R5 zero mutations behind
+  stale/unavailable gates. Negative tests prove the judge catches each class.
+- recon_scenarios.py: 19 deterministic scenarios covering the user's 12
+  families + policy variants (drift tolerant re-hedge, orphan policy close,
+  frozen conflict, endpoint heals, snapshot heals). Runner enforces:
+  expected terminal state, expected classification present, all invariants,
+  post-terminal convergence (final pass must classify HEALTHY) + LIVE
+  idempotency probe (immediate second reconcile performs zero mutations).
+- Bugs found & fixed during bring-up (all by test failure, root-caused):
+  (1) stale journal instance after engine restart → reconciler
+  misattributed the engine's own unwind fills as EXTERNAL and corrupted the
+  file-folded ledger via bogus venue_adjustments → runner now rebinds
+  rec.j = engine.j after every restart (same class as foundation bug #4);
+  (2) FLAT break fired while the world was still trivially flat (before the
+  orphan appeared) → requires saw_anomaly; (3) mid-unwind kill timed after
+  the unwind had already completed → kill_tick=2; (4) test-side: deferred
+  UNWIND_PAIR actions must be executed by the caller before any engine poll
+  (otherwise the engine would "repair" against an external reduction — R4
+  exists precisely to catch that class); (5) foreign-trade markers are
+  journaled even while gated (facts are facts, markers are not mutations).
+- Full gate: 51 unit/integration tests OK (20 foundation + 15 contracts +
+  16 reconciliation incl. R6 restart semantic equivalence), 80/80 pair
+  scenarios (zero regression), 19/19 reconciliation scenarios, ~2 s total.
+- Git: committed eb1311c on top of 3508a95; run_tests.sh now runs all three
+  gates; README rewritten (v0.2: architecture position, pipeline, full
+  classification→decision matrix, R1-R6 table, catalogs, golden contract rule).
+
+Stage Summary:
+- Reconciliation module BUILT and GREEN: the lab now has the layer the GAP-MAP
+  identified as missing (no boot-time exchange-vs-local reconciliation loop)
+  — designed exactly per the user's architecture: truth → reconcile → actual
+  state → (guardian next) → decision → repair/unwind, with every decision in
+  the audit journal and no blind repair anywhere (evidence syncs, unexplained
+  reconfirms, external escalates).
+- Golden contract v1.0.0 is frozen and drift-tested — the future port into
+  funding-arb (if A/B) is a validated-behaviour port behind that contract,
+  not a rewrite.
+- Risk Guardian contract types are in place (RiskLimits with the user's
+  10-guard list, RiskDecision with FLATTEN) — the module itself is the next
+  rung and will consume the reconciled ACTUAL state.
+- funding-arb untouched throughout (verified below); lab total now ~3.9k
+  lines, 150 scenarios, all deterministic.
