@@ -10,12 +10,18 @@
  *   2. (re)spawns it detached from the server process if not,
  *   3. records supervisor state to funding-arb/data/paper_runner.meta.json.
  *
- * Idempotent across dev-server reloads via a globalThis guard; the pgrep
+ * It also activates the GitHub paper-collector heartbeat (see
+ * src/server/gh-heartbeat.ts) at server boot; in an already-running dev
+ * server the heartbeat is activated via the /api/status route import
+ * (route modules hot-reload, instrumentation does not).
+ *
+ * Idempotent across dev-server reloads via globalThis guards; the pgrep
  * check prevents double-spawning a still-alive runner.
  */
 
 import { spawn, execSync } from "child_process";
 import { openSync, writeFileSync, readFileSync, existsSync } from "fs";
+import "@/server/gh-heartbeat";
 
 const g = globalThis as any;
 if (!g.__fundingArbPaperSupervisor) {
@@ -80,7 +86,18 @@ if (!g.__fundingArbPaperSupervisor) {
     state.last_check = Date.now();
     if (!runnerAlive()) spawnRunner();
     try {
-      writeFileSync(META, JSON.stringify(state));
+      // read-modify-write: preserve fields owned by other writers
+      // (the gh-heartbeat module persists gh_* keys in the same file).
+      const meta: Record<string, unknown> = {};
+      try {
+        if (existsSync(META)) {
+          Object.assign(meta, JSON.parse(readFileSync(META, "utf-8")));
+        }
+      } catch {
+        /* treat as empty */
+      }
+      Object.assign(meta, state);
+      writeFileSync(META, JSON.stringify(meta));
     } catch {
       /* non-fatal */
     }

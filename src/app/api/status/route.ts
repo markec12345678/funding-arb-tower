@@ -3,6 +3,13 @@ import { execSync } from "child_process";
 import { readFileSync, existsSync, statSync } from "fs";
 import path from "path";
 
+// Side-effect import: activates the GitHub paper-collector heartbeat inside
+// this (long-lived) dev-server process. Route modules hot-reload in dev, so
+// this is the activation path for an already-running server; at server boot
+// instrumentation-node.ts activates it as well. Guarded by globalThis — only
+// one heartbeat exists per process regardless of module copies.
+import "@/server/gh-heartbeat";
+
 export const dynamic = "force-dynamic";
 
 const REPO = "/home/z/funding-arb";

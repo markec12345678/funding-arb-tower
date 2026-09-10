@@ -473,3 +473,65 @@ Stage Summary:
   arrives + FAZA 3 partial-fill spec meanwhile; sandbox collects in parallel.
 - Discipline intact: no code changes, main untouched at 45e9541, thresholds/venues/
   features untouched.
+
+---
+Task ID: PHASE-2-GH-COLLECTOR
+Agent: Z.ai Code (lead)
+Task: User: "na githubu nemore zbirat podatkov" → prove GitHub CAN collect, then
+"nadaljuj kjer si ostal" → finish autonomous GitHub-side paper collection.
+
+Work Log:
+- Built .github/workflows/paper-collector.yml on funding-arb main: checkout → pip
+  requirements → mkdir scripts/data + strategy_config.json {trade_usd:500} (the
+  known silent-override gotcha) → run_pure_futures_spread.py --once → APPEND
+  journal line + positions snapshot to paper-data branch under
+  paper-data/github-actions/ (clone paper-data, concat journal, push). Triggers:
+  cron 3,8,...,58 * * * * + workflow_dispatch + repository_dispatch(paper-cycle).
+- Commits: 673afa8 (workflow), dc1108e (mkdir fix — fresh checkout lacks gitignored
+  dirs; caught from first failed run's logs), 8446ab1 (repository_dispatch bridge
+  + schedule-registration refresh). Push events now enqueue CI runs on this fork
+  (restriction from earlier session no longer holds — both commits ran CI green).
+- First dispatch run FAILED at "Prepare local paper config" (missing dir) → fixed
+  (dc1108e) → second dispatch run SUCCESS: full 4-venue scan (290 rows) from a
+  GitHub/Azure IP, 2 candidates, gates live (RVN aborted on mark-spread 1.04%>1.0%,
+  KR200 aborted on depth $532<need $1500) — the top sandbox signals (RVN/KR200)
+  REPLICATE from an independent environment; scan_total ~290 vs sandbox ~2500 =
+  shared-IP venue rate limiting (documented as caveat; each line records its own
+  scan_total so rates normalize per-row).
+- Scheduled runs refused to fire (repo fork:true; enable API PUT → state active
+  for paper-collector.yml + ci.yml, but fork cron registration lags: slots
+  16:03-16:28 all missed). No crond/systemd in sandbox → built guaranteed
+  heartbeat: src/server/gh-heartbeat.ts (new module, my-project) fires
+  repository_dispatch every 5 min, token read at runtime from funding-arb git
+  remote config (never in source). Activation problem solved via dev-mode route
+  hot-reload: side-effect import in /api/status route (instrumentation does NOT
+  hot-reload — verified empty meta) + import in instrumentation-node.ts for next
+  boot; globalThis guard = single instance per process; supervisor tick now
+  read-modify-writes meta (preserves gh_* fields; old in-memory tick transiently
+  clobbers them until next boot — harmless, heartbeat keeps state in memory).
+- END-TO-END VERIFIED: heartbeat fired 16:31:58 (http 204) → run 16:32:04 success
+  → cycle appended (2b5439a). GitHub-side journal now 3 cycles and growing ~every
+  5 min autonomously. bun run lint clean; dev.log clean; dashboard /api/status 200.
+- paper-data branch docs updated (plumbing push 1c95e70): 3 collectors documented
+  (sandbox snapshots / github-actions continuous / tester planned) + STATELESS
+  caveat: each Actions run starts empty → github sample measures the funnel only
+  (no position lifecycle); lifecycle data comes from persistent collectors.
+- SANDBOX COLLECTOR MILESTONES meanwhile: first CLOSED position —
+  pf-RVN-okx-bybit reverse $500: open 15:51:53 → close 16:41:53 (hold 50 min),
+  exit trigger = pair vanished from scan (edge -999 path), close legs okx@0.002304
+  / bybit@0.002295 vs open 0.002329/0.002323 → price PnL ≈ +$0.64 before fees
+  (~$1.05 RT taker) → net ≈ -$0.41 + funding unrecorded (gap: ledger lacks
+  funding-accrued-during-hold; flagged for FAZA 2 analysis). 4 opens total,
+  3 open now (RVN okx/bitget, SOPH bybit/bitget, KR200 bitget/okx — KR200 passed
+  depth this time: dynamic book, gates correctly adaptive not static).
+
+Stage Summary:
+- GitHub CAN and now DOES collect: autonomous ~5-min cadence via repository_dispatch
+  heartbeat (cron bridge may arm later; harmless double-cadence if it does).
+- Three independent collectors live: sandbox (persistent, lifecycle data),
+  GitHub Actions (stateless funnel sample, reduced universe), tester (handoff
+  package ready from previous stage).
+- Trading repo untouched apart from CI workflow files (3 commits, all CI green);
+  thresholds/strategy/venues/execution logic NOT modified.
+- First closed paper position lifecycle recorded; funding-during-hold data gap
+  identified for the FAZA 2 report.
