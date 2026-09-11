@@ -1,13 +1,19 @@
 "use client";
 
 /**
- * quant-arb-engine monitor v0.3 — the tower's READ-ONLY window into the
+ * quant-arb-engine monitor v0.4 — the tower's READ-ONLY window into the
  * parallel research engine (repo #4, paper/research only).
  *
  * v0.3: two carry families (forward_basis_v1 = lock, perp_carry_v1 = float)
  * evaluated EVERY quote day and ranked by net executable edge; world v2 ramps
  * carry up AND collapses it; σ_level and σ_H are journaled apart with their
  * two different meanings; predictions P1/P2/P3 are scored as measured.
+ *
+ * v0.4: σ_H is now TREND-AWARE (dispersion + |β̂|·H/2 trend-continuation
+ * exposure, the v0.3 value journaled next to it as audit); the calibration
+ * card carries TRIPLE panels + a screening/holdout split (seeds 41..60 never
+ * used in any decision) + the disclosed estimator screening; predictions
+ * P1..P5 are scored as measured — two of them REFUTED, reported as findings.
  *
  * Everything on this view is SYNTHETIC: the engine runs on a deterministic
  * mock RFQ world (seeded), so every number below is a machinery diagnostic,
@@ -423,7 +429,7 @@ export default function EngineView() {
             <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2">
               <FlowChip label="mock RFQ feed" sub={sweep ? num(sweep.totals.quotes) : undefined} />
               <ArrowRight className="h-3 w-3 text-zinc-600" />
-              <FlowChip label="σ_level + σ_H estimators" />
+              <FlowChip label="σ_level + trend-aware σ_H" />
               <ArrowRight className="h-3 w-3 text-zinc-600" />
               <FlowChip
                 label="both families evaluated"
@@ -484,7 +490,9 @@ export default function EngineView() {
               label="ranking hit-rate"
               value={ranking?.hit_rate_pct != null ? pct(ranking.hit_rate_pct) : "—"}
               sub={ranking ? `${num(ranking.hits)}/${num(ranking.contested_days_evaluated)} full-window contests` : undefined}
-              tone="good"
+              tone={
+                ranking?.hit_rate_pct != null && ranking.hit_rate_pct >= 50 ? "good" : "warn"
+              }
             />
             <Kpi
               label="settled (paper)"
@@ -503,7 +511,7 @@ export default function EngineView() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* ============================ machinery validation (full width) */}
             <Card
-              title="Machinery validation — 40-seed sweep"
+              title="Machinery validation — 60-seed sweep (screening + holdout)"
               icon={<TrendingUp className="h-4 w-4" />}
               className="lg:col-span-2"
               right={
@@ -549,41 +557,50 @@ export default function EngineView() {
                     />
                   </div>
 
-                  {/* dual σ calibration — the honest diagnostic */}
+                  {/* triple σ calibration — the honest diagnostic (v0.4) */}
                   <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Sigma className="h-3.5 w-3.5 text-zinc-500" />
                       <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-                        z-gate calibration · dual σ honesty panels
+                        z-gate calibration · triple σ honesty panels
                       </h3>
                       <span className="ml-auto font-mono text-sm tabular-nums text-zinc-500">
                         nominal 2σ ≈ {sweep.z_gate_calibration.nominal_two_sided_pct}%
                       </span>
                     </div>
-                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
                       {(
                         [
                           {
                             key: "panel_level",
                             panel: sweep.z_gate_calibration.panel_level,
                             fallback: sweep.z_gate_calibration.empirical_breach_pct,
-                            title: "σ_level panel — the v0.2.0 finding, kept for audit",
-                            body: "the EWMA estimator σ is an instantaneous standard error (std/√eff_n). Reading it as a 90-day horizon statement was the v0.2.0 finding — reported as-is, never tuned.",
+                            title: "σ_level — the v0.2.0 finding, kept for audit",
+                            body: "the EWMA estimator σ is an instantaneous standard error (std/√eff_n). Reading it as a 90-day horizon statement was the original sin — reported as-is, never tuned.",
                             tone: "text-rose-400",
+                          },
+                          {
+                            key: "panel_horizon_iid",
+                            panel: sweep.z_gate_calibration.panel_horizon_iid,
+                            fallback: null,
+                            title: "σ_H (iid) — the v0.3.0 finding, kept for audit",
+                            body: "overlapping-window dispersion, iid-block scaled. Halved the breach but still far over nominal — it ignores trend drift. The v0.4 audit value, journaled next to the gate σ at every entry.",
+                            tone: "text-amber-400",
                           },
                           {
                             key: "panel_horizon",
                             panel: sweep.z_gate_calibration.panel_horizon,
                             fallback: null,
-                            title: "σ_H panel — the redefined diagnostic (v0.3)",
-                            body: "overlapping-window horizon dispersion (deterministic). Halves the breach vs the level panel; still honestly above nominal — iid-block scaling underestimates autocorrelated regime drift. A documented limitation.",
-                            tone: "text-amber-400",
+                            title: "σ_H (trend-aware) — the v0.4.0 redefined diagnostic",
+                            body: "σ_H = √(σ_A² + (|β̂|·H/2)²): dispersion + trend-continuation exposure. The residual breach concentrates at short-history entries (see decomposition below); with > 45 observed days the band is now slightly conservative.",
+                            tone: "text-teal-400",
                           },
                         ] as const
                       ).map((p) => {
                         const val = p.panel?.empirical_breach_pct ?? p.fallback ?? null;
                         const checks = p.panel?.n_checks ?? sweep.z_gate_calibration.n_checks ?? null;
                         const breaches = p.panel?.n_breaches ?? null;
+                        const eh = p.panel?.entry_history;
                         return (
                           <div key={p.key} className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
                             <div className="flex items-baseline gap-2">
@@ -597,10 +614,107 @@ export default function EngineView() {
                             </div>
                             <div className="mt-1 text-[11px] font-medium text-zinc-300">{p.title}</div>
                             <p className="mt-1 text-[11px] leading-snug text-zinc-500">{p.body}</p>
+                            {eh && (
+                              <div className="mt-2 space-y-1 border-t border-zinc-800/70 pt-2">
+                                {(
+                                  [
+                                    ["short_history_le_45d", "entry history ≤ 45d"],
+                                    ["long_history_gt_45d", "entry history > 45d"],
+                                  ] as const
+                                ).map(([bk, label]) => {
+                                  const b = eh[bk];
+                                  if (!b) return null;
+                                  return (
+                                    <div key={bk} className="flex items-baseline justify-between gap-2">
+                                      <span className="text-[10px] text-zinc-500">{label}</span>
+                                      <span className="font-mono text-[11px] tabular-nums text-zinc-300">
+                                        {pct(b.empirical_breach_pct)}
+                                        <span className="ml-1 text-zinc-600">
+                                          {b.n_breaches != null ? `${b.n_breaches}/${b.n_checks}` : ""}
+                                        </span>
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
                     </div>
+
+                    {/* holdout split — the estimator is not a screening artifact */}
+                    {sweep.z_gate_calibration.holdout_split && (
+                      <div className="mt-3 rounded-lg border border-teal-500/25 bg-teal-500/5 p-2.5">
+                        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-teal-400/80">
+                            holdout confirmation
+                          </span>
+                          {(
+                            [
+                              ["screening_set_panel_horizon", `screening seeds ${sweep.z_gate_calibration.holdout_split.screening_set_seeds}`],
+                              ["holdout_panel_horizon", `holdout seeds ${sweep.z_gate_calibration.holdout_split.holdout_seeds}`],
+                            ] as const
+                          ).map(([k, label]) => {
+                            const panel = sweep.z_gate_calibration.holdout_split![k];
+                            if (!panel) return null;
+                            return (
+                              <span key={k} className="text-[11px] text-zinc-400">
+                                {label}:{" "}
+                                <span className="font-mono tabular-nums text-zinc-200">
+                                  {pct(panel.empirical_breach_pct)}
+                                </span>
+                                <span className="ml-1 text-zinc-600">
+                                  ({panel.n_breaches != null ? `${panel.n_breaches}/${panel.n_checks}` : "—"})
+                                </span>
+                              </span>
+                            );
+                          })}
+                          <span className="text-[11px] text-zinc-500">
+                            seeds 41..60 were never used in any decision before this sweep — the estimator
+                            generalizes, it is not a screening artifact
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* estimator screening — disclosed, not hidden */}
+                    {sweep.z_gate_calibration.estimator_screening && (
+                      <details className="mt-2 rounded-lg border border-zinc-800/70 bg-zinc-900/40">
+                        <summary className="cursor-pointer select-none px-2.5 py-2 text-[11px] font-medium text-zinc-400 hover:text-zinc-200">
+                          estimator screening — 4 candidates measured on the frozen v0.3 journals{" "}
+                          <span className="text-zinc-600">(disclosed in-sample, before the v0.4 record was sealed)</span>
+                        </summary>
+                        <div className="space-y-1 px-2.5 pb-2.5">
+                          {sweep.z_gate_calibration.estimator_screening.candidates.map((c) => (
+                            <div
+                              key={c.id}
+                              className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-t border-zinc-800/50 pt-1 text-[11px]"
+                            >
+                              <span className="font-mono text-zinc-300">{c.id}</span>
+                              <span
+                                className={`font-mono tabular-nums ${
+                                  c.verdict.startsWith("REJECTED")
+                                    ? "text-rose-400"
+                                    : c.verdict === "CHOSEN"
+                                      ? "text-teal-400"
+                                      : "text-zinc-400"
+                                }`}
+                              >
+                                {c.breach_pct.toFixed(1)}% breach
+                              </span>
+                              <span className="font-mono tabular-nums text-zinc-600">
+                                σ̄ {c.mean_sigma_pp.toFixed(2)}pp
+                              </span>
+                              <span className="text-zinc-500">{c.verdict}</span>
+                            </div>
+                          ))}
+                          <p className="pt-1 text-[10px] leading-snug text-zinc-600">
+                            {sweep.z_gate_calibration.estimator_screening.residual_note}
+                          </p>
+                        </div>
+                      </details>
+                    )}
                   </div>
 
                   {/* scored predictions — pre-registered, then measured */}
@@ -612,23 +726,60 @@ export default function EngineView() {
                           falsifiable predictions — written in the decision record before any run
                         </h3>
                       </div>
-                      <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        {Object.entries(predictions).map(([pid, p]) => (
-                          <div key={pid} className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2.5">
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-xs font-semibold text-teal-400">{pid}</span>
-                              <Chip tone={verdictTone(p.verdict)}>{p.verdict}</Chip>
+                      <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                        {Object.entries(predictions).map(([pid, p]) => {
+                          const metric =
+                            p.pooled_trend_breach_pct ??
+                            p.perp_gated_in_share_pct ??
+                            p.hit_rate_pct ??
+                            p.forward_share_collapse_pct ??
+                            null;
+                          const delta =
+                            p.delta_pp != null
+                              ? p.delta_pp
+                              : p.hit_rate_pct != null && p.v0_3_baseline_pct != null
+                                ? p.hit_rate_pct - p.v0_3_baseline_pct
+                                : null;
+                          return (
+                            <div key={pid} className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2.5">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs font-semibold text-teal-400">{pid}</span>
+                                <Chip tone={verdictTone(p.verdict)}>{p.verdict}</Chip>
+                                {metric != null && (
+                                  <span className="ml-auto font-mono text-xs tabular-nums text-zinc-300">
+                                    {pct(metric)}
+                                    {delta != null && (
+                                      <span
+                                        className={`ml-1 tabular-nums ${
+                                          delta > 0 ? "text-amber-400" : "text-zinc-500"
+                                        }`}
+                                      >
+                                        {delta > 0 ? "+" : ""}
+                                        {delta.toFixed(1)}pp
+                                      </span>
+                                    )}
+                                  </span>
+                                )}
+                                {metric == null && p.holdout_breach_pct != null && p.screening_set_breach_pct != null && (
+                                  <span className="ml-auto font-mono text-xs tabular-nums text-zinc-300">
+                                    {pct(p.screening_set_breach_pct)} → {pct(p.holdout_breach_pct)}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-1 text-[11px] leading-snug text-zinc-500" title={p.statement}>
+                                {p.statement}
+                              </p>
                             </div>
-                            <p className="mt-1 text-[11px] leading-snug text-zinc-500" title={p.statement}>
-                              {p.statement}
-                            </p>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                       <p className="mt-2 text-[11px] leading-snug text-zinc-600">
-                        Refuted predictions are reported, never buried — P3&apos;s refutation
-                        (contests are the norm, not the exception) is a finding about the world,
-                        not a failure to hide.
+                        Refuted predictions are reported, never buried. P4&apos;s refutation is this round&apos;s
+                        headline finding: the honest two-sided trend buffer deflates the floating family&apos;s
+                        net edge, the ranking flips to the locked forward — and the ex-post scorecard says
+                        that was the wrong call while the trend kept paying. Honest uncertainty pricing has a
+                        measured price; the asymmetric-buffer question is recorded for v0.5 pre-registration,
+                        not patched here (STOP RULE).
                       </p>
                     </div>
                   )}
@@ -842,7 +993,10 @@ export default function EngineView() {
               icon={<Layers className="h-4 w-4" />}
               right={
                 ranking ? (
-                  <Chip tone="good" title={ranking.definition}>
+                  <Chip
+                    tone={ranking.hit_rate_pct != null && ranking.hit_rate_pct >= 50 ? "good" : "warn"}
+                    title={ranking.definition}
+                  >
                     hit-rate {pct(ranking.hit_rate_pct)}
                   </Chip>
                 ) : undefined
@@ -941,9 +1095,10 @@ export default function EngineView() {
                       tone="bg-teal-400"
                     />
                     <p className="text-[11px] leading-snug text-zinc-600">
-                      The ranking flips with the regime: while carry builds, the floating perp family
-                      has the higher net edge; once carry collapses under stale-high desk premiums,
-                      the dated forward wins. (Prediction P2 — supported as measured.)
+                      Phase behaviour of the v0.4 ranking: the honest trend-aware carry buffer now
+                      pushes selection to the locked forward in BOTH phases (v0.3 flipped 30 % → 80 %;
+                      v0.4 measures 92 % → 96 %, P5 supported) — and the ex-post scorecard prices that
+                      conservatism (P4 refuted, see predictions). Both numbers reported as measured.
                     </p>
                   </div>
 
@@ -1226,8 +1381,13 @@ export default function EngineView() {
                           <>
                             expected funding APR {aprPct(opp.metadata.expected_apr)}
                             <br />
-                            σ_level {aprPct(opp.metadata.sigma_level_apr)} · σ_H{" "}
+                            σ_level {aprPct(opp.metadata.sigma_level_apr)} · σ_H (trend){" "}
                             {aprPct(opp.metadata.sigma_horizon_apr)}
+                            {opp.metadata.sigma_horizon_iid_apr != null && (
+                              <span className="text-zinc-600">
+                                {"  "}(iid audit {aprPct(opp.metadata.sigma_horizon_iid_apr)})
+                              </span>
+                            )}
                             <br />
                             z_perp = E/σ_H {opp.signal_z?.toFixed(2) ?? "—"} (horizon persistence)
                           </>
@@ -1266,7 +1426,7 @@ export default function EngineView() {
                           ) : (
                             <>
                               carry floating: {usd(opp.carry.expected_usd)} expected · σ_H{" "}
-                              {usd(opp.carry.sigma_usd)} (horizon window dispersion)
+                              {usd(opp.carry.sigma_usd)} (trend-aware horizon σ — dispersion + trend exposure)
                             </>
                           )}
                         </div>
@@ -1285,7 +1445,7 @@ export default function EngineView() {
                   <ArrowRight className="h-3 w-3 text-zinc-600" />
                   <FlowChip label="EWMA + σ_level" />
                   <ArrowRight className="h-3 w-3 text-zinc-600" />
-                  <FlowChip label="σ_H (overlapping windows)" />
+                  <FlowChip label="σ_H (trend-aware)" />
                   <ArrowRight className="h-3 w-3 text-zinc-600" />
                   <FlowChip label="forward: lock · perp: float" />
                   <ArrowRight className="h-3 w-3 text-zinc-600" />

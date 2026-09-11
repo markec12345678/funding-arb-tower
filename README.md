@@ -23,7 +23,7 @@ This dashboard is one of four coordinated repositories:
 |---|---|---|
 | [`funding-arb`](https://github.com/markec12345678/funding-arb) | the trading system — scanner, strategy, executor, gates | **locked** at `0373f5d` during Phase-2 A/B/C paper validation (539 tests, CI green) |
 | [`phase3-lab`](https://github.com/markec12345678/phase3-lab) | execution-safety laboratory — 4-layer separation, formal safety gate | **certified**: 106/106 tests (foundation 80 · reconciliation 19 · risk guardian 23 · cross-layer 13), golden contract v1.1.0, PORT CANDIDATE — port blocked by Phase-2 verdict |
-| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, TWO carry families (forward lock + perp float) ranked every quote day on a deterministic mock RFQ world | **v0.3.0 · paper/research only** — ranking layer + honest horizon σ (decision record, 40-seed sweep, dual calibration panels, scored predictions); monitored read-only from this tower's engine view |
+| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, TWO carry families (forward lock + perp float) ranked every quote day on a deterministic mock RFQ world | **v0.4.0 · paper/research only** — trend-aware horizon σ (disclosed estimator screening + holdout confirmation, triple calibration panels, scored predictions P1..P5 with two honest refutations); monitored read-only from this tower's engine view |
 | **funding-arb-tower** (this repo) | command center — reads both pipelines, never trades | runs sandbox-local and/or deployed |
 
 The validation ladder the dashboard reflects:
@@ -355,30 +355,38 @@ The **quant engine** tab (default on load) is the tower's read-only window into
 `quant-arb-engine` — the sibling repo that explores the carry question on a
 deterministic synthetic world, with **two strategy families ranked every quote
 day** (v0.3.0): `forward_basis_v1` (lock the carry through a dated forward) vs
-`perp_carry_v1` (float it on a short CEX perp). It renders exactly what the
-engine's research artifacts carry, with the engine's own epistemic note
-traveling with the data:
+`perp_carry_v1` (float it on a short CEX perp). As of **v0.4.0** the horizon
+σ is TREND-AWARE (dispersion + |β̂|·H/2 trend-continuation exposure — one σ,
+one meaning everywhere). It renders exactly what the engine's research
+artifacts carry, with the engine's own epistemic note traveling with the data:
 
-- **Machinery validation (40-seed sweep)** — pooled PnL distribution plus
-  per-family diagnostics: realized−locked bps (the forward lock through
-  settlement, ≈ −exit crossing) and accrual−expected bps (floating carry vs its
-  ex-ante estimate); risk-cap reject histogram; per-seed realized PnL chart +
-  table (contested / selected / opened / settled columns).
-- **Dual σ calibration panels** — the v0.2.0 finding kept for audit (σ_level:
-  an instantaneous estimator error read as a horizon statement → 67.1 % breach)
-  next to the redefined σ_H panel (overlapping-window horizon dispersion →
-  35.0 %): the fix is auditable, not asserted. Both reported as computed.
-- **Scored predictions P1/P2/P3** — the falsifiable statements written in the
-  engine's decision record BEFORE any v0.3 run, scored by the sweep as
-  measured. P3 is refuted (contests are the norm) and rendered as an honest
-  finding, never buried.
+- **Machinery validation (60-seed sweep: screening 1..40 + holdout 41..60)** —
+  pooled PnL distribution plus per-family diagnostics: realized−locked bps (the
+  forward lock through settlement, ≈ −exit crossing) and accrual−expected bps
+  (floating carry vs its ex-ante estimate); risk-cap reject histogram; per-seed
+  realized PnL chart + table (contested / selected / opened / settled columns).
+- **Triple σ calibration panels** — σ_level (the v0.2.0 finding, kept for audit:
+  68.3 % breach) next to σ_H-iid (the v0.3.0 finding, kept for audit: 35.5 %)
+  next to the v0.4.0 redefined trend-aware σ_H (11.0 % vs the 4.55 % nominal)
+  — each panel with an **entry-history decomposition** (≤ 45 observed days:
+  15.0 % vs > 45 days: 0.8 % — the residual is early-history uncertainty), a
+  **holdout confirmation** strip (screening 10.4 % vs holdout 12.1 % — the
+  estimator generalizes), and the **disclosed estimator screening** (4
+  candidates measured on the frozen v0.3 journals; HAC/Newey–West REJECTED at
+  73.2 % — the textbook fix is the wrong estimand for a drifting level).
+- **Scored predictions P1..P5** — the falsifiable statements written in the
+  engine's decision record BEFORE any v0.4 run, scored by the sweep as
+  measured. P3 and P4 are REFUTED and rendered as honest findings — P4 is the
+  round's headline: the honest two-sided trend buffer flips the ranking to the
+  locked forward and the ex-post scorecard prices that conservatism (hit-rate
+  60.2 % → 11.4 %); the asymmetric-buffer question is recorded for v0.5
+  pre-registration, not patched (STOP RULE against estimator fishing).
 - **World v2 — the synthetic regime** — the journaled daily printed funding
   APR (carry curve) with the ramp 8 % → 18 % and collapse 18 % → 4 % phases
   marked: the two-sided world where the instrument question exists.
 - **Ranking layer — instrument choice** — hit-rate on full-window contested
-  days (60.2 %), the selection timeline per quote day, forward's share of
-  contests by phase (30.2 % build-up → 79.5 % collapse), and the family
-  census table.
+  days, the selection timeline per quote day, forward's share of contests by
+  phase (92 % build-up → 96 % collapse in v0.4), and the family census table.
 - **Latest run (end-to-end)** — the representative seed's funnel (family
   evals → contested → selected → opened → settled), settled positions of both
   families (locked premium or printed funding accrual + error vs expectation),
@@ -386,7 +394,8 @@ traveling with the data:
 - **ALL-IN EDGE waterfall** — the last executed opportunity (either family,
   with what it was ranked over) decomposed line by line (gross → entry/exit
   fees → carry σ buffer → slippage → execution risk → net), with the gates
-  shown at their actual values and both sigmas displayed with their meanings.
+  shown at their actual values and both sigmas displayed with their meanings
+  (the trend-aware gate σ next to the v0.3 iid audit value).
 - **NO-GO strip (binding)** — live trading, NODE auto-trading, real capital,
   FIX production, ML money decisions, portfolio allocator: never built.
 

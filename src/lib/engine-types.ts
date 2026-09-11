@@ -8,6 +8,12 @@
  * family census, the ranking hit-rate, the dual σ calibration panels, the
  * carry curve and the scored predictions P1/P2/P3.
  *
+ * v0.4.0: trend-aware horizon σ — the artifacts carry a TRIPLE calibration
+ * panel set (level = v0.2 audit, iid = v0.3 audit, trend = the redefined
+ * diagnostic) with an entry-history decomposition, a screening/holdout seed
+ * split (seeds 41..60 never used in any decision), the disclosed estimator
+ * screening block, and the scored predictions P1..P5.
+ *
  * The tower NEVER writes to the engine. It only reads: local sandbox checkout
  * first, GitHub raw fallback (Vercel) second. Artifacts are derived summaries
  * of SYNTHETIC paper runs — never market evidence.
@@ -128,6 +134,7 @@ export type OpportunityExample = {
     expected_apr?: number;
     sigma_level_apr?: number;
     sigma_horizon_apr?: number;
+    sigma_horizon_iid_apr?: number; // v0.4: the v0.3 iid-block value, journaled as audit
     forward_implied_apr?: number;
     gap_apr?: number;
     signal_z_level?: number;
@@ -172,6 +179,10 @@ export type SweepParams = {
   warmup_days: number;
   ewma_half_life_h: number;
   world?: string;
+  // v0.4: screening vs holdout confirmation design + the σ_H method line
+  screening_set_seeds?: number[];
+  holdout_seeds?: number[];
+  sigma_horizon_method?: string;
 };
 
 export type SweepTotals = {
@@ -220,9 +231,22 @@ export type RankingStats = {
   definition: string;
 };
 
-/** One calibration panel (σ_level = the v0.2 finding kept for audit; horizon = σ_H). */
+/** One calibration panel (σ_level = the v0.2 finding kept for audit; iid = the
+ * v0.3 finding kept for audit; horizon = the v0.4 trend-aware σ_H). */
 export type CalibrationPanel = {
   sigma: string;
+  n_checks: number;
+  n_breaches: number;
+  empirical_breach_pct: number | null;
+  // v0.4: breach decomposition by entry-history length (trend panel)
+  entry_history?: {
+    short_history_le_45d?: PanelBucket;
+    long_history_gt_45d?: PanelBucket;
+  };
+};
+
+/** Sub-bucket of a calibration panel (v0.4 entry-history decomposition). */
+export type PanelBucket = {
   n_checks: number;
   n_breaches: number;
   empirical_breach_pct: number | null;
@@ -232,6 +256,15 @@ export type CalibrationPanel = {
 export type Prediction = {
   statement: string;
   verdict: string;
+  // v0.4: measured quantities rendered next to the verdict (present per-prediction)
+  pooled_trend_breach_pct?: number | null;
+  screening_set_breach_pct?: number | null;
+  holdout_breach_pct?: number | null;
+  delta_pp?: number | null;
+  perp_gated_in_share_pct?: number | null;
+  hit_rate_pct?: number | null;
+  v0_3_baseline_pct?: number;
+  forward_share_collapse_pct?: number | null;
 };
 
 /** Per-family census entry in the sweep artifact. */
@@ -276,7 +309,29 @@ export type SweepArtifact = {
     n_checks?: number;
     n_breaches?: number;
     panel_level?: CalibrationPanel;
-    panel_horizon?: CalibrationPanel;
+    panel_horizon_iid?: CalibrationPanel; // v0.4: the v0.3 finding, kept for audit
+    panel_horizon?: CalibrationPanel; // v0.4: trend-aware σ_H (the redefined diagnostic)
+    holdout_split?: {
+      holdout_seeds: string;
+      screening_set_seeds: string;
+      screening_set_panel_horizon?: CalibrationPanel;
+      holdout_panel_horizon?: CalibrationPanel;
+      screening_set_panel_horizon_iid?: CalibrationPanel;
+      holdout_panel_horizon_iid?: CalibrationPanel;
+      definition: string;
+    };
+    estimator_screening?: {
+      source: string;
+      disclosure: string;
+      candidates: {
+        id: string;
+        estimand: string;
+        breach_pct: number;
+        mean_sigma_pp: number;
+        verdict: string;
+      }[];
+      residual_note?: string;
+    };
     definition: string;
   };
   predictions?: Record<string, Prediction>;
