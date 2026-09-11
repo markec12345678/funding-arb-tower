@@ -4,7 +4,7 @@ export type FindingStatus = "confirmed" | "deferred";
 export interface AuditFinding {
   id: string;
   severity: FindingSeverity;
-  round: 1 | 2 | 3;
+  round: 1 | 2 | 3 | 4;
   area: string;
   title: string;
   detail: string;
@@ -148,5 +148,35 @@ export const auditFindings: AuditFinding[] = [
     title: "Rebalance ledger update assumes a full trim",
     detail: "After a rebalance trim, long_qty/short_qty are set to min(lq,sq) even if the trim order partially filled; the residual skew is misrecorded but self-heals next cycle because rebalance re-reads actual quantities from the venue API.",
     evidence: "pure_futures_executor.py:969-987",
+  },
+  {
+    id: "M-01", severity: "P1", round: 4, area: "venues/binance.py", status: "confirmed",
+    title: "Two-valued submit contract (matrix root cause)",
+    detail: "All nine submit outcomes (timeout, connection reset, HTTP 5xx, accepted-but-response-lost incl. unparseable body, unknown) collapse into ok:bool. The clientOrderId is generated and sent but discarded on every error path; _filled() treats accepted as filled — order_status is recorded but never gated. Blocks six order-plane matrix cells: the disambiguation mechanism exists in the codebase yet is never used for reconciliation.",
+    evidence: "venues/binance.py:850,863,900-907; cross_venue_executor.py:241-248",
+  },
+  {
+    id: "M-02", severity: "P1", round: 4, area: "execution/*", status: "confirmed",
+    title: "Ledger is sole truth, never reconciled inbound (matrix root cause)",
+    detail: "Every retry, restart and duplicate-open decision keys off positions.json, but nothing ever cross-checks the venue against the ledger: no startup diff, no order query by clientOrderId, no closed-position residual scan. Three paths corrupt the ledger silently (E-01, E-02, E-05) and no mechanism ever detects the drift. Verified: grep for recover/repair/reconcil across execution/ and tools/ finds only the quarantine docstring.",
+    evidence: "run_pure_futures_spread.py:147-161; no reconciliation mechanism exists",
+  },
+  {
+    id: "M-03", severity: "P1", round: 4, area: "cross_venue_executor.py", status: "confirmed",
+    title: "Corrupt-ledger quarantine ends in amnesia (matrix root cause)",
+    detail: "Quarantine on a corrupt ledger is loud (stderr + file preserved) but the aftermath is unsafe: load returns [], the runner sees zero open positions, frees all slots and can open DUPLICATE pairs stacked on top of live venue positions. Loud detection with no safe post-detection transition.",
+    evidence: "cross_venue_executor.py:66-107; run_pure_futures_spread.py:147-161",
+  },
+  {
+    id: "M-04", severity: "P2", round: 4, area: "core/notify.py", status: "confirmed",
+    title: "No terminal failure states (matrix root cause)",
+    detail: "Failure N is indistinguishable from failure 1: no max-failure circuit breaker, no HALT/BLOCK state, no escalation ladder anywhere in watcher/executor/runner. Notifications are stderr (dies with the process) plus fire-and-forget Telegram with an in-memory dedup cache that a restart clears — a failed Telegram send is lost entirely. The system can fail forever in exactly the same way.",
+    evidence: "core/notify.py:38-70; no escalation state machine anywhere",
+  },
+  {
+    id: "M-05", severity: "P2", round: 4, area: "cross_venue_executor.py", status: "confirmed",
+    title: "Unconfirmed fill recorded as target qty (matrix root cause)",
+    detail: "_exec_qty() falls back to the TARGET quantity when the POST response carries exec_qty=0 (order accepted, not yet filled): an unconfirmed quantity is written to the ledger as if filled. No post-submit status check exists for futures orders — _fetch_order_detail queries the spot endpoint only.",
+    evidence: "cross_venue_executor.py:245-248; venues/binance.py:712-721 (spot-only),878-881",
   },
 ];

@@ -11,6 +11,7 @@ import {
   Clock,
   ExternalLink,
   Github,
+  Grid3x3,
   Layers,
   Loader2,
   Radio,
@@ -26,6 +27,17 @@ import {
   type AuditFinding,
   type FindingSeverity,
 } from "@/data/audit-findings";
+import {
+  matrixCells,
+  matrixGroupLabels,
+  matrixMeta,
+  matrixRootCauses,
+  matrixVerdictBadge,
+  matrixVerdictCounts,
+  matrixVerdictLabel,
+  type MatrixGroup,
+  type MatrixVerdict,
+} from "@/data/failure-matrix";
 
 type Freshness = {
   data_age_s: number | null;
@@ -133,6 +145,18 @@ const severityCounts: { severity: FindingSeverity; count: number }[] = (
 const sortedAuditFindings: AuditFinding[] = [...auditFindings].sort(
   (a, b) => severityRank[a.severity] - severityRank[b.severity] || a.id.localeCompare(b.id),
 );
+
+/* ---- Failure matrix (R4 — state-by-state safe-transition proof) ---- */
+
+const verdictRank: Record<MatrixVerdict, number> = { gap: 0, ambiguous: 1, safe: 2 };
+
+const matrixGroups: MatrixGroup[] = ["order", "position", "recovery"];
+
+const verdictDot: Record<MatrixVerdict, string> = {
+  safe: "bg-emerald-400",
+  ambiguous: "bg-amber-400",
+  gap: "bg-red-400",
+};
 
 function Card({
   title,
@@ -769,6 +793,136 @@ export default function Home() {
             <p className="border-t border-zinc-800/60 pt-3 text-[11px] leading-relaxed text-zinc-500">
               Repo locked during Phase-2 A/B/C — findings recorded only; zero changes to the measured
               system. Remediation happens in the post-Phase-2 hardening pass.
+            </p>
+          </div>
+        </Card>
+
+        {/* Failure matrix (R4) — state-by-state safe-transition proof, static data */}
+        <Card title="Failure matrix" icon={<Grid3x3 className="h-4 w-4" />}>
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-zinc-300">
+                R4 · state-by-state walkthrough · <span className="font-mono">{matrixMeta.commit}</span>
+              </p>
+              <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                Goal: {matrixMeta.goal}. Every cell traced to actual code at the locked commit —
+                evidence in <span className="font-mono">{matrixMeta.register}</span>.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {matrixVerdictCounts.map(({ verdict, count }) => (
+                <span
+                  key={verdict}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold ${matrixVerdictBadge[verdict]}`}
+                  title={matrixVerdictLabel[verdict]}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${verdictDot[verdict]}`} aria-hidden="true" />
+                  {verdict}
+                  <span className="tabular-nums">{count}</span>
+                </span>
+              ))}
+              <span className="text-[11px] text-zinc-500">
+                {matrixCells.length} ambiguity cells · {matrixGroups.length} groups
+              </span>
+            </div>
+
+            <div className="custom-scroll max-h-96 space-y-4 overflow-y-auto pr-1" aria-label="failure matrix">
+              {matrixGroups.map((group) => {
+                const cells = matrixCells
+                  .filter((c) => c.group === group)
+                  .sort((a, b) => verdictRank[a.verdict] - verdictRank[b.verdict] || a.id.localeCompare(b.id));
+                return (
+                  <div key={group}>
+                    <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                      {matrixGroupLabels[group]}
+                      <span className="ml-2 font-mono normal-case tracking-normal text-zinc-600">
+                        {cells.filter((c) => c.verdict === "safe").length}/{cells.length} safe
+                      </span>
+                    </h3>
+                    <ul className="space-y-1.5">
+                      {cells.map((cell) => (
+                        <li
+                          key={cell.id}
+                          className="min-w-0 rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3"
+                        >
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                            <span className="shrink-0 font-mono text-[11px] text-zinc-500">{cell.id}</span>
+                            <span className="min-w-0 flex-1 text-sm font-medium text-zinc-100">{cell.state}</span>
+                            <span
+                              className={`shrink-0 rounded-full border px-1.5 py-px font-mono text-[10px] font-semibold ${matrixVerdictBadge[cell.verdict]}`}
+                              title={matrixVerdictLabel[cell.verdict]}
+                            >
+                              {cell.verdict === "safe" ? "1 safe" : cell.verdict}
+                            </span>
+                          </div>
+                          <p
+                            className="mt-1 line-clamp-2 text-[11px] leading-snug text-zinc-500 dark:text-zinc-400"
+                            title={`${cell.transition}\n\nevidence: ${cell.evidence}\nrefs: ${cell.refs.join(" ") || "—"}\nverdict: ${matrixVerdictLabel[cell.verdict]}`}
+                          >
+                            {cell.transition}
+                          </p>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            {cell.refs.length > 0 ? (
+                              cell.refs.map((ref) => (
+                                <span
+                                  key={ref}
+                                  className="rounded-full border border-zinc-700 bg-zinc-800/80 px-1.5 py-px font-mono text-[10px] text-zinc-400"
+                                  title={`see register finding ${ref}`}
+                                >
+                                  {ref}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="font-mono text-[10px] text-zinc-600">no finding — passes</span>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="border-t border-zinc-800/60 pt-3">
+              <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                Cross-cutting root causes
+              </h3>
+              <ul className="space-y-1.5">
+                {matrixRootCauses.map((rc) => (
+                  <li
+                    key={rc.id}
+                    className="min-w-0 rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3"
+                  >
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                      <span
+                        className={`shrink-0 rounded-full border px-1.5 py-px font-mono text-[10px] font-semibold ${severityBadge[rc.severity as FindingSeverity]}`}
+                      >
+                        {rc.severity}
+                      </span>
+                      <span className="shrink-0 font-mono text-[11px] text-zinc-500">{rc.id}</span>
+                      <span className="min-w-0 flex-1 text-sm font-medium text-zinc-100">{rc.title}</span>
+                    </div>
+                    <p
+                      className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-zinc-500 dark:text-zinc-400"
+                      title={`${rc.detail}\n\nblocks: ${rc.blocks}`}
+                    >
+                      {rc.detail}
+                    </p>
+                    <p className="mt-1 truncate font-mono text-[10px] text-zinc-600" title={`blocks: ${rc.blocks}`}>
+                      blocks: {rc.blocks}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <p className="border-t border-zinc-800/60 pt-3 text-[11px] leading-relaxed text-zinc-500">
+              The 5 passing cells are exactly the dangerous-position routing (leg-gone, emergency unwind,
+              external-reduction detection): execution routing is sound. The 16 failures cluster on the
+              ambiguity plane — unknown submit outcomes, recovery, repeated failure — all mapped to five
+              structural root causes above.
             </p>
           </div>
         </Card>

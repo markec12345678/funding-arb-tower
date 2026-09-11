@@ -189,6 +189,7 @@ src/
     api/status/route.ts       # the status API — local/remote dual data plane
   data/
     audit-findings.ts         # audit findings register (static data — the locked-repo audit)
+    failure-matrix.ts          # R4 state-by-state failure matrix (21 ambiguity cells + root causes)
   server/
     gh-heartbeat.ts           # 5-min repository_dispatch heartbeat (sandbox-only)
     paper-snapshot.ts         # hourly paper-data push (sandbox-only)
@@ -224,6 +225,23 @@ audit round each finding came from. The full evidence register lives at
 `docs/funding-arb-audit.md` (added separately). The repo stays locked during the
 Phase-2 A/B/C measurement — findings are recorded only, the measured system is
 untouched, and remediation is deferred to the post-Phase-2 hardening pass.
+
+## Failure matrix (R4)
+
+Below the register, the "Failure matrix" card renders the state-by-state
+walkthrough (`src/data/failure-matrix.ts`): 21 ambiguity cells across three
+groups (ORDER SUBMITTED ×9, POSITION ×6, RECOVERY ×6), each with a verdict —
+`safe` (exactly one safe state transition), `ambiguous`, or `gap` (no safe
+transition) — traced to code at the locked commit, cross-referenced to register
+findings, plus the five cross-cutting root causes (M-01…M-05) that block
+multiple cells. This is the Phase-2 evidence baseline: it proves where the
+execution routing is deterministic and maps exactly where the Phase-3
+fail-closed contract is not yet met. The audit phase is **closed** (review
+decision): no further blind bug-hunting — the register + matrix are the
+complete pre-change audit trail, the refined hardening-pass plan
+(M-01+M-05 as one submit contract, M-02+M-03 as one safety combination,
+M-04 terminal state machine) and the re-run-the-matrix regression proof
+live in `docs/funding-arb-audit.md` ("R4 closure").
 
 ## Disclaimer
 

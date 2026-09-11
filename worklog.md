@@ -1330,3 +1330,44 @@ Stage Summary:
 - The executor order-by-order review answered the open questions: pre-submit recheck exists (fail-closed live); sequential partial-fill sizing is correct; the real races are submit-timeout ambiguity, unpersisted naked states, and partial-close residuals.
 - Proposed remediation order for the post-Phase-2 hardening pass (API trio first, then E-01 reconciliation, W-01 fail-safe state, E-02 persisted naked status, explicit UNAVAILABLE/UNKNOWN states, E-04 runner fix).
 - funding-arb untouched (locked); tower pushed with the register.
+
+---
+Task ID: 4
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: R4 — state-by-state failure matrix audit of funding-arb (read-only @ 0373f5d): prove or disprove that every possible ambiguity has exactly ONE safe state transition across ORDER SUBMITTED / POSITION / RECOVERY groups; make the matrix durable on the tower.
+
+Work Log:
+- Full evidence pass at the locked commit: pure_futures_executor.py (988 lines, full), venues/binance.py order path (_api_call 84-123, place_futures_order 841-908, execute_trades 909-1008, _fetch_order_detail 712-721 spot-only), cross_venue_executor.py (_filled 241-242, _exec_qty 245-248, quarantine 66-94), pure_futures_watcher.py (check_leg_alive 349-393, watch_cycle 469-739, emergency routing 634-671, rebalance 694-734, autoRebalance default false 458), run_pure_futures_spread.py (full 260 — exit-first logic 127-144, open gating on ledger active_keys 147-161), core/notify.py (38-70 fire-and-forget + in-memory dedup).
+- Negative-space verification: grep for recover/repair/reconcil/startup across execution/ + tools/ → ONLY the quarantine docstring. No startup reconciliation mechanism exists anywhere.
+- Matrix built: 21 cells (ORDER SUBMITTED ×9, POSITION ×6, RECOVERY ×6), each with verdict + transition + file:line evidence + register refs. Score: 5 SAFE · 9 AMBIGUOUS · 7 GAP.
+- Five cross-cutting root causes extracted as new register findings M-01..M-05 (P1×3, P2×2): two-valued submit contract (clientOrderId discarded, accepted==filled); ledger sole truth never reconciled inbound; corrupt-ledger quarantine → amnesia → duplicate opens; no terminal failure states (no circuit breaker/HALT, restart-volatile notification dedup); unconfirmed fill recorded as target qty (_exec_qty fallback).
+- Key structural evidence: all 9 submit outcomes collapse to ok:bool via the generic except (binance.py 900-907), including json.loads failures INSIDE the try (truncated response = accepted-but-response-lost); _filled() gates on the local "filled" label which execute_trades sets whenever ok=True (accepted), never on order_status.
+- Fair positives recorded: the 5 SAFE cells are exactly the dangerous-position routing (single-leg-gone → close survivor only; local-closed/venue-open → re-hedge + self-heal; external reduction → deterministic detection; emergency unwind; plain success). Execution routing is sound; the 16 non-safe cells cluster on the ambiguity plane.
+- Tower implementation: NEW src/data/failure-matrix.ts (MatrixCell/MatrixVerdict/matrixCells 21 + matrixRootCauses 5 + derived verdict counts/badges/labels); audit-findings.ts extended round: 1|2|3|4 with M-01..M-05 appended (register 21 → 26: 3×P0, 13×P1 incl. 1 deferred, 8×P2, 3×P3); page.tsx new "Failure matrix" card (Grid3x3 icon) after the Audit findings card — verdict chips derived from data, 3 group sections with per-group N/M safe counters, cells sorted gap-first, cross-referenced ref chips to register findings, root-causes section, custom-scroll max-h-96, full detail/evidence/verdict in title attrs for a11y; docs/funding-arb-audit.md new R4 section (verdict summary table, all 21 cells with evidence, root causes, "What the matrix proves", remediation order updated to 9 steps with M-findings folded in); README.md new "Failure matrix (R4)" section + repo-layout line.
+- Verification: bun run lint exit 0; dev.log clean (GET / 200, /api/status 200, recompiles ✓); SSR curl: "Failure matrix" present, all 21 cell IDs + M-01..M-05 render; Agent Browser E2E: cards list includes Failure matrix, 26 rows (21 cells + 5 root causes), group counters 1/9 · 3/6 · 1/6 safe, verdict chips safe·5 ambiguous·9 gap·7, register card 26 rows, footer below last card + at document end + page scrolls naturally (sticky-footer contract), mobile 401px no horizontal overflow (card 369px), zero page/console errors; screenshots saved (tool-results/matrix-desktop.png, matrix-card.png).
+- funding-arb integrity after the audit: CLEAN at 0373f5d — zero modifications, read-only respected.
+
+Stage Summary:
+- The matrix answers the review question precisely: for 5 of 21 ambiguity cells there is exactly one safe transition (all on the dangerous-position routing plane); 9 are ambiguous (luck/config/next-cycle self-heal); 7 have no safe transition at all. The system cannot yet prove the Phase-3 fail-closed contract on the ambiguity plane — but all 16 non-safe cells reduce to 5 structural root causes, so the post-Phase-2 hardening pass has a short, high-leverage punch list rather than a long tail.
+- Register is now the Phase-2 evidence baseline: 26 findings across R1 API / R2 watcher / R3 executor / R4 matrix, rendered live on the tower with cross-references between matrix cells and findings.
+- funding-arb untouched (locked at 0373f5d).
+
+---
+Task ID: 5
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Record the R4-closure review decision (audit phase complete, hardening gated on Phase-2 A/B/C), refine the remediation plan, and sync the tower audit trail to GitHub.
+
+Work Log:
+- Received and recorded the review verdict: R4 CLOSED — the matrix is considered a stronger result than the 539-test green run (proves the boundary, not just designed scenarios); random bug-hunting in funding-arb retired.
+- Empirical corroboration found in the RUNNING Phase-2 baseline (read-only): paper journal 262 cycles (2026-09-10T13:06Z → 2026-09-11T10:41Z), 168 opens / 11 closes — 5 of 11 closes (45%) carry edge=-999.0, the E-04 signature (scanner row missing → treated as exit signal). The Phase-2 exit statistics are measurably contaminated by E-04; the A/B/C verdict must read exit counts with this in mind.
+- docs/funding-arb-audit.md: new "R4 closure — hardening-pass plan (review decision, 2026-09-11)" section replacing the flat 9-step list: (1) M-01+M-05 as ONE patch — multi-valued submit contract (SUBMITTED → FILLED|PARTIAL|REJECTED|CANCELED|UNKNOWN, never bool; UNKNOWN ≠ FAIL; clientOrderId as reconciliation key; requested/filled/remaining qty + order_status as separate fields), (2) M-02+M-03 as ONE safety combination — the corrupt-ledger → quarantine → empty → free-capacity → duplicate-exposure chain, startup contract LOAD LEDGER → VALIDATE → RECONCILE VENUE → ONLY THEN ALLOW NEW OPEN, (3) M-04 terminal state machine HEALTHY|BLOCKED|REPAIR|ESCALATE|CONFLICT|UNWOUND for post-restart forensics, (4) remaining register items per order. Regression proof defined: re-run the SAME R4 matrix against the hardened commit, target 21/21 safe or documented waivers. Decision gate recorded: Phase-2 verdict → A/B harden+port (Phase-3 safety) · C root-cause+archive lab. Why-not-now recorded: changing execution semantics mid-measurement would mix baseline with post-hardening results.
+- README.md: failure-matrix section extended with the closure note + pointer to the R4-closure plan.
+- Tower sync: the R4 changes had been auto-committed with a UUID message (unpushed, ahead 1) — amended to a proper message and pushed with the closure docs; funding-arb untouched (verified CLEAN at 0373f5d before and after).
+- Verification: bun run lint exit 0; dev.log clean (GET / 200, /api/status 200); paper runner alive (PID 12976), journal fresh (data_age ~131 s, freshness status fresh).
+
+Stage Summary:
+- Audit phase formally closed with a durable record: register 26 findings + matrix 21 cells + refined hardening plan + regression proof, all synced to GitHub.
+- NEW empirical datum for the Phase-2 verdict: 45% of paper closes are edge=-999 data-gap closes (E-04 firing in the wild) — exit statistics must be read with this contamination in mind.
+- Next milestone per the review: Phase-2 A/B/C conclusion — no new features, no refactors, no funding-arb changes until the gate.
