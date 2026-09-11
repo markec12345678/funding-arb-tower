@@ -1,8 +1,13 @@
 "use client";
 
 /**
- * quant-arb-engine monitor — the tower's READ-ONLY window into the parallel
- * research engine (repo #4, paper/research only).
+ * quant-arb-engine monitor v0.3 — the tower's READ-ONLY window into the
+ * parallel research engine (repo #4, paper/research only).
+ *
+ * v0.3: two carry families (forward_basis_v1 = lock, perp_carry_v1 = float)
+ * evaluated EVERY quote day and ranked by net executable edge; world v2 ramps
+ * carry up AND collapses it; σ_level and σ_H are journaled apart with their
+ * two different meanings; predictions P1/P2/P3 are scored as measured.
  *
  * Everything on this view is SYNTHETIC: the engine runs on a deterministic
  * mock RFQ world (seeded), so every number below is a machinery diagnostic,
@@ -29,8 +34,25 @@ import {
   TrendingUp,
   XCircle,
 } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { Dist, EngineOverview, SettledRow } from "@/lib/engine-types";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceArea,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import type {
+  Dist,
+  EngineOverview,
+  FamilyCensusEntry,
+  SettledRow,
+} from "@/lib/engine-types";
 
 /* ---- formatting (financial convention: en-US, signed, mono) ---- */
 
@@ -57,6 +79,9 @@ const bps = (n: number | null | undefined, d = 1) => sgn(n, d, " bps");
 const aprPct = (n: number | null | undefined, d = 2) =>
   n === null || n === undefined ? "—" : `${(n * 100).toFixed(d)}%`;
 
+const pct = (n: number | null | undefined, d = 1) =>
+  n === null || n === undefined ? "—" : `${n.toFixed(d)}%`;
+
 const ago = (iso: string | null | undefined) => {
   if (!iso) return "—";
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -66,12 +91,14 @@ const ago = (iso: string | null | undefined) => {
   return `${Math.floor(s / 86400)}d`;
 };
 
-const ageS = (s: number | null | undefined) => {
-  if (s === null || s === undefined) return "—";
-  if (s < 60) return `${Math.floor(s)}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  return `${Math.floor(s / 3600)}h`;
-};
+/* ---- family identity helpers ---- */
+
+const FORWARD = "forward_basis_v1";
+const PERP = "perp_carry_v1";
+
+const familyLabel = (sid: string) => (sid === FORWARD ? "forward" : sid === PERP ? "perp" : sid);
+
+const FAMILY_COLOR = { [FORWARD]: "#2dd4bf", [PERP]: "#fb923c" } as Record<string, string>;
 
 /* ---- small building blocks (tower style) ---- */
 
@@ -225,6 +252,8 @@ function DistRow({
   );
 }
 
+const EMPTY_DIST: Dist = { mean: null, std: null, p5: null, p50: null, p95: null, min: null, max: null };
+
 /* ---- NO-GO list (binding, travels with the engine) ---- */
 
 const NO_GO = [
@@ -235,6 +264,14 @@ const NO_GO = [
   "ML money decisions",
   "portfolio allocator",
 ];
+
+/* ---- verdict tone helper (honest findings are amber, not red) ---- */
+
+function verdictTone(verdict: string): "good" | "warn" | "default" {
+  if (/SUPPORTED/i.test(verdict)) return "good";
+  if (/REFUTED|REJECTED|NOT SUPPORTED/i.test(verdict)) return "warn";
+  return "default";
+}
 
 /* ====================================================================== */
 
@@ -273,6 +310,21 @@ export default function EngineView() {
   const totalRealized = sweep?.per_seed?.reduce((a, s) => a + (s.realized_usd ?? 0), 0) ?? null;
   const rejectMax = Math.max(1, ...(sweep?.reject_reasons?.map((r) => r.count) ?? [1]));
 
+  const ranking = sweep?.ranking ?? null;
+  const predictions = sweep?.predictions ?? null;
+  const fwdCensus: FamilyCensusEntry | undefined = sweep?.family_census?.[FORWARD];
+  const perpCensus: FamilyCensusEntry | undefined = sweep?.family_census?.[PERP];
+  const lockDist = fwdCensus?.settled_stats.realized_minus_locked_bps
+    ?? sweep?.settled_stats.realized_minus_locked_bps
+    ?? EMPTY_DIST;
+  const accDist = perpCensus?.settled_stats.realized_minus_expected_bps ?? EMPTY_DIST;
+
+  const carryCurve = run?.carry_curve ?? [];
+  const edgeSeries = run?.family_edge_series ?? [];
+  const contestedShare = sweep?.contested_share_of_selected_days_pct ?? null;
+
+  const isPerpOpp = opp?.strategy_id === PERP;
+
   return (
     <div className="space-y-6">
       {/* ---------------------------------------------------------- identity */}
@@ -289,8 +341,8 @@ export default function EngineView() {
               </span>
             </h1>
             <p className="text-xs text-zinc-500">
-              Route B machinery on a deterministic synthetic world · the old system measures
-              reality, this one explores the next generation
+              Two carry families — lock (forward) vs float (perp) — ranked every quote day on a
+              deterministic synthetic world
             </p>
           </div>
         </div>
@@ -371,11 +423,16 @@ export default function EngineView() {
             <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2">
               <FlowChip label="mock RFQ feed" sub={sweep ? num(sweep.totals.quotes) : undefined} />
               <ArrowRight className="h-3 w-3 text-zinc-600" />
-              <FlowChip label="EWMA estimator + σ" />
+              <FlowChip label="σ_level + σ_H estimators" />
               <ArrowRight className="h-3 w-3 text-zinc-600" />
               <FlowChip
-                label="gates: z ≥ 2 · net ≥ 10 bps"
-                sub={sweep ? `${num(sweep.totals.gated)} gated` : undefined}
+                label="both families evaluated"
+                sub={sweep ? `${num(sweep.totals.family_evals)} evals` : undefined}
+              />
+              <ArrowRight className="h-3 w-3 text-zinc-600" />
+              <FlowChip
+                label="ranking · higher net edge"
+                sub={sweep ? `${num(sweep.totals.selected_days)} selected` : undefined}
               />
               <ArrowRight className="h-3 w-3 text-zinc-600" />
               <FlowChip label="ALL-IN EDGE waterfall" />
@@ -419,10 +476,15 @@ export default function EngineView() {
               sub={sweep ? `${num(sweep.totals.quotes)} quote records` : undefined}
             />
             <Kpi
-              label="gate fire rate"
-              value={sweep?.gate_fire_rate_pct != null ? `${sweep.gate_fire_rate_pct.toFixed(1)}%` : "—"}
-              sub="both gates · of quote events"
-              tone={sweep?.gate_fire_rate_pct != null && sweep.gate_fire_rate_pct > 0 ? "default" : "default"}
+              label="contested days"
+              value={contestedShare != null ? pct(contestedShare) : "—"}
+              sub="both families gated in — the choice is live"
+            />
+            <Kpi
+              label="ranking hit-rate"
+              value={ranking?.hit_rate_pct != null ? pct(ranking.hit_rate_pct) : "—"}
+              sub={ranking ? `${num(ranking.hits)}/${num(ranking.contested_days_evaluated)} full-window contests` : undefined}
+              tone="good"
             />
             <Kpi
               label="settled (paper)"
@@ -434,12 +496,6 @@ export default function EngineView() {
               value={usd(totalRealized)}
               sub="aggregate over settled paper positions"
               tone="good"
-            />
-            <Kpi
-              label="realized − locked"
-              value={bps(sweep?.settled_stats.realized_minus_locked_bps.mean ?? null)}
-              sub="the lock holds · −3 bps = exit crossing"
-              tone="warn"
             />
           </div>
 
@@ -471,57 +527,111 @@ export default function EngineView() {
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                     <DistRow
-                      name="PnL % of notional"
-                      dist={sweep.settled_stats.pnl_pct_of_notional}
+                      name="PnL % of notional (pooled)"
+                      dist={sweep.settled_stats.pnl_pct_of_notional ?? EMPTY_DIST}
                       fmtValue={(n) => sgn(n, 2, "%")}
-                      note="the synthetic cash-and-carry pays its premium — every settled position is path-invariant when hedged"
+                      note="both families pooled — every settled paper position, % of requested notional"
                       tone="text-emerald-400"
                     />
                     <DistRow
-                      name="realized − locked (bps)"
-                      dist={sweep.settled_stats.realized_minus_locked_bps}
+                      name="realized − locked (bps · forward)"
+                      dist={lockDist}
                       fmtValue={(n) => sgn(n, 1)}
-                      note="the dated-forward lock through settlement: −3 bps ≈ the desk spot half-spread on exit — well inside the pre-registered 8 bps exit buffer"
+                      note="the dated-forward lock through settlement: ≈ −(exit crossing) — well inside the pre-registered 8 bps buffer"
                       tone="text-amber-400"
                     />
                     <DistRow
-                      name="locked − perp alternative (APR bps)"
-                      dist={sweep.settled_stats.locked_minus_perp_alt_apr_bps}
-                      fmtValue={(n) => sgn(n, 0)}
-                      note="route-choice metric: what the forward route gave up vs the funding path in this regime (opportunity cost, not loss)"
-                      tone="text-zinc-200"
+                      name="accrual − expected (bps · perp)"
+                      dist={accDist}
+                      fmtValue={(n) => sgn(n, 1)}
+                      note="floating carry vs its ex-ante EWMA estimate — positive here because funding kept ramping inside held windows"
+                      tone="text-orange-300"
                     />
                   </div>
 
-                  {/* z-gate calibration — the honest diagnostic */}
+                  {/* dual σ calibration — the honest diagnostic */}
                   <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Sigma className="h-3.5 w-3.5 text-zinc-500" />
                       <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-                        z-gate calibration · estimator σ honesty
+                        z-gate calibration · dual σ honesty panels
                       </h3>
-                      <span className="ml-auto font-mono text-sm tabular-nums text-rose-400">
-                        {sweep.z_gate_calibration.empirical_breach_pct == null
-                          ? "—"
-                          : `${sweep.z_gate_calibration.empirical_breach_pct.toFixed(1)}%`}
-                        <span className="text-zinc-600"> empirical</span>
-                      </span>
-                      <span className="font-mono text-sm tabular-nums text-zinc-500">
-                        {sweep.z_gate_calibration.nominal_two_sided_pct}% nominal
+                      <span className="ml-auto font-mono text-sm tabular-nums text-zinc-500">
+                        nominal 2σ ≈ {sweep.z_gate_calibration.nominal_two_sided_pct}%
                       </span>
                     </div>
-                    <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
-                      {num(sweep.z_gate_calibration.n_breaches ?? sweep.z_gate_calibration.n_checks)}/
-                      {num(sweep.z_gate_calibration.n_checks)} settled entries drifted past{" "}
-                      {sweep.z_gate_calibration.threshold_z}× the ex-ante estimator σ over the held
-                      window. Honest finding, reported as-is: the EWMA σ is an{" "}
-                      <span className="text-zinc-300">instantaneous</span> standard error — regime
-                      drift over 90 days dominates it. The z-gate answers “is the gap persistent
-                      now?”, not “will funding stay put for a quarter”; the number that must absorb
-                      drift is the waterfall&apos;s k·σ·T/365 buffer line. Recorded for sizing, not
-                      tuned to look good.
-                    </p>
+                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {(
+                        [
+                          {
+                            key: "panel_level",
+                            panel: sweep.z_gate_calibration.panel_level,
+                            fallback: sweep.z_gate_calibration.empirical_breach_pct,
+                            title: "σ_level panel — the v0.2.0 finding, kept for audit",
+                            body: "the EWMA estimator σ is an instantaneous standard error (std/√eff_n). Reading it as a 90-day horizon statement was the v0.2.0 finding — reported as-is, never tuned.",
+                            tone: "text-rose-400",
+                          },
+                          {
+                            key: "panel_horizon",
+                            panel: sweep.z_gate_calibration.panel_horizon,
+                            fallback: null,
+                            title: "σ_H panel — the redefined diagnostic (v0.3)",
+                            body: "overlapping-window horizon dispersion (deterministic). Halves the breach vs the level panel; still honestly above nominal — iid-block scaling underestimates autocorrelated regime drift. A documented limitation.",
+                            tone: "text-amber-400",
+                          },
+                        ] as const
+                      ).map((p) => {
+                        const val = p.panel?.empirical_breach_pct ?? p.fallback ?? null;
+                        const checks = p.panel?.n_checks ?? sweep.z_gate_calibration.n_checks ?? null;
+                        const breaches = p.panel?.n_breaches ?? null;
+                        return (
+                          <div key={p.key} className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
+                            <div className="flex items-baseline gap-2">
+                              <span className={`font-mono text-xl font-semibold tabular-nums ${p.tone}`}>
+                                {pct(val)}
+                              </span>
+                              <span className="text-[11px] text-zinc-500">
+                                empirical breach{" "}
+                                {breaches != null && checks != null ? `· ${num(breaches)}/${num(checks)}` : ""}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-[11px] font-medium text-zinc-300">{p.title}</div>
+                            <p className="mt-1 text-[11px] leading-snug text-zinc-500">{p.body}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
+
+                  {/* scored predictions — pre-registered, then measured */}
+                  {predictions && (
+                    <div className="rounded-lg border border-teal-500/25 bg-teal-500/5 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <FlaskConical className="h-3.5 w-3.5 text-teal-400" />
+                        <h3 className="text-[10px] font-semibold uppercase tracking-widest text-teal-400/80">
+                          falsifiable predictions — written in the decision record before any run
+                        </h3>
+                      </div>
+                      <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {Object.entries(predictions).map(([pid, p]) => (
+                          <div key={pid} className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-xs font-semibold text-teal-400">{pid}</span>
+                              <Chip tone={verdictTone(p.verdict)}>{p.verdict}</Chip>
+                            </div>
+                            <p className="mt-1 text-[11px] leading-snug text-zinc-500" title={p.statement}>
+                              {p.statement}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[11px] leading-snug text-zinc-600">
+                        Refuted predictions are reported, never buried — P3&apos;s refutation
+                        (contests are the norm, not the exception) is a finding about the world,
+                        not a failure to hide.
+                      </p>
+                    </div>
+                  )}
 
                   {/* reject reasons + per-seed chart */}
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -545,8 +655,8 @@ export default function EngineView() {
                       )}
                       <p className="text-[11px] leading-snug text-zinc-600">
                         One reason dominates: desk concentration (max 5 open paper positions). The
-                        caps are the risk layer doing its job — 479 gated opportunities, only 224
-                        ever open.
+                        caps are the risk layer doing its job — every day a family is selected, only
+                        for the book to be full.
                       </p>
                     </div>
                     <div>
@@ -600,20 +710,21 @@ export default function EngineView() {
                         <thead className="sticky top-0 bg-zinc-900 text-zinc-500">
                           <tr className="text-left">
                             <th className="px-3 py-2 font-medium">seed</th>
-                            <th className="px-3 py-2 font-medium">gated</th>
+                            <th className="px-3 py-2 font-medium">contested</th>
+                            <th className="px-3 py-2 font-medium">selected</th>
                             <th className="px-3 py-2 font-medium">opened</th>
                             <th className="px-3 py-2 font-medium">settled</th>
                             <th className="px-3 py-2 font-medium">still open</th>
                             <th className="px-3 py-2 text-right font-medium">realized</th>
                             <th className="px-3 py-2 text-right font-medium">aggregate</th>
-                            <th className="px-3 py-2 text-right font-medium">err bps μ</th>
                           </tr>
                         </thead>
                         <tbody className="font-mono tabular-nums text-zinc-300">
                           {sweep.per_seed.map((s) => (
                             <tr key={s.seed} className="border-t border-zinc-800/60">
                               <td className="px-3 py-1.5 text-zinc-500">{s.seed}</td>
-                              <td className="px-3 py-1.5">{num(s.gated)}</td>
+                              <td className="px-3 py-1.5">{num(s.contested_days)}</td>
+                              <td className="px-3 py-1.5">{num(s.selected_days)}</td>
                               <td className="px-3 py-1.5">{num(s.opened)}</td>
                               <td className="px-3 py-1.5">{num(s.settled)}</td>
                               <td className="px-3 py-1.5 text-zinc-500">{num(s.still_open)}</td>
@@ -629,17 +740,266 @@ export default function EngineView() {
                                 {usd(s.realized_usd)}
                               </td>
                               <td className="px-3 py-1.5 text-right">{sgn(s.aggregate_pct, 2, "%")}</td>
-                              <td className="px-3 py-1.5 text-right text-zinc-500">
-                                {s.realized_minus_locked_bps_mean == null
-                                  ? "—"
-                                  : sgn(s.realized_minus_locked_bps_mean, 1)}
-                              </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                   </div>
+                </div>
+              )}
+            </Card>
+
+            {/* ===================== world v2 — carry regime (half width) */}
+            <Card
+              title="World v2 — the synthetic regime"
+              icon={<TrendingUp className="h-4 w-4" />}
+              right={
+                run ? (
+                  <span className="font-mono text-[10px] text-zinc-600">
+                    seed {run.summary.seed} · {num(run.summary.days)} d
+                  </span>
+                ) : undefined
+              }
+            >
+              {carryCurve.length === 0 ? (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-200/90">
+                  carry_curve not present in run-latest.json (pre-v0.3 artifact).
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="h-52">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        data={carryCurve.map((p) => ({ day: p.day, apr: p.apr_printed * 100 }))}
+                        margin={{ top: 6, right: 6, bottom: 0, left: 0 }}
+                      >
+                        <CartesianGrid stroke="#27272a" strokeDasharray="2 4" vertical={false} />
+                        <XAxis
+                          dataKey="day"
+                          type="number"
+                          domain={[1, run?.summary.days ?? 200]}
+                          tick={{ fill: "#71717a", fontSize: 9 }}
+                          stroke="#3f3f46"
+                          allowDecimals={false}
+                        />
+                        <YAxis
+                          tick={{ fill: "#71717a", fontSize: 9 }}
+                          stroke="#3f3f46"
+                          tickFormatter={(v: number) => `${v.toFixed(0)}%`}
+                          width={40}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "#18181b",
+                            border: "1px solid #3f3f46",
+                            borderRadius: 8,
+                            fontSize: 11,
+                          }}
+                          labelFormatter={(l) => `day ${l}`}
+                          formatter={(v: number) => [`${v.toFixed(2)}%`, "printed funding APR"]}
+                        />
+                        <ReferenceArea x1={150} x2={180} fill="#fb7185" fillOpacity={0.06} />
+                        <ReferenceLine x={30} stroke="#3f3f46" strokeDasharray="3 3" />
+                        <ReferenceLine x={120} stroke="#3f3f46" strokeDasharray="3 3" />
+                        <ReferenceLine x={150} stroke="#fb718566" strokeDasharray="3 3" />
+                        <ReferenceLine x={180} stroke="#fb718566" strokeDasharray="3 3" />
+                        <Line
+                          type="monotone"
+                          dataKey="apr"
+                          stroke="#2dd4bf"
+                          strokeWidth={1.6}
+                          dot={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Chip tone="good" title="days 30–120: the funding APR mean ramps up">
+                      ramp 8% → 18% · d30–120
+                    </Chip>
+                    <Chip tone="warn" title="days 150–180: the carry COLLAPSES — the regime v0.2 lacked">
+                      collapse 18% → 4% · d150–180
+                    </Chip>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-zinc-500">
+                    Daily mean <span className="text-zinc-300">printed</span> funding APR from the
+                    journal&apos;s <span className="font-mono">funding_daily</span> records — the
+                    observation stream the strategies actually see (print noise included, generator
+                    parameters never read). v0.2&apos;s world only ramped up, so the instrument
+                    question never existed; world v2 collapses carry late enough that a 30-day-lagging
+                    desk still prices stale-high premiums — the regime where{" "}
+                    <span className="text-zinc-300">locking</span> beats{" "}
+                    <span className="text-zinc-300">floating</span>.
+                  </p>
+                </div>
+              )}
+            </Card>
+
+            {/* ===================== ranking layer (half width) */}
+            <Card
+              title="Ranking layer — instrument choice"
+              icon={<Layers className="h-4 w-4" />}
+              right={
+                ranking ? (
+                  <Chip tone="good" title={ranking.definition}>
+                    hit-rate {pct(ranking.hit_rate_pct)}
+                  </Chip>
+                ) : undefined
+              }
+            >
+              {!ranking ? (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-200/90">
+                  ranking stats not present in the artifact (pre-v0.3).
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    {[
+                      {
+                        k: "contested · evaluated",
+                        v: `${num(ranking.contested_days_evaluated)}`,
+                        s: `${num(ranking.truncated_excluded)} truncated excluded`,
+                      },
+                      {
+                        k: "hits / misses / ties",
+                        v: `${num(ranking.hits)} / ${num(ranking.misses)} / ${num(ranking.ties)}`,
+                        s: "selected family's ex-post carry beat the forgone one's",
+                      },
+                      {
+                        k: "tie rule",
+                        v: "→ forward",
+                        s: "locked carry preferred at equal net — pre-registered",
+                      },
+                    ].map((x) => (
+                      <div key={x.k} className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2.5">
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-500">{x.k}</div>
+                        <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-zinc-100">
+                          {x.v}
+                        </div>
+                        <div className="mt-0.5 text-[10px] leading-snug text-zinc-600">{x.s}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* selection timeline — who won each quote day */}
+                  {edgeSeries.length > 0 && (
+                    <div>
+                      <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                        selection by quote day · representative seed
+                      </h3>
+                      <div className="h-28">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={edgeSeries.map((p) => ({
+                              day: p.day,
+                              fwd: p.selected === FORWARD ? 1 : 0,
+                              perp: p.selected === PERP ? 1 : 0,
+                            }))}
+                            margin={{ top: 2, right: 4, bottom: 0, left: 4 }}
+                          >
+                            <XAxis dataKey="day" tick={{ fill: "#71717a", fontSize: 8 }} stroke="#3f3f46" />
+                            <YAxis hide domain={[0, 1]} />
+                            <Tooltip
+                              cursor={{ fill: "#3f3f4644" }}
+                              contentStyle={{
+                                background: "#18181b",
+                                border: "1px solid #3f3f46",
+                                borderRadius: 8,
+                                fontSize: 11,
+                              }}
+                              labelFormatter={(l) => `day ${l}`}
+                              formatter={(_v: number, name: string) =>
+                                name === "fwd" ? [1, "forward selected"] : [1, "perp selected"]
+                              }
+                            />
+                            <Bar dataKey="fwd" stackId="s" fill={FAMILY_COLOR[FORWARD]} />
+                            <Bar dataKey="perp" stackId="s" fill={FAMILY_COLOR[PERP]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* phase shares — the P2 visual */}
+                  <div className="space-y-2">
+                    <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                      forward family&apos;s share of contests, by phase
+                    </h3>
+                    <BarRow
+                      label="build-up (d ≤ 150)"
+                      value={ranking.forward_selection_share_ramp_pct ?? 0}
+                      max={100}
+                      text={pct(ranking.forward_selection_share_ramp_pct)}
+                      tone="bg-teal-500/60"
+                    />
+                    <BarRow
+                      label="collapse (d > 150)"
+                      value={ranking.forward_selection_share_collapse_pct ?? 0}
+                      max={100}
+                      text={pct(ranking.forward_selection_share_collapse_pct)}
+                      tone="bg-teal-400"
+                    />
+                    <p className="text-[11px] leading-snug text-zinc-600">
+                      The ranking flips with the regime: while carry builds, the floating perp family
+                      has the higher net edge; once carry collapses under stale-high desk premiums,
+                      the dated forward wins. (Prediction P2 — supported as measured.)
+                    </p>
+                  </div>
+
+                  {/* family census */}
+                  {(fwdCensus || perpCensus) && (
+                    <div>
+                      <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                        family census · pooled across seeds
+                      </h3>
+                      <div className="overflow-x-auto custom-scroll rounded-lg border border-zinc-800/70">
+                        <table className="w-full text-xs">
+                          <thead className="bg-zinc-900 text-zinc-500">
+                            <tr className="text-left">
+                              <th className="px-3 py-2 font-medium">family</th>
+                              <th className="px-3 py-2 font-medium">evals</th>
+                              <th className="px-3 py-2 font-medium">gated in</th>
+                              <th className="px-3 py-2 font-medium">selected</th>
+                              <th className="px-3 py-2 font-medium">opened</th>
+                              <th className="px-3 py-2 font-medium">settled</th>
+                              <th className="px-3 py-2 text-right font-medium">pnl % μ</th>
+                            </tr>
+                          </thead>
+                          <tbody className="font-mono tabular-nums text-zinc-300">
+                            {[FORWARD, PERP].map((sid) => {
+                              const c = sid === FORWARD ? fwdCensus : perpCensus;
+                              if (!c) return null;
+                              return (
+                                <tr key={sid} className="border-t border-zinc-800/60">
+                                  <td className="px-3 py-1.5">
+                                    <span
+                                      className="inline-flex items-center gap-1.5"
+                                      style={{ color: FAMILY_COLOR[sid] }}
+                                    >
+                                      <span
+                                        className="inline-block h-2 w-2 rounded-full"
+                                        style={{ background: FAMILY_COLOR[sid] }}
+                                      />
+                                      {familyLabel(sid)}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-1.5">{num(c.evals)}</td>
+                                  <td className="px-3 py-1.5">{num(c.gated_in)}</td>
+                                  <td className="px-3 py-1.5">{num(c.selected)}</td>
+                                  <td className="px-3 py-1.5">{num(c.opened)}</td>
+                                  <td className="px-3 py-1.5">{num(c.settled)}</td>
+                                  <td className="px-3 py-1.5 text-right text-emerald-400">
+                                    {sgn(c.settled_stats.pnl_pct_of_notional.mean, 2, "%")}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </Card>
@@ -665,13 +1025,13 @@ export default function EngineView() {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                     {[
                       { k: "quotes", v: num(run.summary.quotes) },
-                      { k: "gated in", v: num(run.summary.opportunities_gated_in) },
+                      { k: "family evals", v: num(run.summary.family_evals) },
+                      { k: "contested days", v: num(run.summary.contested_days) },
+                      { k: "selected days", v: num(run.summary.selected_days) },
                       { k: "cap rejects", v: num(run.summary.risk_rejects) },
                       { k: "opened", v: num(run.summary.positions_opened) },
                       { k: "settled", v: num(run.summary.positions_settled) },
-                      { k: "still open", v: num(run.summary.positions_still_open) },
-                      { k: "seed / days", v: `${run.summary.seed} / ${run.summary.days}` },
-                      { k: "tenor", v: `${run.summary.tenor_days} d` },
+                      { k: "seed / tenor", v: `${run.summary.seed} / ${run.summary.tenor_days} d` },
                     ].map((x) => (
                       <div key={x.k} className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2.5">
                         <div className="text-[10px] uppercase tracking-wider text-zinc-500">{x.k}</div>
@@ -705,46 +1065,55 @@ export default function EngineView() {
 
                   <div>
                     <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-                      settled paper positions
+                      settled paper positions · both families
                     </h3>
                     <div className="custom-scroll max-h-96 overflow-y-auto rounded-lg border border-zinc-800/70">
                       <table className="w-full text-xs">
                         <thead className="sticky top-0 bg-zinc-900 text-zinc-500">
                           <tr className="text-left">
                             <th className="px-3 py-2 font-medium">position</th>
+                            <th className="px-3 py-2 font-medium">family</th>
                             <th className="px-3 py-2 font-medium">held</th>
-                            <th className="px-3 py-2 text-right font-medium">locked</th>
+                            <th className="px-3 py-2 text-right font-medium">carry bps</th>
                             <th className="px-3 py-2 text-right font-medium">realized</th>
                             <th className="px-3 py-2 text-right font-medium">err</th>
-                            <th className="px-3 py-2 text-right font-medium">locked APR</th>
-                            <th className="px-3 py-2 text-right font-medium">perp alt APR</th>
+                            <th className="px-3 py-2 text-right font-medium">window APR</th>
                           </tr>
                         </thead>
                         <tbody className="font-mono tabular-nums text-zinc-300">
-                          {run.settled.map((s: SettledRow) => (
-                            <tr key={s.position_id} className="border-t border-zinc-800/60">
-                              <td className="px-3 py-1.5 text-zinc-500">{s.position_id}</td>
-                              <td className="px-3 py-1.5">{num(s.held_days)} d</td>
-                              <td className="px-3 py-1.5 text-right">{sgn(s.locked_premium_bps, 1)}</td>
-                              <td className="px-3 py-1.5 text-right text-emerald-400">
-                                {sgn(s.pnl_pct_of_notional * 100, 1)}
-                              </td>
-                              <td className="px-3 py-1.5 text-right text-amber-400">
-                                {sgn(s.realized_minus_locked_bps, 1)}
-                              </td>
-                              <td className="px-3 py-1.5 text-right">{aprPct(s.locked_premium_apr)}</td>
-                              <td className="px-3 py-1.5 text-right text-zinc-500">
-                                {aprPct(s.perp_alternative_apr)}
-                              </td>
-                            </tr>
-                          ))}
+                          {run.settled.map((s: SettledRow) => {
+                            const perp = s.strategy_id === PERP;
+                            const carryBps = perp ? s.funding_accrual_bps : s.locked_premium_bps;
+                            const errBps = perp ? s.realized_minus_expected_bps : s.realized_minus_locked_bps;
+                            return (
+                              <tr key={s.position_id} className="border-t border-zinc-800/60">
+                                <td className="px-3 py-1.5 text-zinc-500">{s.position_id}</td>
+                                <td className="px-3 py-1.5">
+                                  <span style={{ color: FAMILY_COLOR[s.strategy_id] ?? "#a1a1aa" }}>
+                                    {familyLabel(s.strategy_id)}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-1.5">{num(s.held_days)} d</td>
+                                <td className="px-3 py-1.5 text-right">{sgn(carryBps, 1)}</td>
+                                <td className="px-3 py-1.5 text-right text-emerald-400">
+                                  {sgn(s.pnl_pct_of_notional * 100, 1)}
+                                </td>
+                                <td className="px-3 py-1.5 text-right text-amber-400">
+                                  {sgn(errBps, 1)}
+                                </td>
+                                <td className="px-3 py-1.5 text-right text-zinc-500">
+                                  {aprPct(s.perp_alternative_apr)}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
                     <p className="mt-2 text-[11px] leading-relaxed text-zinc-600">
-                      locked/realized/err in bps of notional · realized ≈ locked − exit crossing —
-                      a dated forward settles to its premium, which is the whole Route B thesis ·
-                      quantity chain{" "}
+                      carry = locked premium (forward) or printed funding accrual (perp) · err =
+                      realized − locked (forward) or accrual − ex-ante expected (perp) · window APR =
+                      realized funding over the held window · quantity chain{" "}
                       {run.settled.every((s) => s.quantity_chain_ok) ? (
                         <CheckCircle2 className="inline h-3 w-3 text-emerald-500" />
                       ) : (
@@ -765,8 +1134,19 @@ export default function EngineView() {
               ) : (
                 <div className="space-y-4">
                   <p className="text-[11px] leading-relaxed text-zinc-500">
-                    The last gated-in opportunity of the representative run — gross premium, then
-                    every cost as an explicit line, nothing silently folded (I-4):
+                    The last executed opportunity of the representative run —{" "}
+                    <span style={{ color: FAMILY_COLOR[opp.strategy_id] ?? "#a1a1aa" }}>
+                      {familyLabel(opp.strategy_id)} family
+                    </span>
+                    {opp.metadata.ranked_over?.length ? (
+                      <>
+                        {" "}· ranked over{" "}
+                        <span className="text-zinc-300">
+                          {opp.metadata.ranked_over.map(familyLabel).join(", ")}
+                        </span>
+                      </>
+                    ) : null}
+                    . Gross edge, then every cost as an explicit line, nothing silently folded (I-4):
                   </p>
                   <div className="space-y-1.5">
                     {[
@@ -822,14 +1202,16 @@ export default function EngineView() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <Chip tone={opp.metadata.gates.z_gate ? "good" : "bad"}>
-                      {opp.metadata.gates.z_gate ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-                      z {opp.signal_z?.toFixed(2) ?? "—"} ≥ 2.0
-                    </Chip>
-                    <Chip tone={opp.metadata.gates.net_edge_gate ? "good" : "bad"}>
-                      {opp.metadata.gates.net_edge_gate ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-                      net {sgn(opp.net_executable_edge_bps, 1)} ≥ 10 bps
-                    </Chip>
+                    {Object.entries(opp.metadata.gates).map(([gate, ok]) => (
+                      <Chip key={gate} tone={ok ? "good" : "bad"}>
+                        {ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+                        {gate === "z_gate"
+                          ? `z ${opp.signal_z?.toFixed(2) ?? "—"} ≥ 2.0`
+                          : gate === "net_edge_gate"
+                            ? `net ${sgn(opp.net_executable_edge_bps, 1)} ≥ 10 bps`
+                            : gate}
+                      </Chip>
+                    ))}
                     <Chip>confidence {(opp.confidence * 100).toFixed(0)}%</Chip>
                     <Chip>horizon {opp.horizon_days} d</Chip>
                   </div>
@@ -837,15 +1219,29 @@ export default function EngineView() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                     <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
                       <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
-                        the signal
+                        the signal · both sigmas
                       </div>
                       <div className="font-mono tabular-nums leading-relaxed text-zinc-300">
-                        realized funding APR {aprPct(opp.metadata.realized_apr)} (σ̂{" "}
-                        {aprPct(opp.metadata.realized_sigma_apr)})
-                        <br />
-                        desk implied APR {aprPct(opp.metadata.forward_implied_apr)}
-                        <br />
-                        gap {sgn(opp.metadata.gap_apr * 100, 2, " pts")} → z {opp.signal_z?.toFixed(2)}
+                        {isPerpOpp ? (
+                          <>
+                            expected funding APR {aprPct(opp.metadata.expected_apr)}
+                            <br />
+                            σ_level {aprPct(opp.metadata.sigma_level_apr)} · σ_H{" "}
+                            {aprPct(opp.metadata.sigma_horizon_apr)}
+                            <br />
+                            z_perp = E/σ_H {opp.signal_z?.toFixed(2) ?? "—"} (horizon persistence)
+                          </>
+                        ) : (
+                          <>
+                            realized funding APR {aprPct(opp.metadata.realized_apr)} (σ_level{" "}
+                            {aprPct(opp.metadata.realized_sigma_apr)})
+                            <br />
+                            desk implied APR {aprPct(opp.metadata.forward_implied_apr)}
+                            <br />
+                            gap {sgn(opp.metadata.gap_apr * 100, 2, " pts")} → z_level{" "}
+                            {opp.signal_z?.toFixed(2)} (diagnostic — gate retired, C4)
+                          </>
+                        )}
                       </div>
                     </div>
                     <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
@@ -861,9 +1257,18 @@ export default function EngineView() {
                           </div>
                         ))}
                         <div className="pt-1 text-[11px] text-zinc-500">
-                          <Lock className="mr-1 inline h-3 w-3 text-amber-400" />
-                          carry locked: {usd(opp.carry.expected_usd)} · σ {usd(opp.carry.sigma_usd)}{" "}
-                          (benchmark / early-exit only)
+                          {opp.carry.locked ? (
+                            <>
+                              <Lock className="mr-1 inline h-3 w-3 text-amber-400" />
+                              carry locked: {usd(opp.carry.expected_usd)} · σ {usd(opp.carry.sigma_usd)}{" "}
+                              (benchmark / early-exit only)
+                            </>
+                          ) : (
+                            <>
+                              carry floating: {usd(opp.carry.expected_usd)} expected · σ_H{" "}
+                              {usd(opp.carry.sigma_usd)} (horizon window dispersion)
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -873,47 +1278,58 @@ export default function EngineView() {
             </Card>
 
             {/* ================================ Route B kernel */}
-            <Card title="Route B — the kernel" icon={<FlaskConical className="h-4 w-4" />}>
+            <Card title="Route B — the kernel, now two families" icon={<FlaskConical className="h-4 w-4" />}>
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2">
                   <FlowChip label="CEX funding obs" sub="hour-normalized" />
                   <ArrowRight className="h-3 w-3 text-zinc-600" />
-                  <FlowChip label="EWMA + estimator σ" />
+                  <FlowChip label="EWMA + σ_level" />
                   <ArrowRight className="h-3 w-3 text-zinc-600" />
-                  <FlowChip label="vs desk forward-implied APR" />
+                  <FlowChip label="σ_H (overlapping windows)" />
                   <ArrowRight className="h-3 w-3 text-zinc-600" />
-                  <FlowChip label="gap z ≥ 2" />
+                  <FlowChip label="forward: lock · perp: float" />
                   <ArrowRight className="h-3 w-3 text-zinc-600" />
-                  <FlowChip label="ALL-IN EDGE ≥ 10 bps" />
+                  <FlowChip label="ranking by net edge" />
                   <ArrowRight className="h-3 w-3 text-zinc-600" />
-                  <FlowChip label="paper legs" />
-                  <ArrowRight className="h-3 w-3 text-zinc-600" />
-                  <FlowChip label="settlement vs print" />
+                  <FlowChip label="paper legs + settlement" />
                 </div>
-                <p className="text-[11px] leading-relaxed text-zinc-500">
-                  Long spot at the desk ask + short the dated forward at the desk bid —{" "}
-                  <span className="text-zinc-300">matched base quantity on both legs</span>{" "}
-                  (NEW-17/R8: a true hedge, never a USD-notional match that leaves residual delta).
-                  Carry is <span className="text-zinc-300">locked at inception</span>: the expected
-                  carry is the priced premium itself; σ covers only benchmark and early-exit mark
-                  risk. At settlement the forward cash-settles against the print — the hedge makes
-                  the outcome path-invariant, which is exactly what the sweep&apos;s
-                  realized−locked distribution measures.
-                </p>
-                <div className="rounded-lg border border-teal-500/25 bg-teal-500/5 p-3 text-[11px] leading-relaxed text-teal-200/80">
-                  Why this exists: the funding-arb audit measured reality (−0.281 % attributable
-                  baseline, fees dominating). Route B asks the inverse question — can the carry the
-                  perp crowd is paying be <em>locked</em> through an OTC forward instead of
-                  collected settlement-by-settlement? The engine is the machinery to answer that
-                  with paper discipline before any W0/W1 real quote exists.
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px] leading-relaxed">
+                  <div className="rounded-lg border border-teal-500/25 bg-teal-500/5 p-3 text-teal-200/80">
+                    <span className="font-semibold" style={{ color: FAMILY_COLOR[FORWARD] }}>
+                      forward_basis_v1 — lock.
+                    </span>{" "}
+                    Long spot at the desk ask + short the dated forward at the desk bid. Carry is
+                    locked at inception: the expected carry is the priced premium itself; σ covers
+                    only benchmark and early-exit mark risk.
+                  </div>
+                  <div className="rounded-lg border border-orange-500/25 bg-orange-500/5 p-3 text-orange-200/80">
+                    <span className="font-semibold" style={{ color: FAMILY_COLOR[PERP] }}>
+                      perp_carry_v1 — float.
+                    </span>{" "}
+                    Long spot at the desk ask + short the CEX perp at its mark. Funding accrues per
+                    settlement print; σ_H is genuine PnL risk — exactly the risk the forward family
+                    pays a premium to remove. CEX fees are explicit waterfall lines.
+                  </div>
+                </div>
+                <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3 text-[11px] leading-relaxed text-zinc-500">
+                  <span className="text-zinc-300">Matched base quantity on both legs</span> in every
+                  family (NEW-17/R8: a true hedge, never a USD-notional match that leaves residual
+                  delta). Every family is evaluated and journaled every quote day — gated or not —
+                  and the ranking layer executes the higher net executable edge (tie → forward,
+                  pre-registered). Why this exists: the funding-arb audit measured reality (−0.281 %
+                  attributable baseline, fees dominating); the engine asks which instrument should
+                  express the carry view, with paper discipline, before any W0/W1 real quote exists.
                 </div>
               </div>
             </Card>
 
             {/* ================================ family + next steps */}
-            <Card title="Where this sits · what's next" icon={<Layers className="h-4 w-4" />}>
-              <div className="space-y-4">
+            <Card title="Where this sits · what's next" icon={<Layers className="h-4 w-4" />} className="lg:col-span-2">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="space-y-1.5">
+                  <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                    the four-repo family
+                  </h3>
                   {[
                     {
                       name: "funding-arb",
@@ -933,7 +1349,7 @@ export default function EngineView() {
                     {
                       name: "quant-arb-engine",
                       meta: `v${data.repo.version ?? "—"} · paper only`,
-                      role: "explores the next generation — Route B machinery on synthetic data",
+                      role: "explores the next generation — two carry families + ranking on synthetic data",
                     },
                   ].map((r) => (
                     <div

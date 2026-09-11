@@ -23,7 +23,7 @@ This dashboard is one of four coordinated repositories:
 |---|---|---|
 | [`funding-arb`](https://github.com/markec12345678/funding-arb) | the trading system — scanner, strategy, executor, gates | **locked** at `0373f5d` during Phase-2 A/B/C paper validation (539 tests, CI green) |
 | [`phase3-lab`](https://github.com/markec12345678/phase3-lab) | execution-safety laboratory — 4-layer separation, formal safety gate | **certified**: 106/106 tests (foundation 80 · reconciliation 19 · risk guardian 23 · cross-layer 13), golden contract v1.1.0, PORT CANDIDATE — port blocked by Phase-2 verdict |
-| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, forward-basis strategy on a deterministic mock RFQ world | **v0.2.0 · paper/research only** — research layer added (40-seed sweep, realized-vs-locked validation, z-gate calibration); monitored read-only from this tower's engine view |
+| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, TWO carry families (forward lock + perp float) ranked every quote day on a deterministic mock RFQ world | **v0.3.0 · paper/research only** — ranking layer + honest horizon σ (decision record, 40-seed sweep, dual calibration panels, scored predictions); monitored read-only from this tower's engine view |
 | **funding-arb-tower** (this repo) | command center — reads both pipelines, never trades | runs sandbox-local and/or deployed |
 
 The validation ladder the dashboard reflects:
@@ -352,26 +352,41 @@ live in `docs/funding-arb-audit.md` ("R4 closure").
 ## Quant engine view — the parallel research track, monitored
 
 The **quant engine** tab (default on load) is the tower's read-only window into
-`quant-arb-engine` — the sibling repo that explores Route B (forward basis-lock)
-on a deterministic synthetic world. It renders exactly what the engine's
-research artifacts carry, with the engine's own epistemic note traveling with
-the data:
+`quant-arb-engine` — the sibling repo that explores the carry question on a
+deterministic synthetic world, with **two strategy families ranked every quote
+day** (v0.3.0): `forward_basis_v1` (lock the carry through a dated forward) vs
+`perp_carry_v1` (float it on a short CEX perp). It renders exactly what the
+engine's research artifacts carry, with the engine's own epistemic note
+traveling with the data:
 
-- **Machinery validation (40-seed sweep)** — pooled distributions for PnL % of
-  notional, realized−locked bps (the dated-forward lock through settlement:
-  −2.93 bps mean ≈ the desk spot half-spread on exit, well inside the
-  pre-registered 8 bps buffer) and locked−perp-alternative APR (the
-  route-choice metric); risk-cap reject histogram; per-seed realized PnL
-  chart + table.
-- **z-gate calibration** — the honest estimator diagnostic: 98.7 % of settled
-  entries drifted past 2× the instantaneous EWMA σ over the 90-day window
-  (regime drift dominates). Reported as-is, never tuned — it sizes the
-  question of how honest the waterfall's k·σ·T/365 buffer line is.
-- **Latest run (end-to-end)** — the representative seed's pipeline funnel,
-  settled positions with locked vs realized bps, and the verbatim unit rule.
-- **ALL-IN EDGE waterfall** — the last gated opportunity decomposed line by
-  line (gross → entry/exit fees → carry σ buffer → slippage → execution risk
-  → net), with both pre-registered gates shown with their actual values.
+- **Machinery validation (40-seed sweep)** — pooled PnL distribution plus
+  per-family diagnostics: realized−locked bps (the forward lock through
+  settlement, ≈ −exit crossing) and accrual−expected bps (floating carry vs its
+  ex-ante estimate); risk-cap reject histogram; per-seed realized PnL chart +
+  table (contested / selected / opened / settled columns).
+- **Dual σ calibration panels** — the v0.2.0 finding kept for audit (σ_level:
+  an instantaneous estimator error read as a horizon statement → 67.1 % breach)
+  next to the redefined σ_H panel (overlapping-window horizon dispersion →
+  35.0 %): the fix is auditable, not asserted. Both reported as computed.
+- **Scored predictions P1/P2/P3** — the falsifiable statements written in the
+  engine's decision record BEFORE any v0.3 run, scored by the sweep as
+  measured. P3 is refuted (contests are the norm) and rendered as an honest
+  finding, never buried.
+- **World v2 — the synthetic regime** — the journaled daily printed funding
+  APR (carry curve) with the ramp 8 % → 18 % and collapse 18 % → 4 % phases
+  marked: the two-sided world where the instrument question exists.
+- **Ranking layer — instrument choice** — hit-rate on full-window contested
+  days (60.2 %), the selection timeline per quote day, forward's share of
+  contests by phase (30.2 % build-up → 79.5 % collapse), and the family
+  census table.
+- **Latest run (end-to-end)** — the representative seed's funnel (family
+  evals → contested → selected → opened → settled), settled positions of both
+  families (locked premium or printed funding accrual + error vs expectation),
+  and the verbatim unit rule.
+- **ALL-IN EDGE waterfall** — the last executed opportunity (either family,
+  with what it was ranked over) decomposed line by line (gross → entry/exit
+  fees → carry σ buffer → slippage → execution risk → net), with the gates
+  shown at their actual values and both sigmas displayed with their meanings.
 - **NO-GO strip (binding)** — live trading, NODE auto-trading, real capital,
   FIX production, ML money decisions, portfolio allocator: never built.
 

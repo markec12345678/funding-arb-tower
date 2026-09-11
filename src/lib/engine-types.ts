@@ -4,6 +4,10 @@
  * written by scripts/research_sweep.py in the engine repo) and the tower's
  * read-only engine monitor (/api/engine/overview → EngineView).
  *
+ * v0.3.0: two strategy families + ranking layer — the artifacts carry the
+ * family census, the ranking hit-rate, the dual σ calibration panels, the
+ * carry curve and the scored predictions P1/P2/P3.
+ *
  * The tower NEVER writes to the engine. It only reads: local sandbox checkout
  * first, GitHub raw fallback (Vercel) second. Artifacts are derived summaries
  * of SYNTHETIC paper runs — never market evidence.
@@ -31,12 +35,27 @@ export type SettledRow = {
   pnl_pct_of_notional: number;
   ex_ante_net_edge_bps: number;
   ex_ante_gross_edge_bps: number;
-  locked_premium_usd: number;
-  locked_premium_bps: number;
-  realized_minus_locked_bps: number;
+  // forward family (locked carry) — null on perp rows
+  locked_premium_usd: number | null;
+  locked_premium_bps: number | null;
+  realized_minus_locked_bps: number | null;
+  locked_premium_apr: number | null;
+  // perp family (floating carry) — null on forward rows
+  funding_accrual_usd: number | null;
+  funding_accrual_bps: number | null;
+  realized_minus_expected_bps: number | null;
+  // shared
   perp_alternative_apr: number | null;
-  locked_premium_apr: number;
   quantity_chain_ok: boolean;
+};
+
+/** Per-family counters inside the run summary. */
+export type FamilyCounts = {
+  evals: number;
+  gated_in: number;
+  selected: number;
+  opened: number;
+  settled: number;
 };
 
 /** Exact pipeline run_summary dict (representative seed). */
@@ -46,11 +65,16 @@ export type RunSummary = {
   days: number;
   tenor_days: number;
   quotes: number;
-  opportunities_gated_in: number;
+  quote_events: number;
+  family_evals: number;
+  gated_in_family_days: number;
+  contested_days: number;
+  selected_days: number;
   risk_rejects: number;
   positions_opened: number;
   positions_settled: number;
   positions_still_open: number;
+  per_family: Record<string, FamilyCounts>;
   realized_signed_pnl_usd: number;
   aggregate_pct_of_notional: number;
   mean_per_position_pct: number;
@@ -81,7 +105,7 @@ export type OpportunityLeg = {
   executed_size_usd: number;
 };
 
-/** The last gated-in opportunity of the representative run (full payload). */
+/** The last executed opportunity of the representative run (family-dependent metadata). */
 export type OpportunityExample = {
   strategy_id: string;
   ts: number;
@@ -99,14 +123,31 @@ export type OpportunityExample = {
   confidence: number;
   requested_notional_usd: number;
   metadata: {
-    realized_apr: number;
-    realized_sigma_apr: number;
-    forward_implied_apr: number;
-    gap_apr: number;
-    gates: { z_gate: boolean; net_edge_gate: boolean };
+    realized_apr?: number;
+    realized_sigma_apr?: number;
+    expected_apr?: number;
+    sigma_level_apr?: number;
+    sigma_horizon_apr?: number;
+    forward_implied_apr?: number;
+    gap_apr?: number;
+    signal_z_level?: number;
+    ref_mid?: number;
+    ranked_over?: string[];
+    gates: Record<string, boolean>;
     waterfall: Waterfall;
     price_sources: Record<string, string>;
   };
+};
+
+/** Daily printed funding APR — the observation stream, journaled. */
+export type CarryCurvePoint = { day: number; apr_printed: number };
+
+/** Per-quote-day net edges of both families + who won the ranking. */
+export type FamilyEdgePoint = {
+  day: number;
+  forward_net_edge_bps: number | null;
+  perp_net_edge_bps: number | null;
+  selected: string | null;
 };
 
 /** research/artifacts/run-latest.json — stable filename, overwritten per sweep. */
@@ -118,6 +159,8 @@ export type RunLatest = {
   summary: RunSummary;
   settled: SettledRow[];
   opportunity_example: OpportunityExample;
+  carry_curve?: CarryCurvePoint[];
+  family_edge_series?: FamilyEdgePoint[];
 };
 
 export type SweepParams = {
@@ -128,22 +171,30 @@ export type SweepParams = {
   quote_every_days: number;
   warmup_days: number;
   ewma_half_life_h: number;
+  world?: string;
 };
 
 export type SweepTotals = {
   quotes: number;
   quote_events: number;
-  gated: number;
+  family_evals: number;
+  gated_in_family_days?: number;
+  contested_days: number;
+  selected_days: number;
   risk_rejects: number;
   opened: number;
   settled: number;
   still_open: number;
+  // v0.2 compat (optional in v0.3 artifacts)
+  gated?: number;
 };
 
 export type PerSeed = {
   seed: number;
   quotes: number;
-  gated: number;
+  family_evals: number;
+  contested_days: number;
+  selected_days: number;
   risk_rejects: number;
   opened: number;
   settled: number;
@@ -151,7 +202,52 @@ export type PerSeed = {
   realized_usd: number;
   aggregate_pct: number;
   mean_pct: number;
-  realized_minus_locked_bps_mean: number | null;
+};
+
+/** Ranking layer stats (decision record C5/C6). */
+export type RankingStats = {
+  contested_days_total?: number;
+  contested_days_evaluated: number;
+  truncated_excluded: number;
+  hits: number;
+  misses: number;
+  ties: number;
+  hit_rate_pct: number | null;
+  forward_selection_share_ramp_pct: number | null;
+  forward_selection_share_collapse_pct: number | null;
+  contests_ramp_phase: number;
+  contests_collapse_phase: number;
+  definition: string;
+};
+
+/** One calibration panel (σ_level = the v0.2 finding kept for audit; horizon = σ_H). */
+export type CalibrationPanel = {
+  sigma: string;
+  n_checks: number;
+  n_breaches: number;
+  empirical_breach_pct: number | null;
+};
+
+/** Falsifiable predictions from the decision record, scored by the sweep. */
+export type Prediction = {
+  statement: string;
+  verdict: string;
+};
+
+/** Per-family census entry in the sweep artifact. */
+export type FamilyCensusEntry = {
+  evals: number;
+  gated_in: number;
+  selected: number;
+  opened: number;
+  settled: number;
+  settled_stats: {
+    n: number;
+    pnl_pct_of_notional: Dist;
+    realized_minus_locked_bps?: Dist;
+    funding_accrual_bps?: Dist;
+    realized_minus_expected_bps?: Dist;
+  };
 };
 
 /** research/artifacts/sweep-latest.json — multi-seed machinery validation. */
@@ -160,24 +256,30 @@ export type SweepArtifact = {
   engine_version: string;
   params: SweepParams;
   totals: SweepTotals;
-  gate_fire_rate_pct: number | null;
-  gate_fire_rate_per_quote_record_pct?: number | null;
+  selection_rate_pct?: number | null;
+  contested_share_of_selected_days_pct?: number | null;
+  gate_fire_rate_pct?: number | null; // v0.2 compat
   reject_reasons: { reason: string; count: number }[];
+  family_census?: Record<string, FamilyCensusEntry>;
+  ranking?: RankingStats;
   settled_stats: {
     n: number;
-    n_skipped_perp_null?: number;
     pnl_pct_of_notional: Dist;
-    realized_minus_locked_bps: Dist;
-    locked_minus_perp_alt_apr_bps: Dist;
+    realized_minus_locked_bps?: Dist;
+    locked_minus_perp_alt_apr_bps?: Dist;
+    n_skipped_perp_null?: number;
   };
   z_gate_calibration: {
     threshold_z: number;
     nominal_two_sided_pct: number;
-    empirical_breach_pct: number | null;
-    n_checks: number;
+    empirical_breach_pct?: number | null; // v0.2 compat
+    n_checks?: number;
     n_breaches?: number;
+    panel_level?: CalibrationPanel;
+    panel_horizon?: CalibrationPanel;
     definition: string;
   };
+  predictions?: Record<string, Prediction>;
   per_seed: PerSeed[];
   notes: {
     synthetic: boolean;
