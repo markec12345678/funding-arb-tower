@@ -1392,3 +1392,22 @@ Stage Summary:
 - The passive evidence layer the review asked for is live: every new close is now classified by cause automatically, and the two baselines (raw + diagnostic) are rendered continuously on the tower.
 - New measured fact for the A/B/C verdict: E-04 contamination is PnL-directional (genuine -0.403% vs data-gap +0.465%; raw +0.062% is a mixing artifact) — the verdict MUST be computed on both views, which the tower now does continuously.
 - Day-5/7 readiness: X normal exits vs Y E-04-contaminated exits is now a live dashboard number, not a manual journal analysis.
+
+---
+Task ID: 7
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Enforce the reporting contract on the exit-classification layer (review decision: the final A/B/C report never presents a single PnL — strategy-attributable is PRIMARY, raw + E-04 contamination always alongside).
+
+Work Log:
+- Verified current state first: runner alive (PID 12976), journal fresh (257 real cycles at 11:36Z, 14 successful opens + 137 aborted-by-risk-gate, positions ledger 11 closed / 3 open), tower at 81ddfdf, funding-arb CLEAN at 0373f5d.
+- src/server/exit-classification.ts extended (still read-only): new e04_contamination baseline (the data_gap group on its own), attribution_check {attributable_total, contamination_total, raw_total, consistent} — the identity "strategy-attributable + contamination = raw" verified on the rendered (rounded) totals with a 0.002 rounding tolerance, survival {opened from ledger rows, closed_normal, closed_data_gap, still_open from ledger status} — answering "how many opens survive to a normal close" as a live number. Note updated with the reporting contract.
+- src/app/page.tsx card rebuilt with the hierarchy the contract demands: PRIMARY panel (strategy-attributable, 2xl total PnL, "primary" badge, genuine-strategy-exits caption) rendered FIRST and visually dominant; secondary decomposition row (raw baseline + E-04 contamination, red-tinted when data-gap closes > 0); inline attribution-check line (−0.403% + 0.465% = +0.062% with ✓ "split decomposes raw exactly" / ✗ in red if it ever drifts); survival line (14 opened → 11 closed (6 genuine · 5 data-gap) · 3 still open); footer states the contract + the why-not-fix-E-04 rationale + small-sample caveat. Client type extended.
+- Docs: README "Exit classification — strategy-attributable vs E-04" section rewritten with the reporting contract, attribution check and survival; docs/funding-arb-audit.md R4-closure empirical section extended with "Reporting contract (review decision, 2026-09-11)" — never a single PnL number, primary/secondary figures, built-in identity check, survival line, E-04 deliberately unfixed during Phase-2.
+- Verification: lint exit 0; API local: raw 11 closes +0.062% / diagnostic 6 closes −0.403% / e04_contamination 5 closes +0.465% / attribution_check consistent:true / survival 14→(6·5)·3 — matches the review's table exactly; dev.log clean (GET / 200, /api/status 200); Agent Browser E2E: all 13 case-insensitive card checks true (card title, primary panel + tag, raw + E-04 panels, attribution check + identity values, survival line + numbers, per-exit table, footer contract, hierarchy_primary_first=true — primary panel precedes raw in DOM), zero page/console errors, 401px + 1440px no horizontal overflow; screenshot tool-results/exit-classification-primary.png.
+- Tower sync: commit 7a5bc28 pushed to GitHub; funding-arb integrity re-verified CLEAN at 0373f5d before and after — runner untouched.
+
+Stage Summary:
+- The reporting contract is now structural, not editorial: the tower cannot display a single blended exit PnL — the primary panel IS the strategy-attributable view, the decomposition and the ✓/✗ identity check are rendered with it, so a drifting split would be visible immediately.
+- Survival (opened → genuine close · data-gap close · still open) is now a live dashboard number for the Day-5/7 verdict.
+- Phase-2 status unchanged: baseline 0373f5d locked, E-04 measured and deliberately unfixed, runner collecting; A/B/C waits for the full sample.
