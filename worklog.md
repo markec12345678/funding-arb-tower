@@ -1084,3 +1084,79 @@ Stage Summary:
   venue health, execution-quality analytics, allocator) are capability
   modules that start only when the user asks. funding-arb timeline
   unchanged: daily verify-only checks, Day 3 interim, Day 5-7 A/B/C.
+
+---
+Task ID: SYNC-1
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Push everything not yet on GitHub, sync code + README, verify/research/polish the Vercel story ("pushaj kaj nisi na github vercel sinhroniziraj vse kode readme vercel preveri vse raziskuj poliraj")
+
+Work Log:
+- Inventory: funding-arb (clean, synced, locked at 0373f5d, 0 changes — untouched),
+  phase3-lab (clean, synced at 9723f14), my-project (18 commits, 125 tracked
+  files, NO remote, NO README — the gap).
+- Vercel-portability hardening of my-project: existsSync("/home/z/funding-arb")
+  guards added to instrumentation-node.ts (paper-runner supervisor), gh-heartbeat.ts
+  and paper-snapshot.ts — on a serverless deployment they are clean no-ops instead
+  of crash loops (openSync inside setInterval would have crashed the runtime).
+- /api/status rewritten as a dual-data-plane API: mode "local" (sandbox fs/git reads,
+  unchanged behavior, ~50 ms) and mode "remote" (paper-data branch via
+  raw.githubusercontent.com + GitHub REST with 60s/300s TTL cache and ETag
+  conditional requests — 304s are free against the rate limit). ?source=remote
+  forces remote mode; the page propagates the param so the whole dashboard can
+  render the deployed view. PAT is read at runtime from the funding-arb git
+  remote when present; deployed runs fully unauthenticated — no env vars, no
+  secrets in the repo.
+- Live delivery pipeline in the API: funding-arb pushed_at + commits, phase3-lab
+  latest commit + 106/106 + "cross-layer CERTIFIED — port candidate BLOCKED by
+  Phase-2 A/B/C", Vercel health check (HEAD funding-arb-dun.vercel.app, 300s
+  TTL). Validation plan updated to the real ladder (P0/backtest/E2E done,
+  Phase-2 active, Phase-3 done, port BLOCKED, real-money last).
+- UI: data-source badge (sandbox live / github snapshot), collector-aware runner
+  pill, phase3-lab column in the delivery-pipeline card, updated subtitle/KPIs/
+  footer; metadata moved to local icon. Mobile 401px: no horizontal overflow;
+  sticky footer verified (mt-auto pattern, pushed naturally on long pages).
+- Hygiene: .env untracked (no secrets inside, but sandbox-only path) + .env.example
+  added; tool-results/ (27 files) and .zscripts/dev.pid untracked and ignored;
+  hello-world stub route removed; package.json renamed to funding-arb-tower with
+  plain `next build` + separate build:standalone. Lint: clean (exit 0).
+- README.md written: system map (3 repos), dual-mode table, data-freshness
+  diagram, what-runs-where, quickstart, 3-step Vercel deploy guide, API
+  reference, repo layout, status ladder, disclaimer. Screenshots re-captured
+  at the current UI (desktop 1440x900 + iPhone 14).
+- GitHub: repo markec12345678/funding-arb-tower created (public) via API, remote
+  added, main pushed (edb0970), verified: contents listing OK, raw README 200,
+  raw .env 404 (not leaked), topics set, web UI 200.
+- Vercel research: funding-arb-dun.vercel.app (vite demo) healthy HTTP 200;
+  Vercel CLI (bunx, 59.15.1) is logged out on this sandbox — no token available,
+  interactive login impossible from here, so funding-arb-tower deployment is a
+  one-click import documented in the README (repo is deploy-ready, zero config).
+- Stale demo snapshot fixed: gh-pages scanner-latest.json was 14.5h old (cron-job.org
+  external trigger had not fired); dispatched TG Funding Push with source=cron
+  (anti-spam honored, snapshot step always runs) — run SUCCESS, gh-pages commit
+  3a9a08f at 2026-09-11T04:53Z, raw CDN now serves the fresh snapshot (7
+  opportunities).
+- Verified GitHub Actions health: paper-collector firing every 5 min (the sandbox
+  heartbeat repository_dispatch), all recent runs success.
+- Browser verification (agent-browser): dashboard renders both modes (local:
+  sandbox live badge, runner pid 12976, 291k rows, phase3 9723f14; remote:
+  github snapshot badge, GH collector LIVE, commits 0373f5d from the API), zero
+  console/page errors, dev.log clean.
+- funding-arb verify-only check after all work: tree CLEAN at 0373f5d, runner
+  PID 12976 still alive. Zero changes to the locked repo.
+
+Stage Summary:
+- Everything is now on GitHub: funding-arb (unchanged), phase3-lab (unchanged),
+  funding-arb-tower (NEW — the command center, pushed as edb0970 with README,
+  screenshots, dual-mode API and Vercel deploy guide).
+- The tower is genuinely deployable: serverless-safe module guards, remote data
+  plane over public GitHub data, plain next build, no secrets — Vercel import
+  is one click; actual deploy needs the user's Vercel account (CLI logged out
+  here, documented).
+- Vercel demo (funding-arb-dun.vercel.app) verified healthy and its data
+  snapshot refreshed; the hourly cron-job.org trigger for TG Funding Push
+  appears to have stopped after 2026-09-10T14:10Z — the user may want to check
+  that external schedule (the snapshot is now fresh as of 04:53Z via manual
+  dispatch with anti-spam honored).
+- Repo hygiene: .env/tool-results/pid files out of the public tree; topics set;
+  lint clean; no secrets anywhere (PAT only read at runtime from git config).
