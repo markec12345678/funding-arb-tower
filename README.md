@@ -14,12 +14,13 @@ Deployable to Vercel with zero configuration and zero environment variables.*
 
 ## The system it watches
 
-This dashboard is one of three coordinated repositories:
+This dashboard is one of four coordinated repositories:
 
 | repo | role | state |
 |---|---|---|
 | [`funding-arb`](https://github.com/markec12345678/funding-arb) | the trading system — scanner, strategy, executor, gates | **locked** at `0373f5d` during Phase-2 A/B/C paper validation (539 tests, CI green) |
 | [`phase3-lab`](https://github.com/markec12345678/phase3-lab) | execution-safety laboratory — 4-layer separation, formal safety gate | **certified**: 106/106 tests (foundation 80 · reconciliation 19 · risk guardian 23 · cross-layer 13), golden contract v1.1.0, PORT CANDIDATE — port blocked by Phase-2 verdict |
+| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, forward-basis strategy on a deterministic mock RFQ world | **paper/research only** — built 2026-09-11 per its decision record; the old system measures reality, this one explores the next generation |
 | **funding-arb-tower** (this repo) | command center — reads the pipeline, never trades | runs sandbox-local and/or deployed |
 
 The validation ladder the dashboard reflects:
