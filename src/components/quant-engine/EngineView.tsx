@@ -475,7 +475,7 @@ function RfqLaneCard({ rfq }: { rfq: RfqStatus | null }) {
               <>
                 honest status: <span className="font-semibold text-amber-300">0 real records</span>{" "}
                 — no RFQ desk credentials exist in this environment. The machinery is complete and
-                invariant-checked (100 tracked checks, reproducible from the repo via
+                invariant-checked (103 tracked checks, reproducible from the repo via
                 verify_w0_invariants.py: chain tamper/reorder/insert/truncate detection,
                 duplicate-id, future reference rejection, source wall, edge accounting,
                 dry-run writes-nothing, webhook token/rejection gates + per-append status
@@ -1868,7 +1868,7 @@ export default function EngineView() {
                     {
                       id: "W0-feed",
                       owner: "user",
-                      text: "connect a source: desk export (file ingest today) or push provider (webhook receiver, one command)",
+                      text: "connect a source: desk export (file ingest today) or push provider (webhook receiver, one command) — the full first-feed day is rehearsed end-to-end on stand-in data (engine runbook, zero repo writes)",
                     },
                     {
                       id: "W1-INFRA",
