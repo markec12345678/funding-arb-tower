@@ -5,6 +5,7 @@ import {
   Activity,
   ArrowRight,
   BarChart3,
+  Calculator,
   CheckCircle2,
   Circle,
   CircleDot,
@@ -107,6 +108,65 @@ type Status = {
         held_h: number | null;
         pnl_pct: number | null;
         closed_at: string | null;
+      }[];
+      note: string;
+    } | null;
+    economics: {
+      generated_at: string;
+      closes: number;
+      attributable: {
+        rows: number;
+        summed_trade_usd: number | null;
+        spread_pnl_usd: number | null;
+        net_funding_usd: number | null;
+        fee_usd: number | null;
+        economic_usd: number | null;
+        spread_total_pct: number | null;
+        net_funding_total_pct: number | null;
+        fee_total_pct: number | null;
+        economic_total_pct: number | null;
+        economic_of_capital_pct: number | null;
+        r6_upper_pct: number | null;
+        r6_lower_pct: number | null;
+      };
+      data_gap: {
+        rows: number;
+        net_funding_usd: number | null;
+        economic_usd: number | null;
+      };
+      identity_check: {
+        spread_pct: number;
+        funding_pct: number;
+        fees_pct: number;
+        economic_pct: number;
+        consistent: boolean;
+      } | null;
+      completeness: { complete: number; incomplete: number };
+      per_close: {
+        position_id: string;
+        base: string;
+        is_data_gap: boolean;
+        closed_at: string | null;
+        held_h: number | null;
+        requested_usd: number | null;
+        long_notional_usd: number | null;
+        short_notional_usd: number | null;
+        long_interval_h: number | null;
+        short_interval_h: number | null;
+        long_settlements: number | null;
+        short_settlements: number | null;
+        long_leg_funding_usd: number | null;
+        short_leg_funding_usd: number | null;
+        net_funding_usd: number | null;
+        net_funding_sc_usd: number | null;
+        fee_usd: number | null;
+        spread_pnl_usd: number | null;
+        economic_usd: number | null;
+        economic_sc_usd: number | null;
+        r6_upper_pct: number | null;
+        r6_lower_pct: number | null;
+        new_estimate_pct: number | null;
+        components_complete: boolean;
       }[];
       note: string;
     } | null;
@@ -1063,6 +1123,189 @@ export default function Home() {
                     during Phase-2 (fixing mid-sample would mix baselines); watcher-driven categories
                     (stop-loss, funding) stay in the taxonomy and count 0 while the watcher is not part
                     of the paper loop. Small sample = diagnostic signal, not a statistical verdict.
+                  </p>
+                </div>
+              </Card>
+            )}
+
+            {/* R7 economic invariants — per-close mathematical decomposition (diagnostic) */}
+            {p.economics && p.economics.closes > 0 && (
+              <Card title="economic decomposition — R7 invariant test" icon={<Calculator className="h-4 w-4" />}>
+                <div className="space-y-4">
+                  <p className="text-[11px] leading-relaxed text-zinc-500">
+                    Per-close decomposition over {p.economics.closes} closes — every component recomputed from the ACTUAL
+                    per-leg notionals (NEW-17) and entry-snapshot funding rates (per-leg rate × notional × held/interval).
+                    <span className="text-amber-400"> Diagnostic only — NOT a Phase-2 PnL instrument</span> (the verdict
+                    stays on paper spread PnL; realized funding cashflow is not observed in paper mode — NEW-08/NEW-15).
+                  </p>
+
+                  {/* PRIMARY — the decomposition identity on the attributable group */}
+                  <div className="rounded-lg border border-zinc-700 bg-zinc-900/70 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
+                        attributable · economic estimate = spread + funding − fees
+                      </span>
+                      <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-amber-400">
+                        diagnostic · not a pnl instrument
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span
+                        className={`font-mono text-2xl tabular-nums ${
+                          (p.economics.attributable.economic_total_pct ?? 0) < 0
+                            ? "text-rose-400"
+                            : (p.economics.attributable.economic_total_pct ?? 0) > 0
+                              ? "text-emerald-400"
+                              : "text-zinc-100"
+                        }`}
+                      >
+                        {pct(p.economics.attributable.economic_total_pct, 2)}
+                      </span>
+                      <span className="font-mono text-[11px] tabular-nums text-zinc-400">
+                        {p.economics.attributable.rows} closes · ${fmt(p.economics.attributable.economic_usd ?? undefined)} ·{" "}
+                        {pct(p.economics.attributable.economic_of_capital_pct, 3)} of capital
+                      </span>
+                    </div>
+                    <div className="mt-2 font-mono text-[11px] tabular-nums leading-relaxed text-zinc-300">
+                      <span className="text-rose-400">{pct(p.economics.attributable.spread_total_pct, 3)}</span> spread
+                      <span className="mx-1 text-zinc-600">+</span>
+                      <span className="text-emerald-400">{pct(p.economics.attributable.net_funding_total_pct, 3)}</span> est. funding
+                      <span className="mx-1 text-zinc-600">−</span>
+                      <span className="text-amber-400">{pct(p.economics.attributable.fee_total_pct, 3)}</span> fees
+                      <span className="mx-1 text-zinc-600">=</span>
+                      {pct(p.economics.attributable.economic_total_pct, 3)}
+                      {p.economics.identity_check && (
+                        <span
+                          className={`ml-2 ${p.economics.identity_check.consistent ? "text-emerald-400" : "text-red-400"}`}
+                        >
+                          {p.economics.identity_check.consistent ? "✓ identity holds" : "✗ identity broken"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+                      Σ per-close pct of trade_usd — the same unit as the primary spread-PnL number above. Prices are
+                      futures ticker/last throughout (NEW-16: the code's “mark price” is the ticker price); funding rates
+                      are entry-snapshot only (no rate history exists per position).
+                    </div>
+                  </div>
+
+                  {/* Funding materiality re-measured + A–H completeness */}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                        funding component · per-leg re-measure
+                      </div>
+                      <div className="mt-1 font-mono text-lg tabular-nums text-emerald-400">
+                        +{p.economics.attributable.net_funding_total_pct?.toFixed(3)}%
+                      </div>
+                      <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
+                        ${fmt(p.economics.attributable.net_funding_usd ?? undefined)} est. · excluded from paper PnL (NEW-08)
+                      </div>
+                      <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+                        vs R6 two-point estimate {pct(p.economics.attributable.r6_lower_pct, 3)}…
+                        {pct(p.economics.attributable.r6_upper_pct, 3)} — the per-leg computation lands on the UPPER bound
+                        (all sampled pairs settle on the same 8 h interval and per-leg notionals ≈ trade_usd, so the
+                        rigorous formula reduces to the constant-rate bound here). Magnitude CONFIRMED; it is 3.8× the
+                        measured spread PnL and opposite in sign. Fees (~1.57%) consume nearly all of it.
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                        A–H invariant join
+                      </div>
+                      <div className="mt-1 font-mono text-lg tabular-nums text-zinc-100">
+                        {p.economics.completeness.complete}/{p.economics.closes} complete
+                      </div>
+                      <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
+                        requested · per-leg notional · price source · rate source · interval · next-settle · funding est.
+                      </div>
+                      <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+                        D: futures ticker/last (NEW-16) · E: entry snapshot only · F/G: per-leg interval + settlements
+                        inside the hold · NEW-18: trade_usd stays the REQUESTED value (actual legs recomputed here).
+                        Data-gap group estimated separately: {p.economics.data_gap.rows} closes · est. funding $
+                        {fmt(p.economics.data_gap.net_funding_usd ?? undefined)}.
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Per-close decomposition table */}
+                  <div className="max-h-72 overflow-y-auto custom-scroll">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-zinc-900 text-zinc-500">
+                        <tr className="text-left">
+                          <th className="py-1.5 pr-2 font-medium">closed</th>
+                          <th className="py-1.5 pr-2 font-medium">base</th>
+                          <th className="py-1.5 pr-2 font-medium text-right">held</th>
+                          <th className="py-1.5 pr-2 font-medium text-right">notional l/s $</th>
+                          <th className="py-1.5 pr-2 font-medium text-right">net fund $</th>
+                          <th className="py-1.5 pr-2 font-medium text-right">fees $</th>
+                          <th className="py-1.5 pr-2 font-medium text-right">spread $</th>
+                          <th className="py-1.5 font-medium text-right">est $</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono tabular-nums text-zinc-300">
+                        {p.economics.per_close.map((r) => {
+                          const tip = [
+                            `${r.position_id}`,
+                            `D: futures ticker/last · E: entry snapshot`,
+                            `intervals ${r.long_interval_h ?? "—"}h / ${r.short_interval_h ?? "—"}h · settlements ${r.long_settlements ?? "—"}/${r.short_settlements ?? "—"} in hold`,
+                            `funding legs $${r.long_leg_funding_usd ?? "—"} (long) / $${r.short_leg_funding_usd ?? "—"} (short)`,
+                            `settlement-count variant $${r.net_funding_sc_usd ?? "—"} net · est $${r.economic_sc_usd ?? "—"}`,
+                            `R6 bounds ${r.r6_lower_pct ?? "—"}…${r.r6_upper_pct ?? "—"}% · per-leg ${r.new_estimate_pct ?? "—"}%`,
+                          ].join("\n");
+                          return (
+                            <tr key={r.position_id} className="border-t border-zinc-800/60" title={tip}>
+                              <td className="py-1.5 pr-2 text-zinc-500">
+                                {r.closed_at ? new Date(r.closed_at).toLocaleString("sl-SI", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
+                              </td>
+                              <td className="py-1.5 pr-2">
+                                {r.is_data_gap && (
+                                  <span
+                                    className="mr-1 rounded-full border border-red-500/40 bg-red-500/10 px-1.5 py-px text-[10px] text-red-400"
+                                    title="E-04 data-gap close"
+                                  >
+                                    gap
+                                  </span>
+                                )}
+                                {r.base || "—"}
+                              </td>
+                              <td className="py-1.5 pr-2 text-right text-zinc-400">
+                                {r.held_h === null ? "—" : `${r.held_h.toFixed(1)}h`}
+                              </td>
+                              <td className="py-1.5 pr-2 text-right text-zinc-400">
+                                {r.long_notional_usd === null || r.short_notional_usd === null
+                                  ? "—"
+                                  : `${r.long_notional_usd.toFixed(0)} / ${r.short_notional_usd.toFixed(0)}`}
+                              </td>
+                              <td className={`py-1.5 pr-2 text-right ${(r.net_funding_usd ?? 0) > 0 ? "text-emerald-400" : (r.net_funding_usd ?? 0) < 0 ? "text-rose-400" : "text-zinc-500"}`}>
+                                {r.net_funding_usd === null ? "—" : r.net_funding_usd.toFixed(2)}
+                              </td>
+                              <td className="py-1.5 pr-2 text-right text-amber-400/80">
+                                {r.fee_usd === null ? "—" : r.fee_usd.toFixed(2)}
+                              </td>
+                              <td className={`py-1.5 pr-2 text-right ${(r.spread_pnl_usd ?? 0) < 0 ? "text-rose-400" : (r.spread_pnl_usd ?? 0) > 0 ? "text-emerald-400" : "text-zinc-500"}`}>
+                                {r.spread_pnl_usd === null ? "—" : r.spread_pnl_usd.toFixed(2)}
+                              </td>
+                              <td className={`py-1.5 text-right ${r.components_complete ? "text-zinc-200" : "text-zinc-500"}`}>
+                                {r.economic_usd === null ? "—" : `${r.economic_usd.toFixed(2)}${r.components_complete ? " ✓" : ""}`}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <p className="border-t border-zinc-800/60 pt-3 text-[11px] leading-relaxed text-zinc-500">
+                    Mathematical invariant test (review round 7): for every close the eight dimensions A–H are joined and the
+                    identity <span className="font-mono">estimate = spread + funding legs − fees</span> is built to hold on the
+                    displayed numbers. Funding is accrued linearly (held_h / interval_h × entry rate); the settlement-count
+                    variant (0 until a settlement lands inside the hold — see row tooltip) is the stricter lower bound.
+                    The R6 two-point materiality estimate was of the RIGHT magnitude — the rigorous per-leg computation
+                    confirms its upper bound. This panel will never be used as a Phase-2 PnL instrument: it exists to prove
+                    the decomposition is reproducibly computable — execution measurement (spread PnL) and funding economics
+                    (estimated, not realized) remain separate reported components. The measured system stays untouched at
+                    0373f5d.
                   </p>
                 </div>
               </Card>

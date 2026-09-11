@@ -234,14 +234,22 @@ silent strategy-config defaults, unlocked config invariant, non-durable atomic w
 multi-process TOCTOU) · **R6 measurement-validity audit** (PnL instrument / gates /
 data-quality — 5 findings + 3 re-confirmations: paper PnL excludes realized funding
 cashflow, recheck verifies raw spread not net edge, funding-based exit vs price-based
-PnL, failed mark price cached as 0, four economic truths). R5's headline empirical
+PnL, failed mark price cached as 0, four economic truths) · **R7 economic-invariants
+audit** (funding math / quantity-notional / price-source — 4 findings: the price named
+“mark price” is the futures ticker/last price, trade_usd is not the notional of either
+leg, ledger trade_usd stays the requested value, cross-interval spread is
+min(interval)-normalized — an edge model, not settlement cashflow). R5's headline empirical
 result: across 261 real cycles the journal carries exactly one thresholds variant and
 trade_usd never leaves 500 — for every recorded dimension the Phase-2 sample
 **is one experiment (verified)**. R6's headline: the excluded funding component for
 the attributable closes is ≈ +1.0 % to +1.6 % (2–4× the measured −0.42 % spread PnL,
 opposite sign) — so the primary result is labeled **strategy-attributable paper
 SPREAD PnL** with "realized funding cashflow not observed in paper mode" stamped
-alongside, never as funding-arbitrage profitability.
+alongside, never as funding-arbitrage profitability. R7's headline: the rigorous
+per-leg re-measure (notional × rate × held/interval per leg) **confirms the funding
+materiality at the upper bound (+1.599 %)** and shows round-trip fees consume nearly
+all of it — the economic estimate reads −0.39 %, carried strictly as a diagnostic,
+never as a Phase-2 PnL instrument.
 
 ## Exit classification — strategy-attributable vs E-04
 
@@ -267,6 +275,31 @@ raw, verified with ✓/✗ on the rendered totals), and a **survival** line
 Current finding: the raw near-zero exit PnL is an artifact — genuine
 strategy exits and E-04 data-gap exits pull in opposite directions, so the
 verdict must read both views.
+
+## Economic decomposition — R7 invariant test (diagnostic)
+
+The "economic decomposition" card is the read-only mathematical invariant test
+from review round 7 (`src/server/economic-invariants.ts`): for every closed
+position it joins the ledger row, the open action's entry scanner row and the
+close action's executed legs, then verifies the eight invariant dimensions
+A–H (requested notional · actual per-leg notionals · price source · rate
+source · per-leg interval · settlements inside the hold · estimated funding
+cashflow per leg) and writes out the decomposition identity per close:
+
+> economic estimate = spread PnL + funding leg long + funding leg short − fees
+
+Every component is computed from the **actual per-leg notionals** (NEW-17/NEW-18
+applied), funding accrues linearly with a settlement-count variant as the
+stricter bound, and prices are labeled what they are — futures ticker/last
+(NEW-16). On the current sample (12/12 closes A–H complete): spread −0.425 % +
+estimated funding +1.599 % − fees 1.567 % = **economic estimate −0.393 %**
+(−$2.12 + $7.99 − $7.83 = −$1.96), with the identity ✓ built to hold on the
+displayed numbers. The test answers the one question it was built for: the R6
+two-point materiality estimate was of the right magnitude — the per-leg
+computation lands on its upper bound. **Scope guard, enforced in the labels:
+diagnostic only, never a Phase-2 PnL instrument** — execution measurement
+(spread PnL) and funding economics (estimated, not realized) remain separate
+reported components of the final A/B/C report.
 
 ## Failure matrix (R4)
 

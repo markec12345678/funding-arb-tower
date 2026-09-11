@@ -14,6 +14,7 @@ import path from "path";
 import "@/server/gh-heartbeat";
 import "@/server/paper-snapshot";
 import { classifyExits, type ExitClassification } from "@/server/exit-classification";
+import { decomposeEconomics, type EconomicInvariants } from "@/server/economic-invariants";
 
 export const dynamic = "force-dynamic";
 
@@ -392,6 +393,7 @@ async function remotePaper() {
     positions,
     analysis,
     exits: classifyExits(collectorJournalRaw, collectorPositionsRaw),
+    economics: decomposeEconomics(collectorJournalRaw, collectorPositionsRaw),
     runner: {
       alive: fresh,
       pid: null,
@@ -511,6 +513,7 @@ export async function GET(req: NextRequest) {
     runner: any;
     lifecycle_age_s?: number | null;
     exits: ExitClassification | null;
+    economics: EconomicInvariants | null;
   };
   let repo: { branch: string; commits: { sha: string; message: string }[]; dirty: boolean };
 
@@ -531,6 +534,10 @@ export async function GET(req: NextRequest) {
       runner: runnerStatus(),
       lifecycle_age_s: null,
       exits: classifyExits(
+        safe(() => (existsSync(JOURNAL) ? readFileSync(JOURNAL, "utf-8") : null), null),
+        safe(() => (existsSync(POSITIONS) ? readFileSync(POSITIONS, "utf-8") : null), null)
+      ),
+      economics: decomposeEconomics(
         safe(() => (existsSync(JOURNAL) ? readFileSync(JOURNAL, "utf-8") : null), null),
         safe(() => (existsSync(POSITIONS) ? readFileSync(POSITIONS, "utf-8") : null), null)
       ),
@@ -598,6 +605,7 @@ export async function GET(req: NextRequest) {
       totals: paperBlock.journal.totals,
       positions: paperBlock.positions,
       exits: paperBlock.exits,
+      economics: paperBlock.economics,
     },
     backtest: paperBlock.analysis,
     pipeline: pipelineClean,

@@ -6,9 +6,9 @@
 | **Lock status** | LOCKED — Phase-2 paper A/B/C measurement in progress; **zero changes made** to the measured system |
 | **Method** | Read-only code inspection at the locked commit (local checkout verified clean at `0373f5d`; identical to GitHub `main`) |
 | **Reference standard** | phase3-lab golden contract v1.1.0 — fail-closed semantics (`VENUE_UNAVAILABLE`/`DATA_UNAVAILABLE`/`PRICE_UNAVAILABLE`/`FEE_UNKNOWN` → BLOCK + ALERT) |
-| **Rounds** | R1 — API surface · R2 — watcher · R3 — executor/runner order-by-order · R4 — state-by-state failure matrix · R5 — targeted integrity audit (config/experiment/concurrency plane) · R6 — measurement-validity audit (PnL instrument / gates / data-quality plane) |
+| **Rounds** | R1 — API surface · R2 — watcher · R3 — executor/runner order-by-order · R4 — state-by-state failure matrix · R5 — targeted integrity audit (config/experiment/concurrency plane) · R6 — measurement-validity audit (PnL instrument / gates / data-quality plane) · R7 — economic-invariants audit (funding math / quantity-notional / price-source plane) |
 
-**Register status: 38 findings — 3× P0, 18× P1, 13× P2, 4× P3 · 11 deferred to post-Phase-2 hardening.** *(R6: +NEW-08/09/10/13/15, NEW-03 amended P2→P3 after a full template re-read — see Round 6.)*
+**Register status: 42 findings — 3× P0, 20× P1, 15× P2, 4× P3 · 11 deferred to post-Phase-2 hardening.** *(R7: +NEW-16/17/18/19 — the three remaining audit axes executed; NEW-08 materiality re-measured per-leg and confirmed at the upper bound.)*
 
 The dashboard renders this register live (`src/data/audit-findings.ts`) and the failure matrix (`src/data/failure-matrix.ts`); this document holds the evidence.
 
@@ -339,3 +339,44 @@ Generic bug hunting stays retired. Remaining axes where genuinely new informatio
 
 ### Live-sample note (advanced during this round)
 The sample moved while R6 was being processed: **12 closes** (7 strategy-attributable, −0.424 % · 5 data-gap, +0.465 % · raw +0.041 %; identity holds), 15 opened → 12 closed (7 genuine · 5 data-gap) · 3 still open. All numbers in this section refer to this snapshot; the tower renders them continuously.
+
+---
+
+## Round 7 — economic-invariants audit (review round, 2026-09-11)
+
+Scope: the three audit axes left open after R6, executed as one user-driven review round — **funding-calculation correctness → quantity/notional correctness → price-source correctness**. Provenance: user-driven review round on the locked `0373f5d`; every claim independently re-verified at the locked commit before entering the register (preveri, ne predslidevaj), and the two quantity findings additionally verified **empirically against all 15 ledger rows**. Read-only: all four findings are post-Phase-2 candidates; **nothing is fixed during the measurement**.
+
+### NEW-16 · P1 · the price named “mark price” is the futures ticker/last price
+The venue contract is explicit (`venues/base.py:100-110`): `get_ticker()` = “Spot ticker price fallback”, `get_futures_ticker()` = “Perpetual futures ticker price fallback”, `get_all_futures_tickers()` = “**Bulk perpetual futures last prices**”. Yet the watcher's accessor is **named** `_get_mark_price()` (`pure_futures_watcher.py:141-159`) and feeds that ticker into spread PnL (581-584), rebalance notional (322-328), margin/liq distance (421) and the close warning — with the bulk prefetch (`:488`) filling the same cache from `get_all_futures_tickers()` (last prices). The executor's `_leg_market` (`cross_venue_executor.py:178-196`) uses `get_futures_ticker()` for open/close leg prices, so **the entire paper PnL instrument runs on last/ticker prices**: ledger `long_price`/`short_price`, close `ref_price`, `mark_spread_pct`, `close_mark_spread`. **Verification deepened the finding:** on the cache-miss path `_get_mark_price()` calls `get_ticker()` — the **SPOT** price on CEX venues (the docstring itself says “futures callers should prefer get_futures_ticker()”). On small caps `last ≠ mark` materially, so a metric named mark_price is not necessarily the mark. Not proof that the 12 closes are wrong — proof that the named metric is mislabeled; it strengthens NEW-08 (the instrument measures **last-price** spread convergence).
+
+### NEW-17 · P1 · trade_usd is NOT the notional of either leg
+The executor sizes both legs with `ref_px = max(long_px, short_px)`; `base_amount = floor(trade_usd / ref_px)` (`pure_futures_executor.py:324-325`). The leg on the cheaper venue therefore carries a notional **below** trade_usd and only the higher-priced leg reaches it (after flooring, neither may). **Empirically verified on all 15 ledger rows:** one leg ≈ trade_usd, the other short by up to $3.65 (0.2–0.7 %) — never `trade_usd + trade_usd`. Consequence: funding cashflow cannot be computed as `trade_usd × funding spread`; the correct estimate is `short_notional × short_rate × periods_s − long_notional × long_rate × periods_l` — each leg its own notional, interval and rate (exactly what the R7 invariant test now computes). Distinct from NEW-08 (funding absent from paper PnL): this is the quantity-integrity requirement for estimating it at all.
+
+### NEW-18 · P2 · ledger trade_usd is the REQUESTED notional, not the executed one
+After quantity flooring and per-leg price divergence the ledger still records the original config `trade_usd` (500.0 on all rows; `pure_futures_executor.py:409-425`) — a requested-notional field in a row whose actual notionals are `qty × leg_price`. Not an execution bug; a measurement-ambiguity risk: any later PnL/funding audit dividing by `trade_usd` instead of the actual leg notionals gets the denominator wrong. Reconstruction **is** possible from the recorded fields (qty, long_price, short_price) — the invariant test exploits exactly this — but the field name invites the wrong denominator. Post-gate fix: record executed notionals per leg (or rename).
+
+### NEW-19 · P2 · cross-interval spread is min(interval)-normalized — an edge model, not settlement cashflow
+`pair_pure_futures_spread()` (`core/cross_interval_funding.py:203-238`) blends both legs to hourly rates and returns `spread_pct = (short_hourly − long_hourly) × eff_interval` with **`eff_interval = min(long_interval_h, short_interval_h)`** — for an HL-1h vs CEX-8h pair the result is a spread normalized to **one hour**, not the cash either leg pays at its next settlement. The model is deliberately sophisticated (hourly normalization, mark/index basis blend, settlement progress, venue-specific basis caps) and its own docstring admits it returns “spread_pct over eff_interval (= min interval)”. Interpretation caveat for the final report: `spread_pct × notional` is **not** the funding cashflow for cross-interval pairs — per-leg accrual is. All pairs in the current sample settle on the same 8 h interval (empirically), so the R6-style estimate and the per-leg computation coincide here; on a mixed-interval sample they would diverge. Needs mathematical certification if the project continues post-gate.
+
+### Deliberately NOT registered (verified, false-positive prevention)
+- **Funding recheck** was followed end-to-end: `recheck_funding_edge()` re-calls `pair_pure_futures_spread()` — the same cross-interval model as the scanner, not a naive `short − long`. The registered NEW-09 (spread floor, no fee term) still stands; there is **no separate funding-calculation bug** behind it, so nothing was duplicated into the register.
+- **Depth units** were followed to the venue-specific conversion (OKX `ctVal` contract-size conversion, and equivalents across Binance/Bybit/Bitget/Hyperliquid/Lighter/EdgeX/dYdX): no general depth-unit bug found — registering one would have been a false positive.
+
+### R7 mathematical invariant test (new read-only measurement, tower-only)
+`src/server/economic-invariants.ts` (+ the “economic decomposition” card): for **every successfully closed position** the three evidence sources are joined — ledger row (qty, leg prices, trade_usd, timestamps) + open action's entry scanner row (per-leg rates, intervals, next-settle timestamps, leg fees) + close action's executed legs (close ref_price per leg) — and the eight invariant dimensions are verified: **A** requested notional · **B/C** actual per-leg notionals · **D** price source (futures ticker/last) · **E** funding-rate source (entry snapshot only — no rate history exists) · **F** per-leg interval · **G** settlements actually inside the hold · **H** estimated funding cashflow per leg. Then the decomposition identity is written out per close:
+
+> economic estimate = spread PnL + funding leg long + funding leg short − fees
+
+with every component computed from the **actual per-leg notionals** (NEW-17/NEW-18 applied), funding accrued linearly (`held_h / interval_h × entry rate`) with a **settlement-count variant** as the stricter bound (0 until a settlement lands inside the hold), and fees charged round-trip on both legs. **Result on the current sample (12 closes, 12/12 A–H complete):**
+
+| attributable group (7 closes, $3500 requested) | Σ per-close pct of trade_usd | USD |
+|---|---|---|
+| paper spread PnL (the primary instrument, unchanged) | **−0.425 %** | −$2.12 |
+| estimated funding component (per-leg, entry-rate, linear) | **+1.599 %** | +$7.99 |
+| round-trip fees (per-leg notionals) | **−1.567 %** | −$7.83 |
+| **economic estimate (diagnostic — NOT a Phase-2 PnL instrument)** | **−0.393 %** | −$1.96 |
+
+Identity ✓ (Σspread + Σfunding − Σfees = Σeconomic built to hold on the displayed numbers); data-gap group estimated separately (5 closes, +$2.57 est. funding). **The R6 two-point estimate (+1.03 %…+1.60 %) was of the right magnitude — the rigorous per-leg computation lands on its upper bound (+1.599 % vs +1.603 %)**, because every sampled pair settles on the same 8 h interval and per-leg notionals ≈ trade_usd, so the per-leg formula reduces to the constant-rate bound on this sample. The excluded funding component is ~3.8× the measured spread PnL and opposite in sign — and fees consume nearly all of it (1.567 % of 1.599 %), which is itself a Day-5/7-relevant economic fact. Scope guard enforced in labels and note: this panel exists to prove the decomposition is **reproducibly computable** — execution measurement (spread PnL) and funding economics (estimated, not realized) stay separate reported components; it will never be used as a Phase-2 PnL instrument.
+
+### R7 remediation placement
+All four are **post-Phase-2** items: NEW-16 (mark-price source or honest rename) and NEW-18 (record executed notionals) are cheap measurement-integrity fixes that land with the NEW-04/NEW-05 experiment-integrity pair; NEW-17 needs no code change at all (the correct per-leg computation now exists in the report layer and the executor's conservative sizing is deliberate); NEW-19 rides the funding-model certification item from the R6 closure list.
