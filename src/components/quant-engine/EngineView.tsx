@@ -475,10 +475,11 @@ function RfqLaneCard({ rfq }: { rfq: RfqStatus | null }) {
               <>
                 honest status: <span className="font-semibold text-amber-300">0 real records</span>{" "}
                 — no RFQ desk credentials exist in this environment. The machinery is complete and
-                invariant-checked (71 tracked checks, reproducible from the repo via
+                invariant-checked (92 tracked checks, reproducible from the repo via
                 verify_w0_invariants.py: chain tamper/reorder/insert/truncate detection,
                 duplicate-id, future reference rejection, source wall, edge accounting,
-                dry-run writes-nothing, webhook token/rejection gates); real data starts
+                dry-run writes-nothing, webhook token/rejection gates, replay adapter mapping,
+                coverage census); real data starts
                 the moment a feed is connected.
               </>
             )}
@@ -1871,7 +1872,7 @@ export default function EngineView() {
                     {
                       id: "W1-INFRA",
                       owner: "engine ✓",
-                      text: "journal replay adapter shipped (v0.6.2) — W0 records replay into typed quotes with provenance; funding/settlement surfaces honestly refused",
+                      text: "journal replay adapter (v0.6.2) + coverage census (v0.6.3) shipped — W0 records replay into typed quotes with provenance; one command answers what the journal supports (families, eligibility, days, tenors); funding/settlement surfaces honestly refused",
                     },
                     {
                       id: "W1",
