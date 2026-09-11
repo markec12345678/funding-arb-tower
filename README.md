@@ -23,7 +23,7 @@ This dashboard is one of four coordinated repositories:
 |---|---|---|
 | [`funding-arb`](https://github.com/markec12345678/funding-arb) | the trading system — scanner, strategy, executor, gates | **locked** at `0373f5d` during Phase-2 A/B/C paper validation (539 tests, CI green) |
 | [`phase3-lab`](https://github.com/markec12345678/phase3-lab) | execution-safety laboratory — 4-layer separation, formal safety gate | **certified**: 106/106 tests (foundation 80 · reconciliation 19 · risk guardian 23 · cross-layer 13), golden contract v1.1.0, PORT CANDIDATE — port blocked by Phase-2 verdict |
-| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, TWO carry families (forward lock + perp float) ranked every quote day on a deterministic mock RFQ world, PLUS the W0 real-RFQ ingestion lane (immutable hash-chained raw journal + adapters) | **v0.6.1 · paper/research only** — W0: real RFQ ingestion shipped (15-field schema, R-1…R-13 fail-closed invariants, source wall real\|synthetic, file/webhook adapters with `--dry-run` first-contact validation that writes nothing, deterministic ALL-IN EDGE accounting — descriptive only; invariant-checked by 54 tracked checks reproducible from the repo via `verify_w0_invariants.py`; 0 real records until a feed is connected); on top of v0.5.0 (adverse-side horizon σ, holdout ladder, quadruple panels, P1..P5 all SUPPORTED); monitored read-only from this tower's engine view |
+| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, TWO carry families (forward lock + perp float) ranked every quote day on a deterministic mock RFQ world, PLUS the W0 real-RFQ ingestion lane (immutable hash-chained raw journal + adapters) and the W1-INFRA journal replay adapter | **v0.6.2 · paper/research only** — W0: real RFQ ingestion shipped (15-field schema, R-1…R-13 fail-closed invariants, source wall real\|synthetic, file/webhook adapters with `--dry-run` first-contact validation that writes nothing, deterministic ALL-IN EDGE accounting — descriptive only); W1-INFRA: the journal replay adapter (W0 records → typed quotes with provenance; funding/settlement surfaces honestly refused — no estimator smuggled through infrastructure); invariant-checked by 71 tracked checks reproducible from the repo via `verify_w0_invariants.py`; 0 real records until a feed is connected; on top of v0.5.0 (adverse-side horizon σ, holdout ladder, quadruple panels, P1..P5 all SUPPORTED); monitored read-only from this tower's engine view |
 | **funding-arb-tower** (this repo) | command center — reads both pipelines, never trades | runs sandbox-local and/or deployed |
 
 The validation ladder the dashboard reflects:
@@ -372,10 +372,18 @@ engine's own epistemic note traveling with the data:
   writes nothing, webhook receiver ready, REST poller a documented W1 slot,
   synthetic test-only), the last journaled records, and the honest amber status
   line — currently **0 real records** (no desk credentials in this environment;
-  the 54 invariant checks are tracked in the engine repo, reproducible via
+  the 71 invariant checks are tracked in the engine repo, reproducible via
   `research/exploration/verify_w0_invariants.py`); descriptive ALL-IN EDGE
   accounting only, uncertainty → ranking → GO/NO-GO on real data is W1 and
   requires its own sealed decision record.
+- **W1-INFRA · journal replay adapter (v0.6.2)** — the engine also ships the
+  bridge half of W1: `JournalReplayFeed` replays a W0 journal into the typed
+  quote vocabulary (sealed mapping M-1…M-10; the source wall doubles at the
+  Price layer — synthetic quotes carry `SYNTHETIC_MOCK` inside the data). The
+  honest capability map travels with it: quote events replay; funding
+  observations and settlement prints are NOT RFQ fields and are refused
+  loudly — the funding-data question belongs to the W1 research record (or
+  the user, for a schema extension).
 - **Machinery validation (80-seed sweep: screening 1..60 + holdout ladder
   61..80 + like-for-like 1..40)** — pooled PnL distribution plus per-family
   diagnostics: realized−locked bps (the forward lock through settlement, ≈
