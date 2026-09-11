@@ -1431,3 +1431,21 @@ Stage Summary:
 - Development formally frozen at tower 7a5bc28 (+ this record): the full evidence chain for the Phase-2 verdict is live and nothing further will be added to it.
 - The system now only collects: runner untouched at 0373f5d, journal accumulating, every new close classified automatically into the two-view baselines.
 - Next active milestone: Day-5/7 verdict on the completed sample — primary basis = strategy-attributable result with n stated; open positions excluded from realized PnL until closed (structural guarantee).
+
+---
+Task ID: 9
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Fix the two tower-side inconsistencies found in review (validation-plan test count drift; ambiguous single LIVE status) — UI/documentation only, zero changes to the measured system.
+
+Work Log:
+- Review finding 1 (doc/UI drift, red): the validation plan said "Phase 3 lab … (122 tests)" while the KPI row says 539+106 and the phase-3 block says 106/106. Fixed the single number in src/app/api/status/route.ts: 122 → 106. Grep verified: no other occurrence of 122 anywhere in the tower (docs/README/worklog excluded from scope per review: "nič drugega").
+- Review finding 2 (ambiguous LIVE, yellow): "paper runner LIVE" (header) vs "runner PID 12976 · log updated 2h43m ago" (paper card) conflated three different facts — process liveness, data freshness, log file age. Root cause of the confusion: the runner's stdout log only flushes on events (block buffering), so a LIVE process + FRESH data + 2h-old log coexist legitimately.
+- Implementation (src/app/page.tsx): the paper card now carries a "status — three separate planes" strip: PROCESS (LIVE · pid 12976 | DOWN — or COLLECTOR LIVE/STALE · branch pushed Xm ago in remote mode), DATA (FRESH/STALE · newest cycle age · cadence + stale-after note — the health gate), LOG (fresh/stale · age — amber when >15 min, with the explicit disclaimer "runner stdout flushes on events — informational, not a health gate"; remote mode renders the hourly lifecycle snapshot age instead). The header pill was renamed to name both planes it certifies: "runner live · data fresh" (was the ambiguous "paper runner LIVE") / "collector live · data fresh" (remote). The old mixed line ("runner pid … · log updated … ago · gates …") was replaced; the paper-mode gates note kept as its own line.
+- Verification: lint exit 0; Agent Browser E2E local mode 12/12 checks (122 gone, 106 present, KPI consistency, pill renamed, old text gone, strip title, process row with pid, data row, log row with disclaimer, gates line) + remote mode 6/6 (collector row, branch-pushed age, snapshot row, remote pill, 106 fix, exit-classification card intact); zero console/page errors; no horizontal overflow at 401px and 1440px; screenshot tool-results/status-three-planes.png; dev.log clean.
+- funding-arb integrity: CLEAN at 0373f5d before and after; runner alive throughout (PID 12976, uptime 21h18m). Tower pushed as 9bbc087.
+
+Stage Summary:
+- The tower no longer contradicts itself: one test count (106) everywhere; LIVE never floats without naming what is live.
+- The status display now answers the three questions separately: is the process alive (PROCESS), is the data current (DATA — the only health gate), how old is the log (LOG — informational, explained inline so a stale log is not misread as a failure).
+- Freeze otherwise intact: no new metrics, no E-04 fix, no Phase-3 port, no strategy changes — the most valuable new data remains what only time can produce (more completed paper lifecycles on the locked baseline).
