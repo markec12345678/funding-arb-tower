@@ -335,6 +335,21 @@ complete pre-change audit trail, the refined hardening-pass plan
 M-04 terminal state machine) and the re-run-the-matrix regression proof
 live in `docs/funding-arb-audit.md` ("R4 closure").
 
+## Parallel research track — Wintermute NODE (plan only, no code)
+
+A deep analysis + build plan for the **Wintermute NODE** OTC platform
+(`trade.wintermute.com`, the destination of the trade-login link) lives in
+[`docs/wintermute-node-analysis.md`](./docs/wintermute-node-analysis.md):
+what the platform is (spot / dated forwards / NDFs / CFDs / options / tailored —
+**no perpetual swaps**, zero fees, all cost in the quoted spread, est. $100k–250k
+minimums), whether it makes sense for bigger earnings (verdict: **conditional yes** —
+three measurable routes: scale execution, forward basis-lock, options-based yield),
+and a phased plan (W0 qualification → W1 zero-capital RFQ measurement → W2
+pre-registered strategy gate → W3 defined-risk pilot) with kill criteria and the
+audit’s measurement invariants (NEW-16/17/18/20 → I-1…I-6) carried into the new
+journal schema. Research-only: funding-arb stays locked at `0373f5d`, the tower stays
+read-only, no capital before the W2 gate.
+
 ## Disclaimer
 
 Educational / research tooling around funding-rate arbitrage — not financial
