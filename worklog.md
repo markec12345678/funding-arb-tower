@@ -1776,3 +1776,23 @@ Work Log:
 Stage Summary:
 - The tower now shows the complete reversal-ignorance-interval arc — three audit sigmas and the adverse-side gate σ, the pessimistic bound's measured uselessness (46/46 positive breaches) and the optimistic bound's measured price (day buckets + upside panel), with the holdout ladder and the like-for-like recovery all visible — while staying a read-only observer of both systems.
 - Shipped state: funding-arb @ 0373f5d (untouched, runner cycling) · quant-arb-engine @ c7d5c5b (v0.5.0, pushed) · tower @ this commit = read-only command center for both. Next steps owned elsewhere: W0 onboarding (user), W1 real RFQ feed (engine, after W0), Phase-2 verdict (time). No v0.6 question is recorded — the σ story is measured at both bounds; the next engine question belongs to a NEW pre-registration only if the user asks.
+
+---
+Task ID: 26
+Agent: main (Z.ai Code)
+Date: 2026-09-11 19:45–19:55 UTC (session 6)
+Task: Continue per user's "odlicno nadaljuj" — the only owned work remaining was the mechanical daily verify-only Phase-2 check (day-1 read of the paper baseline) plus system-health verification across all three repos. No code changes; read-only everywhere.
+
+Work Log:
+- Read worklog first: state was ahead of the handoff summary — engine v0.5.0 shipped + pushed (c7d5c5b, Tasks 24/25), funding-arb @ 0373f5d untouched, tower = read-only command center. No open code tasks; W0/W1 user-owned; no v0.6 question recorded.
+- Process health: tower dev server PID 1181 alive (next dev -p 3000, since Sep 10); funding-arb Phase-2 runner PID 12976 alive (run_pure_futures_spread.py --watch 5 --verbose, since Sep 10); supervisor meta fresh (last_check = now, respawns 4, snapshot pusher 27/27 ok).
+- Phase-2 day count established: baseline start 2026-09-10 14:36 UTC → current 2026-09-11 19:46 UTC = day 1.22 of 7. Day-3 interim read due ~Sep 13; A/B/C decision only after Day 7 (~Sep 17). Verdict correctly NOT due.
+- Ran the daily verify-only check: python3 scripts/analysis/phase2_report.py (read-only analyzer, its own output dir only). Report: scripts/data/phase2/report-20260911-1946.{md,json}.
+- INTEGRITY (the section the discipline requires reading): ALL CLEAN — sandbox 370 lines, 0 parse errors, 0 ts back-jumps, 0 duplicates, 0 journal gaps > 15 min, 0 duplicate position ids, opens/closes consistent (2 open now vs 2 last-cycle); GH collector 323 cycles, 99.4% coverage vs 5-min cadence, 0 duplicates, 2 gaps > 10 min (inspect-grade, not data loss); both paper-data snapshot streams 0 resets/0 ts resets/0 duplicates; supervisor_alive=True.
+- Day-1.22 interim funnel (information, not verdict): sandbox 352 cycles, 826k scan rows, 4,980 fee-gate candidates, 189 rejected (depth_gate 124 dominant), 22 entered, 20 exited; closed PnL price -$2.74 / fees -$22.45 / funding +$8.43 / net -$16.76, wins 5/20, avg retention -104.3%. Numbers consistent with the backtest story (fees dominate; funding reconstruction working — 20/20 positions reconstructed).
+- Tower health (agent-browser e2e, light pass — no code changed this session): / loads, engine view default, v0.5.0 + commit c7d5c5b + all key v0.5 content markers DOM-verified (61.9%, SUPPORTED, BOUNDARY D = 60, LADDER, LIKE-FOR-LIKE); API serves engine_version 0.5.0, 5 calibration panels, P1..P5 all SUPPORTED, holdout ladder 61..80, like-for-like 61.9%; sticky footer 0px gap at desktop; mobile 390px zero overflow; ZERO page errors, clean console; dev.log all 200s. Screenshot: screenshots/status-check-day1.png.
+- funding-arb git re-verified: HEAD 0373f5d, clean; nothing touched.
+
+Stage Summary:
+- Day-1.22 verify-only check COMPLETE and clean: both systems alive, data integrity perfect on every axis the analyzer measures, interim numbers self-consistent. No intervention needed or performed (discipline: collector beats everything, measurement not intervention).
+- Shipped state unchanged: funding-arb @ 0373f5d · quant-arb-engine @ c7d5c5b (v0.5.0, pushed) · tower read-only command center. Next owned events: Day-3 interim read (~Sep 13), Day-5–7 final FAZA 2 report + A/B/C (~Sep 15–17). W0/W1 remain user-owned. No new work started — the next non-mechanical task requires either the user's RFQ feed (W0) or an explicit request for a new pre-registration.
