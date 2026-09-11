@@ -1819,3 +1819,24 @@ Stage Summary:
 - W0 SHIPPED: the engine now has its real-world data lane — the 15-field RFQ schema with fail-closed invariants, an immutable hash-chained raw journal (tamper-evident, truncation-bounded), pluggable adapters (file ingest usable today, webhook receiver one command when a provider exists, REST poller as documented slot), replay + deterministic ALL-IN EDGE accounting (source-split, never pooled, no research verdicts).
 - The honest state is rendered everywhere (engine README, replay reports, tower card): 0 real records — awaiting the first feed. User's next move in this lane: connect a source (desk export file or push provider webhook); then W1 (first real-data research round) begins with its own sealed decision record.
 - Shipped state: quant-arb-engine @ cd60b3d (v0.6.0, pushed) · tower @ 2af3c87 (pushed) · funding-arb @ 0373f5d (untouched, Phase-2 day 1.3, runner cycling). Timeline unchanged: Day-3 interim ~Sep 13, A/B/C ~Sep 17.
+
+---
+Task ID: 28
+Agent: main (Z.ai Code)
+Date: 2026-09-11 20:22–20:35 UTC (session 6)
+Task: Continue per user's "odlicno nadaljuj" — verify-only status check of the whole three-repo system after the W0 ship (Task 27), plus the honest owned-work assessment. No code changes anywhere; read-only.
+
+Work Log:
+- Read worklog first (the discipline): state was AHEAD of the handoff summary again (3rd occurrence) — W0 fully shipped in-session as Task 27: engine cd60b3d v0.6.0 (pushed), tower 2af3c87 + W0 card (pushed), funding-arb untouched. Summary said "W0 not started"; worklog is the source of truth.
+- Process health: tower dev server PID 1181 alive (next dev -p 3000, since Sep 10); funding-arb Phase-2 runner PID 12976 alive (run_pure_futures_spread.py --watch 5, since Sep 10).
+- funding-arb journal growth verified: scripts/data/pure-futures/journal.jsonl = 378 lines (370 at the 19:46 daily check → +8 lines in ~36 min, consistent with the 5-min cadence); latest cycle ts 2026-09-11T20:21:44Z (1 min old), dry_run=true, 4 venues, 2,536 scan rows, 9 candidates. Git @ 0373f5d clean — untouched.
+- Tower HEAD 8d41756 investigated: diff vs 2af3c87 = worklog.md +23 lines ONLY (the environment's auto-commit of Tasks 26/27 worklog entries, UUID message, same pattern as e37885b before it). Zero code drift from the Task-27 verified state; working tree clean.
+- Engine @ cd60b3d clean; funding-arb @ 0373f5d clean.
+- W0 sealed decisions re-read (docs/w0-rfq-ingestion.md §6): §6.4 W0 = deterministic accounting only, no estimator/verdicts; §6.5 first real-data research (uncertainty/ranking) requires a NEW sealed decision record BEFORE any number is produced. README quickstart for the user's feed connection confirmed present (rfq_ingest --provider file + example_field_map.json; rfq_webhook_recv --port 3901 --token).
+- Tower light e2e (no code changed since Task 27's full verification): page loads; 10 W0 markers DOM-verified (v0.6.0, cd60b3d, W0, REAL RFQ, 0 real records, SYNTHETIC, hash-chain, source wall, DESK-A, SYN-00019); API serves /repo/version=0.6.0 + rfq_status.integrity {lines:200, sources:{synthetic:200}} (my first API probe guessed key paths wrong — known lesson, self-corrected); footer natural-push on tall content (no overlap), overflowX=0 at 1280px; ZERO page errors, console only Fast Refresh. Screenshot: screenshots/status-check-w0-evening.png.
+- Owned-work assessment (the honest part): daily Phase-2 check already done today (Task 26, 19:46 UTC — not due again until ~Sep 12/13); Day-3 interim read ~Sep 13; A/B/C only after Day 7 (~Sep 17); W1 NOT started deliberately — its sealed decision record is meaningless blind to the eventual feed's shape (venue, instruments, rate, sample size), and the user's instruction was "Najprej samo zbiranje" (collection only). Sealing W1 now would be premature precision; sealing it after the feed is known but before data flows is the strong timing. No cron automation added (no cron tool in this environment; per-session manual checks continue).
+
+Stage Summary:
+- System-wide health: ALL GREEN — both long-running processes alive, funding-arb journal growing on cadence (378 lines, latest cycle 1 min old), all three repos at their shipped states with zero unexplained drift (the one new tower commit is the worklog auto-commit only).
+- No owned work remains: the next events are time-owned (Day-3 interim ~Sep 13, A/B/C ~Sep 17) or user-owned (connect a real feed via file ingest or webhook → W1's sealed decision record). Deliberately NOT done: W1 pre-registration blind (premature precision), any funding-arb touch (locked), any REST poller without credentials (theater), any live trading (never).
+- Shipped state: funding-arb @ 0373f5d (Phase-2 day 1.25, runner cycling) · quant-arb-engine @ cd60b3d (v0.6.0 W0, pushed) · tower @ 8d41756 (= Task-27 code + worklog auto-commits, pushed).
