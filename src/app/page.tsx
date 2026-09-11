@@ -8,16 +8,24 @@ import {
   CheckCircle2,
   Circle,
   CircleDot,
+  Clock,
   ExternalLink,
   Github,
   Layers,
   Loader2,
   Radio,
+  ShieldAlert,
   ShieldCheck,
   Terminal,
   TrendingDown,
   Zap,
 } from "lucide-react";
+import {
+  auditFindings,
+  auditMeta,
+  type AuditFinding,
+  type FindingSeverity,
+} from "@/data/audit-findings";
 
 type Freshness = {
   data_age_s: number | null;
@@ -100,6 +108,31 @@ function timeAgo(iso: string | null | undefined): string {
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
+
+/* ---- Audit findings register (static — renders without the status API) ---- */
+
+const severityRank: Record<FindingSeverity, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
+
+// P0 red (destructive) · P1 orange · P2 amber · P3 muted — dual-mode classes,
+// the page wrapper below declares `dark` so the dark halves always apply here.
+const severityBadge: Record<FindingSeverity, string> = {
+  P0: "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400",
+  P1: "border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400",
+  P2: "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  P3: "border-zinc-400/50 dark:border-zinc-700 bg-zinc-400/10 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400",
+};
+
+const severityCounts: { severity: FindingSeverity; count: number }[] = (
+  ["P0", "P1", "P2", "P3"] as const
+).map((severity) => ({
+  severity,
+  count: auditFindings.filter((f) => f.severity === severity).length,
+}));
+
+// Register order: severity first (P0 → P3), then id.
+const sortedAuditFindings: AuditFinding[] = [...auditFindings].sort(
+  (a, b) => severityRank[a.severity] - severityRank[b.severity] || a.id.localeCompare(b.id),
+);
 
 function Card({
   title,
@@ -242,7 +275,7 @@ export default function Home() {
         };
 
   return (
-    <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100">
+    <div className="dark min-h-screen flex flex-col bg-zinc-950 text-zinc-100">
       <div className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
         {/* Header */}
         <header className="flex flex-wrap items-center gap-3 justify-between">
@@ -660,6 +693,85 @@ export default function Home() {
             </p>
           </>
         )}
+
+        {/* Audit findings register — static data, independent of the status API */}
+        <Card title="Audit findings" icon={<ShieldAlert className="h-4 w-4" />}>
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-zinc-300">
+                funding-arb @ <span className="font-mono">{auditMeta.commit}</span> · read-only audit · repo
+                locked (Phase-2 A/B/C)
+              </p>
+              <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                {auditMeta.method} · {auditMeta.reference} · register:{" "}
+                <span className="font-mono">{auditMeta.register}</span>
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {severityCounts.map(({ severity, count }) => (
+                <span
+                  key={severity}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold ${severityBadge[severity]}`}
+                  title={`${severity} · ${count} finding${count === 1 ? "" : "s"}`}
+                >
+                  {severity}
+                  <span className="tabular-nums">{count}</span>
+                </span>
+              ))}
+              <span className="text-[11px] text-zinc-500">
+                {auditFindings.length} findings ·{" "}
+                {auditFindings.filter((f) => f.status === "deferred").length} deferred ·{" "}
+                {[...new Set(auditFindings.map((f) => f.round))].sort().map((r) => `R${r}`).join(" / ")}
+              </span>
+            </div>
+
+            <ul className="custom-scroll max-h-96 space-y-1.5 overflow-y-auto pr-1" aria-label="audit findings register">
+              {sortedAuditFindings.map((f) => (
+                <li
+                  key={f.id}
+                  className="min-w-0 rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3"
+                >
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                    <span
+                      className={`shrink-0 rounded-full border px-1.5 py-px font-mono text-[10px] font-semibold ${severityBadge[f.severity]}`}
+                    >
+                      {f.severity}
+                    </span>
+                    <span className="shrink-0 font-mono text-[11px] text-zinc-500">{f.id}</span>
+                    <span className="min-w-0 flex-1 text-sm font-medium text-zinc-100">{f.title}</span>
+                    <span className="shrink-0 rounded-full border border-zinc-700 bg-zinc-800/80 px-1.5 py-px text-[10px] font-medium text-zinc-400">
+                      R{f.round}
+                    </span>
+                    {f.status === "confirmed" ? (
+                      <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                        <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> confirmed
+                      </span>
+                    ) : (
+                      <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+                        <Clock className="h-3.5 w-3.5" aria-hidden="true" /> deferred
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 truncate font-mono text-[10px] text-zinc-500" title={f.area}>
+                    {f.area}
+                  </div>
+                  <p
+                    className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-zinc-500 dark:text-zinc-400"
+                    title={`${f.detail}\n\nevidence: ${f.evidence}`}
+                  >
+                    {f.detail}
+                  </p>
+                </li>
+              ))}
+            </ul>
+
+            <p className="border-t border-zinc-800/60 pt-3 text-[11px] leading-relaxed text-zinc-500">
+              Repo locked during Phase-2 A/B/C — findings recorded only; zero changes to the measured
+              system. Remediation happens in the post-Phase-2 hardening pass.
+            </p>
+          </div>
+        </Card>
       </div>
 
       {/* Sticky footer */}

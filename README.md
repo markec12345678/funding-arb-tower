@@ -187,6 +187,8 @@ src/
     page.tsx                  # the dashboard (client, 10 s polling)
     layout.tsx                # metadata + fonts
     api/status/route.ts       # the status API — local/remote dual data plane
+  data/
+    audit-findings.ts         # audit findings register (static data — the locked-repo audit)
   server/
     gh-heartbeat.ts           # 5-min repository_dispatch heartbeat (sandbox-only)
     paper-snapshot.ts         # hourly paper-data push (sandbox-only)
@@ -211,6 +213,17 @@ db/  prisma/                  # INERT template scaffolding — no route imports
 - phase3-lab: **cross-layer certification COMPLETE** — port candidate.
 - Production port: **BLOCKED until the Phase-2 A/B/C verdict**.
 - This dashboard: runs sandbox-local, deploys to Vercel unconfigured.
+
+## Audit findings register
+
+The dashboard renders the read-only audit findings for the locked
+[`funding-arb`](https://github.com/markec12345678/funding-arb) repo (`0373f5d`) in the
+"Audit findings" card: severity-ranked findings (P0–P3) with live counts derived from
+`src/data/audit-findings.ts`, per-finding status (`confirmed` / `deferred`), and the
+audit round each finding came from. The full evidence register lives at
+`docs/funding-arb-audit.md` (added separately). The repo stays locked during the
+Phase-2 A/B/C measurement — findings are recorded only, the measured system is
+untouched, and remediation is deferred to the post-Phase-2 hardening pass.
 
 ## Disclaimer
 

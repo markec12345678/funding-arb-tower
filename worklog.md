@@ -1241,3 +1241,92 @@ Stage Summary:
 - cron-job.org remains an external single point of failure for the Vercel demo
   snapshot; the tower now DETECTS its death (SNAPSHOT STALE) instead of hiding it,
   and the last manual dispatch (04:53Z) refreshed the data.
+
+---
+Task ID: 2
+Agent: full-stack-developer
+Task: Audit findings register panel in the tower dashboard
+Work Log:
+- Read worklog SYNC-1/REVIEW-1 for context; inspected src/app/page.tsx (local dark
+  Card component, custom-scroll scrollbar class in globals.css) to match the
+  existing card conventions.
+- Created src/data/audit-findings.ts VERBATIM per spec: exports FindingSeverity,
+  FindingStatus, AuditFinding, auditMeta, auditFindings (15 findings — rounds 1+2:
+  API-01..07, W-01..07, D-01). Shape kept exactly as defined so round-3 executor
+  findings can be appended later by editing the array only.
+- page.tsx: new "Audit findings" card (ShieldAlert icon) placed AFTER the
+  {data && …} live-status block and BEFORE the sticky footer — it is static data,
+  independent of /api/status, so it server-renders even while the status API is
+  loading/unavailable (SSR verified via curl).
+- Card content: subtitle (funding-arb @ 0373f5d · read-only audit · repo locked
+  Phase-2 A/B/C), meta row (auditMeta.method · auditMeta.reference · register
+  path), severity chips with counts DERIVED from auditFindings (P0 3 · P1 7 ·
+  P2 3 · P3 2, plus derived totals/deferred/rounds line), scrollable register
+  (max-h-96 overflow-y-auto custom-scroll, semantic ul/li + aria-label), footer
+  note (lock respected, remediation post-Phase-2).
+- Each row: severity badge, id (mono muted), title (font-medium), area (mono
+  truncate + title attr), detail (line-clamp-2 + title attr carrying full detail
+  AND evidence), round chip (R1/R2/R3), status (CheckCircle2 "confirmed" green /
+  Clock "deferred" muted). Rows sorted severity-first then id; flex-wrap +
+  min-w-0 + truncate/line-clamp so nothing overflows at 400 px (browser-verified:
+  scrollWidth 401 = viewport, no h-overflow).
+- Colors: P0 red / P1 orange / P2 amber / P3 muted, written as dual-mode classes
+  (text-red-600 dark:text-red-400 …). Added the `dark` class to the page's root
+  wrapper (it is hardcoded bg-zinc-950) so the dark halves of the dual classes
+  apply — verified visually inert for all pre-existing elements (everything uses
+  explicit zinc classes, no dark: variants or CSS-var colors existed in page.tsx;
+  Toaster lives outside the wrapper).
+- README.md: new "Audit findings register" section (a few sentences: read-only
+  audit rendering, P0–P3, evidence register at docs/funding-arb-audit.md, findings
+  recorded only) + src/data/audit-findings.ts line added to the repo layout block.
+- Verification: bun run lint exit 0; dev.log clean recompiles (✓ Compiled in
+  637ms / 118ms, GET / 200, no errors); curl localhost:3000 | grep -c "Audit
+  findings" = 1 (SSR); /api/status HTTP 200; bunx tsc --noEmit shows ZERO errors
+  in the new code (pre-existing unrelated errors remain in examples/, skills/,
+  and 3 old null-check errors in the delivery-pipeline card — untouched, out of
+  scope). Browser (agent-browser): 15 rows rendered, order
+  P0-API-01..03 / P1-API-04,05,D-01,W-01..04 / P2-API-06,W-05,06 / P3-API-07,W-07,
+  chips P03/P17/P23/P32, 1 deferred row, P0 badge computed color = red-400
+  (dark variant active), no console/page errors, mobile 400 px no overflow.
+  funding-arb and phase3-lab untouched; no git commands; no new deps.
+
+Stage Summary:
+- Files changed: src/data/audit-findings.ts (NEW — exact spec content, ready for
+  round-3 appends), src/app/page.tsx (new static Audit findings card + `dark`
+  class on the root wrapper + Clock/ShieldAlert imports + module-scope
+  severityRank/severityBadge/severityCounts/sortedAuditFindings), README.md
+  (new section + repo-layout line).
+- Key decisions: card lives OUTSIDE the {data && …} gate so the register is
+  always visible and SSR-renderable; counts/sort/round labels are all DERIVED
+  from auditFindings (nothing hardcoded — round-3 appends need zero UI changes);
+  severity palette is dual-mode (light/dark) with the wrapper `dark` class making
+  the dark halves apply on this permanently-dark page; reused the project's
+  custom-scroll thin-scrollbar styling.
+
+---
+Task ID: 3
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Verify the user's round-2 watcher findings, execute the round-3 executor order-by-order deep-dive (read-only @ 0373f5d), and make the tower the durable audit findings register.
+
+Work Log:
+- Watcher verification (pure_futures_watcher.py, READ-ONLY): all 7 user findings confirmed with file:line evidence — W-01 rate_fetch_error→return (L491-497), W-02 legs_checkable skip (L501-528,627-634), W-03 mark-price 0.0 gate (L141-159,581-583), W-04 taker=0.0 fallback (L65-85), W-05 interval_h=8.0 (L592), W-06 actual_lq truthiness (L313-320), W-07 ci.yml "535-test matrix" (L10).
+- W-01 AMPLIFIED beyond the user's report: the early return at L497 bypasses both the cycle_result["alerts"] sync (L737) and _append_log (L738) — a funding-fetch failure leaves ZERO persistent trace (no watcher.jsonl entry, no notification, no stderr print); detectable only by cycle-gap analysis.
+- Nuances recorded: W-02 — positions_fetch_failed alert IS appended (L526), the gap is the missing escalation STATE; W-04 — docstring documents the deliberate degrade-to-raw-spread trade-off; W-03 — check_margin_health has explicit "price_unavailable" (L324-325) proving the fail-visible pattern exists in-file, the PnL stop just doesn't use it.
+- Executor deep-dive (pure_futures_executor.py 988 lines FULL READ + cross_venue_executor _filled/_exec_qty/quarantine + binance.py place_futures_order/execute_trades + run_pure_futures_spread.py + notify/persistence.py): 6 new findings E-01..E-06.
+  * E-01 (P1) submit-timeout ambiguity: place_futures_order ok=accepted single-shot (binance.py 841-897); no clientOrderId reconciliation before rollback; parallel-mode worst case = naked long on venue, ledger clean, result "rolled_back", NO alert.
+  * E-02 (P1) open-path naked legs never persisted (rollback branches return without _record_position; watcher iterates positions.json → blind spot; close-path naked stays open/watched — asymmetry).
+  * E-03 (P2) depth pre-check fail-open default in live (depthCheckFailOpen=True) vs fail-closed margin/funding sibling gates.
+  * E-04 (P2) runner row-is-None → close: scanner data gap treated as exit signal (run_pure_futures_spread.py 127-144) — mirror image of W-01.
+  * E-05 (P2) partial-close residual leaves ledger (_mark_closed on understated exec_qty; single-shot response can understate).
+  * E-06 (P3) rebalance ledger update assumes full trim (self-heals next cycle).
+- Design strengths recorded for fairness: pre-submit funding recheck EXISTS and is live fail-closed (378-403); margin fail-closed default; atomic ledger + file lock + corruption quarantine; watcher emergency routing correct (both_legs_gone → no orders, single-leg → close surviving leg only); sequential partial-fill sizing correct both directions; reduce_only on close orders; executor rebalance reads actual qty with `is not None` (contrast to W-06).
+- Tower register (Task 2 subagent built the UI: src/data/audit-findings.ts + "Audit findings" card in page.tsx + README section; lint 0; added `dark` class to the hardcoded-dark root wrapper — verified inert for pre-existing elements). I appended round-3 E-findings and the amplified W-01 to the data file (21 findings total) and wrote docs/funding-arb-audit.md (full evidence register + remediation order).
+- Verification: bun run lint exit 0; dev.log clean (GET / 200, /api/status 200); Agent Browser E2E: card renders 21 rows, severity chips derived dynamically (P0·3 P1·9 P2·6 P3·3), confirmed/deferred statuses, lock footer note, sticky footer at exact document bottom, no horizontal overflow at 1440px AND 401px, zero page/console errors.
+- funding-arb integrity after all work: CLEAN at 0373f5d (0373f5d1a056b86a3275fd4ec0d9a3b807a786db) — zero modifications, read-only audit respected.
+
+Stage Summary:
+- Audit register is now durable and visible: 21 findings (3× P0, 9× P1 incl. 1 deferred, 6× P2, 3× P3) across R1 API / R2 watcher / R3 executor; evidence in docs/funding-arb-audit.md; rendered live in the dashboard.
+- The executor order-by-order review answered the open questions: pre-submit recheck exists (fail-closed live); sequential partial-fill sizing is correct; the real races are submit-timeout ambiguity, unpersisted naked states, and partial-close residuals.
+- Proposed remediation order for the post-Phase-2 hardening pass (API trio first, then E-01 reconciliation, W-01 fail-safe state, E-02 persisted naked status, explicit UNAVAILABLE/UNKNOWN states, E-04 runner fix).
+- funding-arb untouched (locked); tower pushed with the register.
