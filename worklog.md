@@ -1411,3 +1411,23 @@ Stage Summary:
 - The reporting contract is now structural, not editorial: the tower cannot display a single blended exit PnL — the primary panel IS the strategy-attributable view, the decomposition and the ✓/✗ identity check are rendered with it, so a drifting split would be visible immediately.
 - Survival (opened → genuine close · data-gap close · still open) is now a live dashboard number for the Day-5/7 verdict.
 - Phase-2 status unchanged: baseline 0373f5d locked, E-04 measured and deliberately unfixed, runner collecting; A/B/C waits for the full sample.
+
+---
+Task ID: 8
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Record the development-freeze decision (review verdict: the measurement chain is complete — measurement → classification → attribution → integrity check → survival → final verdict — and the best next move is literally nothing; let the system collect).
+
+Work Log:
+- No code changes anywhere (verified: funding-arb CLEAN at 0373f5d before and after; tower untouched except this worklog record; one UUID auto-commit of the Task-7 worklog amended to a proper message).
+- Final health check: paper runner alive (PID 12976, uptime 21h09m), journal fresh (257 real cycles, 11:36Z), API serving the full exit-classification block with attribution_check.consistent=true.
+- Confirmed BOTH review guardrails are already STRUCTURAL, not editorial:
+  (1) open positions can never leak into realized PnL — total/avg PnL is computed exclusively over classified CLOSES (per_exit is built from successful close actions only); the 3 currently open positions appear only in the survival line as "still open" and can enter the totals exclusively through a close event, i.e. only once realized — no silent addition is possible by construction;
+  (2) sample size is displayed with every number (n=6 in the primary panel) and the card footer carries "small sample = diagnostic signal, not a statistical verdict"; the FINAL Day-5/7 verdict must additionally state n as the achieved sample size, never as sufficient proof by itself.
+- Freeze scope recorded: no new metrics (nothing added just because it could be), no E-04 fix (measured + documented is worth more than a mid-sample fix), no Phase-3 port, no strategy changes, no new audit rounds.
+- Day-5/7 decision basis recorded: the A/B/C verdict is computed on the strategy-attributable result (primary view), with raw and E-04 contamination shown alongside — never on the blended +0.062% raw number. A = confirmed edge · B = edge exists but needs hardening/strategy change · C = edge not proven / negative economics → root-cause + archive.
+
+Stage Summary:
+- Development formally frozen at tower 7a5bc28 (+ this record): the full evidence chain for the Phase-2 verdict is live and nothing further will be added to it.
+- The system now only collects: runner untouched at 0373f5d, journal accumulating, every new close classified automatically into the two-view baselines.
+- Next active milestone: Day-5/7 verdict on the completed sample — primary basis = strategy-attributable result with n stated; open positions excluded from realized PnL until closed (structural guarantee).
