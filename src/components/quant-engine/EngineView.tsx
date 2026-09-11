@@ -475,10 +475,11 @@ function RfqLaneCard({ rfq }: { rfq: RfqStatus | null }) {
               <>
                 honest status: <span className="font-semibold text-amber-300">0 real records</span>{" "}
                 — no RFQ desk credentials exist in this environment. The machinery is complete and
-                invariant-checked (46 tracked checks, reproducible from the repo via
+                invariant-checked (54 tracked checks, reproducible from the repo via
                 verify_w0_invariants.py: chain tamper/reorder/insert/truncate detection,
                 duplicate-id, future reference rejection, source wall, edge accounting,
-                dry-run writes-nothing); real data starts the moment a feed is connected.
+                dry-run writes-nothing, webhook token/rejection gates); real data starts
+                the moment a feed is connected.
               </>
             )}
           </div>
