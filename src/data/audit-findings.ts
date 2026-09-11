@@ -4,7 +4,7 @@ export type FindingStatus = "confirmed" | "deferred";
 export interface AuditFinding {
   id: string;
   severity: FindingSeverity;
-  round: 1 | 2 | 3 | 4;
+  round: 1 | 2 | 3 | 4 | 5;
   area: string;
   title: string;
   detail: string;
@@ -178,5 +178,47 @@ export const auditFindings: AuditFinding[] = [
     title: "Unconfirmed fill recorded as target qty (matrix root cause)",
     detail: "_exec_qty() falls back to the TARGET quantity when the POST response carries exec_qty=0 (order accepted, not yet filled): an unconfirmed quantity is written to the ledger as if filled. No post-submit status check exists for futures orders — _fetch_order_detail queries the spot endpoint only.",
     evidence: "cross_venue_executor.py:245-248; venues/binance.py:712-721 (spot-only),878-881",
+  },
+  {
+    id: "NEW-01", severity: "P1", round: 5, area: "cli/orchestrate_funding.py", status: "deferred",
+    title: "Orchestrator opens duplicates — no active-position gate",
+    detail: "The paper runner gates opens on active_positions / active_keys / maxConcurrentPairs (run_pure_futures_spread.py:148-159); the orchestrator's --pure-futures --run-executor path does NOT: candidates → sort → candidates[:max_pairs] → open_pure_futures_pair() with no ledger query, no active_keys, and no dedup inside the executor itself. A second invocation / restart can re-see the same candidate and open a duplicate pair stacked on the live position. Compounds M-02/M-03 (ledger never reconciled inbound). Not active in the current single-PID paper baseline — latent for the live/orchestrator path.",
+    evidence: "cli/orchestrate_funding.py:465,509-517 (no active query); contrast run_pure_futures_spread.py:147-161",
+  },
+  {
+    id: "NEW-02", severity: "P1", round: 5, area: "cli/orchestrate_funding.py", status: "deferred",
+    title: "Auto-spawned watcher can run a DIFFERENT config than the runner",
+    detail: "_run_pure_futures_mode() builds its own cfg via load_strategy_config() + apply_strategy_to_pure_futures_cfg() (lines 436,449), but the --auto-spread-watch watcher is launched with watcher_cfg = args.config or the raw template path (line 549) — the STRATEGY OVERLAY IS NOT PASSED. Runner and watcher can disagree on trade_usd, thresholds, max_positions: a config split where two processes believe they execute the same experiment while they do not. Not active in the current paper loop (watcher not spawned); latent for the orchestrator/live path.",
+    evidence: "cli/orchestrate_funding.py:424-449 vs 549-561",
+  },
+  {
+    id: "NEW-03", severity: "P2", round: 5, area: "pure_futures_executor.py", status: "confirmed",
+    title: "Paper funding re-check is fail-open (paper gate divergence)",
+    detail: "fail_open = fundingRecheckFailOpen or dry_run — in paper mode a funding recheck API failure lets the candidate proceed (documented intent: 'dry-run defaults to fail-open so paper testing is not blocked on flaky APIs'). The paper runner therefore does not simulate the same gate as live on data failure: paper can open a signal live would reject. Notably this is the ONLY fail-open gate in the paper baseline — the template explicitly sets depthCheckFailOpen:false and marginCheckFailOpen:false. To be carried in the final A/B report as PAPER GATE DIVERGENCE — fail-open funding recheck, not as a divergence-free open.",
+    evidence: "pure_futures_executor.py:396-399 + comment 388-393; templates/config.pure_futures.spread.json (fundingRecheckFailOpen unset)",
+  },
+  {
+    id: "NEW-04", severity: "P1", round: 5, area: "core/strategy_config.py", status: "deferred",
+    title: "Corrupt strategy config silently becomes DEFAULT config",
+    detail: "load_strategy_config() wraps the read in try/except Exception: pass and returns DEFAULT_STRATEGY on any unreadable/invalid JSON — trade_usd 5000, 4-CEX scans, default thresholds. A configuration error changes the experimental parameters with no crash and no alarm. For Phase-2 the config is effectively part of the immutable experimental baseline; a silent default swap would be contamination. P1 for validation integrity, P2 for execution. Post-Phase-2 fix: fail loud.",
+    evidence: "core/strategy_config.py:35-46 (except Exception: pass)",
+  },
+  {
+    id: "NEW-05", severity: "P1", round: 5, area: "experiment integrity", status: "deferred",
+    title: "Strategy config not locked/hashed into the experiment record",
+    detail: "Every journal cycle records thresholds, but the strategy config is an external mutable file — nothing pins the full config (strategy_config_hash / config_version / locked manifest) to the sample. Mid-experiment changes would mix two experiments in one journal. IMPORTANT LABELING: no evidence of actual config mutation — invariant currently UNENFORCED, contamination possibility, not contamination. Empirical corroboration (read-only, 261 real cycles): every cycle carries ONE identical thresholds variant; trade_usd = 500.0 on all 14 positions (never the default 5000 — the silent-default signature is absent); journal thresholds differ from template defaults (overlay values) and never changed. For all recorded dimensions the sample IS one experiment — verified. Day-5/7 verdict additionally checks config continuity; post-Phase-2 fix: hash the config into every cycle snapshot.",
+    evidence: "journal.jsonl thresholds x261 identical; positions.json trade_usd=500 x14; contrast core/strategy_config.py DEFAULT_STRATEGY trade_usd=5000",
+  },
+  {
+    id: "NEW-06", severity: "P2", round: 5, area: "pure_futures_executor.py", status: "deferred",
+    title: "Atomic write is not durable (no fsync before rename)",
+    detail: "_save_positions() writes temp + flush() + os.replace() without fsync() — application crash is covered, OS/power failure is not ('atomic' ≠ 'durable'). Lesser than M-02/M-03 but the ledger's durability guarantee is weaker than it reads. Post-hardening item.",
+    evidence: "pure_futures_executor.py:61-80 (flush, no fsync, then os.replace)",
+  },
+  {
+    id: "NEW-07", severity: "P2", round: 5, area: "run_pure_futures_spread.py", status: "deferred",
+    title: "Multi-process TOCTOU on the open decision",
+    detail: "The file lock covers ledger WRITES only. The open decision spans load positions → compute slots → choose candidate → place orders → record — unlocked throughout. Two concurrent runners both see 2/3 slots, both open, both record: capacity exceeded and potential same-pair duplicates. Distinct from M-02/M-03 (corrupt ledger) — this is a race on a healthy ledger. Not proven active with the current single PID (12976); real for production. P2 now, P1 for the live path.",
+    evidence: "run_pure_futures_spread.py:147-199 (read → decide → open → later save; lock only inside _save_positions)",
   },
 ];

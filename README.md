@@ -226,6 +226,15 @@ audit round each finding came from. The full evidence register lives at
 Phase-2 A/B/C measurement — findings are recorded only, the measured system is
 untouched, and remediation is deferred to the post-Phase-2 hardening pass.
 
+Rounds: R1 API surface · R2 watcher · R3 executor/runner · R4 failure matrix ·
+**R5 targeted integrity audit** (config/experiment/concurrency plane — 7 findings:
+orchestrator duplicate gate, watcher config split, fail-open paper funding recheck,
+silent strategy-config defaults, unlocked config invariant, non-durable atomic write,
+multi-process TOCTOU). R5's headline empirical result: across 261 real cycles the
+journal carries exactly one thresholds variant and trade_usd never leaves 500 —
+for every recorded dimension the Phase-2 sample **is one experiment (verified)**;
+NEW-05 stays open as an *unenforced* invariant, with no evidence of actual mutation.
+
 ## Exit classification — strategy-attributable vs E-04
 
 The "exit classification" card is the passive evidence layer for the Phase-2

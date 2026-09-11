@@ -6,9 +6,9 @@
 | **Lock status** | LOCKED — Phase-2 paper A/B/C measurement in progress; **zero changes made** to the measured system |
 | **Method** | Read-only code inspection at the locked commit (local checkout verified clean at `0373f5d`; identical to GitHub `main`) |
 | **Reference standard** | phase3-lab golden contract v1.1.0 — fail-closed semantics (`VENUE_UNAVAILABLE`/`DATA_UNAVAILABLE`/`PRICE_UNAVAILABLE`/`FEE_UNKNOWN` → BLOCK + ALERT) |
-| **Rounds** | R1 — API surface · R2 — watcher · R3 — executor/runner order-by-order · R4 — state-by-state failure matrix |
+| **Rounds** | R1 — API surface · R2 — watcher · R3 — executor/runner order-by-order · R4 — state-by-state failure matrix · R5 — targeted integrity audit (config/experiment/concurrency plane) |
 
-**Register status: 26 findings — 3× P0, 13× P1 (incl. 1 deferred), 8× P2, 3× P3.**
+**Register status: 33 findings — 3× P0, 16× P1, 11× P2, 3× P3 · 7 deferred to post-Phase-2 hardening (D-01, NEW-01/02/04/05/06/07).** *(R5 addition; the pre-R5 header line understated P1 by one — 13→12 at the time, sums now verified against the rendered register.)*
 
 The dashboard renders this register live (`src/data/audit-findings.ts`) and the failure matrix (`src/data/failure-matrix.ts`); this document holds the evidence.
 
@@ -239,7 +239,7 @@ The group's structural fact — every cell below inherits it:
 
 ## R4 closure — hardening-pass plan (review decision, 2026-09-11)
 
-**The audit phase is CLOSED.** R4 proved the boundary of the system (a stronger result than the 539-test green matrix, which covers only designed failures); further blind bug-hunting in funding-arb is explicitly retired. The register (26 findings) + matrix (21 cells) are the complete **pre-change audit trail** — which is exactly why they were recorded before touching anything.
+**The audit phase is CLOSED.** R4 proved the boundary of the system (a stronger result than the 539-test green matrix, which covers only designed failures); further blind bug-hunting in funding-arb is explicitly retired. The register (26 findings at closure; 33 after the R5 targeted integrity round) + matrix (21 cells) are the complete **pre-change audit trail** — which is exactly why they were recorded before touching anything. *R5 refinement of the closure scope: random bug hunting stays retired, but targeted integrity audit (experiment-validity plane) remains valid — see Round 5.*
 
 **Nothing is fixed now, deliberately:** the Phase-2 A/B/C measurement is running on `0373f5d`; changing execution semantics mid-measurement would mix the baseline with post-hardening results and destroy the experiment's value. Decision gate: Phase-2 verdict → **A/B** = harden + port (Phase-3 safety) · **C** = root-cause + archive lab.
 
@@ -264,3 +264,38 @@ The running paper journal (2026-09-10T13:06Z → 2026-09-11T10:41Z at the time o
 **Directional contamination (measured with the passive classifier):** the contamination is not only count-based — it is PnL-directional. Genuine edge-collapse exits: 6 closes, **total −0.403 %** (avg −0.067 %). E-04 data-gap exits: 5 closes, **total +0.465 %** (avg +0.093 %). The raw baseline's near-zero exit PnL (+0.062 % total) is an artifact of mixing two groups that pull in opposite directions. Reading only the raw number would conclude "the strategy breaks even on exits"; the split shows genuine strategy exits slightly negative while exits taken on missing data happen to be positive. The verdict must be computed on **both views** (raw + diagnostic) — this is now rendered continuously in the tower's exit-classification card (`src/server/exit-classification.ts`, read-only: journal + positions ledger only, runner untouched).
 
 **Reporting contract (review decision, 2026-09-11):** the final A/B/C report never presents a single PnL number. The **strategy-attributable** result (diagnostic baseline — genuine strategy exits with data-gap closes held apart) is the **primary** figure; the **raw** result and the **E-04 contamination** split are always shown alongside it, with the arithmetic identity `strategy-attributable + contamination = raw` carried as a built-in ✓/✗ attribution check on the rendered totals (−0.403 % + 0.465 % = +0.062 % ✓) so the decomposition can never silently drift from the raw number it explains. The tower card enforces this hierarchy visually (primary panel first, decomposition second) and additionally renders a **survival** line — opened positions → closed genuine · closed data-gap · still open — answering "how many opens survive to a normal close" as a live dashboard number. E-04 remains deliberately unfixed during Phase-2: the current error is measured and documented, and fixing it mid-sample would mix the baseline with post-fix behavior.
+
+---
+
+## Round 5 — targeted integrity audit (review round, 2026-09-11)
+
+Scope: one level deeper than the dashboard — the locked `0373f5d` read through **runner → executor → scanner → strategy config → mismatch planner → orchestrator → watcher → persistence**. Provenance: user-driven review round; every claim independently re-verified at the locked commit before entering this register (preveri, ne predvidevaj). **Scope refinement of the R4 closure: random bug hunting stays retired; targeted integrity audit (the experiment-validity plane) remains valid** — R5 is exactly that, and it is read-only: all seven findings are **post-Phase-2 remediation candidates**, nothing is fixed during the measurement.
+
+### NEW-01 · P1 · orchestrator opens duplicates — no active-position gate
+The paper runner gates every open on `active_positions` / `active_keys` / `maxConcurrentPairs` (`run_pure_futures_spread.py:148-159`). The orchestrator's `--pure-futures --run-executor` path does not: `candidates → sort → candidates[:max_pairs] → open_pure_futures_pair()` (`cli/orchestrate_funding.py:509-517`) with no ledger query, no `active_keys`, and no dedup inside the executor itself. A second invocation or restart can re-see the same candidate and open a duplicate pair stacked on the live venue position — compounding M-02/M-03 (the ledger is never reconciled inbound). Not active in the current single-PID paper baseline; latent for the live/orchestrator path.
+
+### NEW-02 · P1 · auto-spawned watcher can run a DIFFERENT config than the runner
+`_run_pure_futures_mode()` builds its own cfg via `load_strategy_config()` + `apply_strategy_to_pure_futures_cfg()` (lines 436, 449), but the `--auto-spread-watch` watcher is launched with `watcher_cfg = args.config or <raw template path>` (line 549) — **the strategy overlay is not passed**. Runner and watcher can disagree on trade_usd, thresholds and max_positions: a config split in which two processes believe they execute the same experiment while they do not. Not active in the current paper loop (the watcher is not spawned); latent for the orchestrator/live path.
+
+### NEW-03 · P2 · paper funding re-check is fail-open (paper gate divergence)
+`fail_open = fundingRecheckFailOpen or dry_run` (`pure_futures_executor.py:399`): in paper mode a funding recheck API failure lets the candidate proceed. The code documents the intent ("dry-run defaults to fail-open so paper testing is not blocked on flaky APIs"), but methodologically it means the paper runner does not simulate the same gate as live on a data failure — paper can open a signal live would reject. Notably this is the **only** fail-open gate in the paper baseline: the template explicitly sets `depthCheckFailOpen: false` and `marginCheckFailOpen: false`. Carried into the final A/B report as **PAPER GATE DIVERGENCE — fail-open funding recheck**; such opens are not divergence-free opens. (Status: confirmed behavior, documented — deliberately not fixed during Phase-2.)
+
+### NEW-04 · P1 · corrupt strategy config silently becomes DEFAULT config
+`load_strategy_config()` wraps the read in `except Exception: pass` and returns `DEFAULT_STRATEGY` (`core/strategy_config.py:35-46`) — trade_usd 5000, 4-CEX scans, default thresholds. A configuration error changes the experimental parameters with **no crash and no alarm**. For Phase-2 the config is effectively part of the immutable experimental baseline; a silent default swap mid-run would be contamination. P1 for validation integrity, P2 for execution. Post-Phase-2 fix: fail loud.
+
+### NEW-05 · P1 · strategy config not locked/hashed into the experiment record
+Every journal cycle records thresholds, but the strategy config is an external mutable file — nothing pins the full config (a `strategy_config_hash` / `config_version` / locked manifest) to the sample. Mid-experiment changes would mix two experiments into one journal. **Labeling (important): no evidence of actual config mutation — the invariant is currently UNENFORCED. This is a contamination possibility, not contamination.**
+
+**Empirical corroboration (read-only, current baseline):** across all 261 real cycles the journal carries **exactly one thresholds variant** (`minSpreadPct 0.04 · minNetEdgePct 0.02 · exitThresholdPct 0.01 · minEdge1h 0.01 · allowSettleMismatch false · feePolicy auto`); `trade_usd = 500.0` on all 14 positions — **never** the DEFAULT_STRATEGY 5000, so the silent-default signature is absent; and the journal thresholds differ from the template defaults, proving they come from the strategy overlay — which therefore never changed. **For every dimension the journal records, the sample IS one experiment — verified.** Day-5/7 verdict additionally checks config continuity; post-Phase-2 fix: hash the config into every cycle snapshot.
+
+### NEW-06 · P2 · atomic write is not durable (no fsync before rename)
+`_save_positions()` = temp write + `flush()` + `os.replace()` without `fsync()` (`pure_futures_executor.py:61-80`): application crash is covered, OS/power failure is not. "Atomic" ≠ "durable" — the ledger's durability guarantee is weaker than it reads. Post-hardening item.
+
+### NEW-07 · P2 · multi-process TOCTOU on the open decision
+The file lock covers ledger **writes** only. The open decision spans load positions → compute slots → choose candidate → place orders → record — unlocked throughout (`run_pure_futures_spread.py:147-199`). Two concurrent runners both see 2/3 slots, both open, both record: capacity exceeded and possible same-pair duplicates. Distinct from M-02/M-03 (corrupt ledger) — a race on a *healthy* ledger. Not proven active with the current single PID (12976); real for production. P2 now, P1 for the live path.
+
+### Verified clean in this round (recorded to prevent re-auditing)
+The **scanner plane** was specifically checked for a false-safe hole and is clean: pair construction compares both rates, assigns higher-rate short / lower-rate long, honors settlement intervals, applies `pair_pure_futures_spread`, subtracts fees and only then admits a candidate. The scanner's top-N depth enrichment is **not** a safety hole because the executor re-runs `check_pair_depth` at open time for the actual candidate (and the paper template runs it fail-closed, `depthCheckFailOpen: false`).
+
+### R5 remediation placement
+All seven are **post-Phase-2** items and slot into the existing hardening plan without changing its order: NEW-01/NEW-07 extend the M-02+M-03 safety combination (ledger truth + locking); NEW-02 rides the M-04 state-machine patch (watcher lifecycle); NEW-04/NEW-05 are the experiment-integrity pair (fail loud + config hash) — cheap, and the first thing to land after the gate; NEW-06 is a one-line durability addition. NEW-03 needs no code change before the verdict: it is carried as a labeled divergence in the final A/B/C report.
