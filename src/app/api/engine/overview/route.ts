@@ -56,9 +56,10 @@ async function fetchRemoteJson(url: string): Promise<unknown> {
 }
 
 async function remoteOverview(): Promise<EngineOverview> {
-  const [sweep, latestRun, commit] = await Promise.all([
+  const [sweep, latestRun, rfqStatus, commit] = await Promise.all([
     fetchRemoteJson(`${GH_RAW}/sweep-latest.json`),
     fetchRemoteJson(`${GH_RAW}/run-latest.json`),
+    fetchRemoteJson(`${GH_RAW}/rfq-status.json`),
     fetchRemoteJson(`https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/commits/${GH_BRANCH}`),
   ]);
   const c = commit as { sha?: string; commit?: { message?: string; author?: { date?: string } } } | null;
@@ -84,6 +85,7 @@ async function remoteOverview(): Promise<EngineOverview> {
     },
     latest_run: (latestRun as EngineOverview["latest_run"]) ?? null,
     sweep: (sweep as EngineOverview["sweep"]) ?? null,
+    rfq_status: (rfqStatus as EngineOverview["rfq_status"]) ?? null,
     artifacts: {
       run_latest: latestRun !== null,
       sweep_latest: sweep !== null,
@@ -108,8 +110,10 @@ export async function GET() {
   // ---- local mode: fresh read of the sandbox checkout ----
   const runPath = path.join(ARTIFACTS, "run-latest.json");
   const sweepPath = path.join(ARTIFACTS, "sweep-latest.json");
+  const rfqStatusPath = path.join(ARTIFACTS, "rfq-status.json");
   const latestRun = readJsonSafe(runPath);
   const sweep = readJsonSafe(sweepPath);
+  const rfqStatus = readJsonSafe(rfqStatusPath);
   const ageOf = (p: string): number | null =>
     safe(() => (Date.now() - statSync(p).mtimeMs) / 1000, null);
   const version = safe(() => {
@@ -136,6 +140,7 @@ export async function GET() {
     },
     latest_run: (latestRun as EngineOverview["latest_run"]) ?? null,
     sweep: (sweep as EngineOverview["sweep"]) ?? null,
+    rfq_status: (rfqStatus as EngineOverview["rfq_status"]) ?? null,
     artifacts: {
       run_latest: latestRun !== null,
       sweep_latest: sweep !== null,

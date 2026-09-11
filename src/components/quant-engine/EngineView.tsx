@@ -20,6 +20,14 @@
  * / like-for-like with the contest day-bucket decomposition; predictions
  * P1..P5 all SUPPORTED as measured, P4 the compound honest price.
  *
+ * v0.6 (W0): the REAL-WORLD DATA LANE — an immutable hash-chained raw RFQ
+ * journal fed by pluggable adapters (file ingest / webhook receiver /
+ * test-only synthetic), with deterministic ALL-IN EDGE accounting on top.
+ * The W0 card below reports its status honestly: every record is tagged
+ * real|synthetic (the source wall — never pooled), and with 0 real records
+ * it says so. Descriptive accounting only: uncertainty → ranking → GO/NO-GO
+ * on real data is W1 and needs its own sealed decision record.
+ *
  * Everything on this view is SYNTHETIC: the engine runs on a deterministic
  * mock RFQ world (seeded), so every number below is a machinery diagnostic,
  * never market evidence. The epistemic note travels with the data and is
@@ -38,6 +46,7 @@ import {
   Layers,
   Loader2,
   Lock,
+  Radio,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
@@ -63,6 +72,7 @@ import type {
   EngineOverview,
   FamilyCensusEntry,
   RankingStats,
+  RfqStatus,
   SettledRow,
 } from "@/lib/engine-types";
 
@@ -101,6 +111,13 @@ const ago = (iso: string | null | undefined) => {
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
+};
+
+/* ---- W0 helpers ---- */
+
+const tsAgo = (ms: number | null | undefined) => {
+  if (ms === null || ms === undefined) return "—";
+  return ago(new Date(ms).toISOString());
 };
 
 /* ---- family identity helpers ---- */
@@ -283,6 +300,191 @@ function verdictTone(verdict: string): "good" | "warn" | "default" {
   if (/SUPPORTED/i.test(verdict)) return "good";
   if (/REFUTED|REJECTED|NOT SUPPORTED/i.test(verdict)) return "warn";
   return "default";
+}
+
+/* ====================================================================== */
+
+/* ---- W0 · the real-world ingestion lane card (v0.6) ---- */
+
+function RfqLaneCard({ rfq }: { rfq: RfqStatus | null }) {
+  const real = rfq?.integrity.sources?.real ?? 0;
+  const synthetic = rfq?.integrity.sources?.synthetic ?? 0;
+  const lines = rfq?.integrity.lines ?? 0;
+  const head = rfq?.integrity.head_hash ?? "";
+  const hasRealFeed = real > 0;
+
+  return (
+    <Card
+      title="W0 · real RFQ ingestion — the transition to the real world"
+      icon={<Radio className="h-4 w-4" />}
+      className="lg:col-span-2"
+      right={
+        rfq?.integrity.ok ? (
+          <Chip tone="good" title="hash chain verified; head re-checked against the recorded status artifact">
+            <ShieldCheck className="h-3.5 w-3.5" /> chain intact
+          </Chip>
+        ) : (
+          <Chip tone="bad">integrity</Chip>
+        )
+      }
+    >
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* ---- journal state ---- */}
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="font-mono text-2xl font-semibold tabular-nums text-zinc-100">
+              {num(lines)}
+            </span>
+            <span className="text-xs text-zinc-500">journal lines · append-only</span>
+          </div>
+          <div className="text-[11px] font-mono text-zinc-600 break-all" title={head}>
+            head {head ? `${head.slice(0, 24)}…` : "—"}
+          </div>
+          <div className="text-[11px] text-zinc-500">{rfq?.journal_path ?? "—"}</div>
+          {/* the source wall — the lane's defining number */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip tone={hasRealFeed ? "good" : "warn"} title="real desk/provider records — research-eligible">
+              real {num(real)}
+            </Chip>
+            <Chip tone="default" title="test fixtures from the deterministic generator — never research-eligible, never pooled">
+              synthetic {num(synthetic)}
+            </Chip>
+            <Chip tone="default" title="sources are reported split; pooled is deliberately null">
+              source wall
+            </Chip>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(rfq?.census.venues ?? []).map((v) => (
+              <span
+                key={v}
+                className="rounded-full border border-zinc-700 bg-zinc-800/60 px-2 py-px font-mono text-[10px] text-zinc-400"
+              >
+                {v}
+              </span>
+            ))}
+            {(rfq?.census.instruments ?? []).map((i) => (
+              <span
+                key={i}
+                className="rounded-full border border-zinc-700 bg-zinc-800/40 px-2 py-px font-mono text-[10px] text-zinc-500"
+              >
+                {i}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* ---- ingestion paths ---- */}
+        <div className="space-y-1.5">
+          <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+            ingestion paths (15-field schema, fail-closed invariants R-1…R-13)
+          </h3>
+          {[
+            {
+              p: "file ingest",
+              state: "ready — desk exports / user-held RFQ history (JSONL · JSON · CSV) via declarative field map",
+              tone: "good" as const,
+            },
+            {
+              p: "webhook receiver",
+              state: "ready — one command for push providers (shared-secret token, constant-time)",
+              tone: "good" as const,
+            },
+            {
+              p: "REST poller",
+              state: "slot — lands with W1 when an authenticated desk API is connected",
+              tone: "warn" as const,
+            },
+            {
+              p: "synthetic generator",
+              state: "test-only — hardwired source=synthetic, exercises every schema path",
+              tone: "default" as const,
+            },
+          ].map((row) => (
+            <div
+              key={row.p}
+              className="flex flex-wrap items-baseline gap-x-2 rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2 text-xs"
+            >
+              <span className="font-mono font-semibold text-zinc-200">{row.p}</span>
+              <span
+                className={`min-w-0 flex-1 ${
+                  row.tone === "good"
+                    ? "text-emerald-300/70"
+                    : row.tone === "warn"
+                      ? "text-amber-300/70"
+                      : "text-zinc-500"
+                }`}
+              >
+                {row.state}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* ---- tail + honest status ---- */}
+        <div className="space-y-2">
+          <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+            last journaled {rfq?.tail?.length ? `(${rfq.tail.length})` : ""}
+          </h3>
+          <div className="max-h-40 overflow-y-auto rounded-lg border border-zinc-800/70 bg-zinc-900/40">
+            <table className="w-full text-[11px]">
+              <tbody>
+                {(rfq?.tail ?? []).map((t, i) => (
+                  <tr key={t.seq ?? i} className="border-b border-zinc-800/50 last:border-0">
+                    <td className="px-2 py-1 font-mono tabular-nums text-zinc-600">
+                      {t.seq != null ? `#${t.seq}` : "—"}
+                    </td>
+                    <td className="px-2 py-1 font-mono text-zinc-300">{t.rfq_id ?? "—"}</td>
+                    <td className="px-2 py-1 text-right">
+                      <span
+                        className={
+                          t.source === "real"
+                            ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-px text-[10px] text-emerald-400"
+                            : "rounded-full border border-zinc-700 bg-zinc-800/60 px-1.5 py-px text-[10px] text-zinc-400"
+                        }
+                      >
+                        {t.source ?? "—"}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums text-zinc-500">
+                      {tsAgo(t.ts)}
+                    </td>
+                  </tr>
+                ))}
+                {!rfq?.tail?.length && (
+                  <tr>
+                    <td className="px-2 py-3 text-zinc-600" colSpan={4}>
+                      empty journal
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5 text-[11px] leading-relaxed text-amber-200/70">
+            {hasRealFeed ? (
+              <>
+                <span className="font-semibold text-amber-300">{num(real)} real records</span>{" "}
+                journaled. Deterministic ALL-IN EDGE accounting runs on them (price_edge − fees,
+                fees charged exactly once). Descriptive only —{" "}
+                <span className="text-amber-300">
+                  uncertainty → ranking → GO/NO-GO on real data is W1 and requires its own sealed
+                  decision record.
+                </span>
+              </>
+            ) : (
+              <>
+                honest status: <span className="font-semibold text-amber-300">0 real records</span>{" "}
+                — no RFQ desk credentials exist in this environment. The machinery is complete and
+                invariant-checked (37 checks: chain tamper/reorder/insert/truncate detection,
+                duplicate-id, future reference rejection, source wall, edge accounting); real data
+                starts the moment a feed is connected.
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 /* ====================================================================== */
@@ -518,6 +720,9 @@ export default function EngineView() {
               tone="good"
             />
           </div>
+
+          {/* ================================ W0 · real RFQ ingestion lane */}
+          <RfqLaneCard rfq={data.rfq_status ?? null} />
 
           {/* ------------------------------------------------- main grid */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1633,7 +1838,7 @@ export default function EngineView() {
                     {
                       name: "quant-arb-engine",
                       meta: `v${data.repo.version ?? "—"} · paper only`,
-                      role: "explores the next generation — two carry families + ranking on synthetic data",
+                      role: "explores the next generation — two carry families + ranking on synthetic data · W0 real-RFQ ingestion lane live",
                     },
                   ].map((r) => (
                     <div
@@ -1653,13 +1858,18 @@ export default function EngineView() {
                   {[
                     {
                       id: "W0",
+                      owner: "engine ✓",
+                      text: "real RFQ ingestion shipped — immutable hash-chained journal + adapters; awaiting the first real feed",
+                    },
+                    {
+                      id: "W0-feed",
                       owner: "user",
-                      text: "NODE onboarding → capability sheet + real RFQ terms (desk minimums, spreads)",
+                      text: "connect a source: desk export (file ingest today) or push provider (webhook receiver, one command)",
                     },
                     {
                       id: "W1",
                       owner: "engine",
-                      text: "real RFQ feed attaches behind the same feed surface — strategy code unchanged",
+                      text: "first real-data research round (uncertainty → ranking → GO/NO-GO) — own sealed decision record first",
                     },
                     {
                       id: "verdict",

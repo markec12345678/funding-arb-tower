@@ -416,4 +416,38 @@ export type EngineOverview = {
     run_age_s: number | null;
     sweep_age_s: number | null;
   };
+  // v0.6 (W0): the raw RFQ ingestion layer's derived status artifact, read
+  // read-only exactly like run-latest/sweep-latest. Null when absent.
+  rfq_status?: RfqStatus | null;
+};
+
+/** W0 derived artifact: research/artifacts/rfq-status.json (engine v0.6+). */
+export type RfqStatus = {
+  artifact: "rfq-status";
+  w0_version?: number;
+  journal_path: string;
+  integrity: {
+    ok: boolean;
+    lines: number;
+    head_hash: string;
+    sources: Record<string, number>;
+  };
+  census: {
+    instruments: string[];
+    venues: string[];
+    last_quote_ts: number | null;
+  };
+  tail?: Array<{
+    seq?: number;
+    rfq_id?: string;
+    source?: string;
+    ts?: number;
+  }>;
+  note?: string;
+  last_operation?: {
+    op?: string;
+    provider?: { name?: string; source?: string };
+    appended?: number;
+    skipped?: number;
+  } | null;
 };
