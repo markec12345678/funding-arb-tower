@@ -1160,3 +1160,84 @@ Stage Summary:
   dispatch with anti-spam honored).
 - Repo hygiene: .env/tool-results/pid files out of the public tree; topics set;
   lint clean; no secrets anywhere (PAT only read at runtime from git config).
+
+---
+Task ID: REVIEW-1
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Verify and fix everything from the user's external review of the three public repos (funding-arb / phase3-lab / funding-arb-tower): API security audit, staleness gate, phase-3 byte-for-byte wording, README sync issues.
+
+Work Log:
+- P0-a funding-arb API auth audit (READ-ONLY, delegated to Explore agent + my own
+  spot-checks of the two sharpest findings). Verdict: the middleware DESIGN is sound
+  (constant-time compare, header-only HTTP auth, pre-routing check before body parse,
+  CORS outermost, WS handshake rejected before accept, close never escalates paper→live,
+  secrets masked, atomic config writes, tested bind guard), but deployment defaults are
+  fail-open: (1) HIGH — FARB_API_TOKEN unset ⇒ ALL 23 /api routes open, incl.
+  positions/open (live orders) and wallet/connect (raw secret injection into os.environ);
+  (2) HIGH — live trading on the API needs only {"dry_run": false} + credentials present
+  in process env: no FARB_LIVE-style server-side opt-in (CLI has it, API does not);
+  (3) MEDIUM-HIGH — bind guard lives only under __main__: `uvicorn server.main:app
+  --host 0.0.0.0` (a launch mode the module header advertises) bypasses it entirely;
+  (4) MEDIUM — wallet/connect sets DYDX_ENABLE_LIVE and injects venue keys ⇒ one request
+  arms live trading when token unset; (5) FARB_ALLOW_UNAUTHENTICATED only bypasses the
+  BIND guard (not auth) but can arrive via plaintext ~/.funding-arb/credentials.json or
+  scripts/.env; (6) LOW-MEDIUM — /api/backtest/run accepts absolute jsonl_file paths
+  (file-existence oracle) and error strings leak paths; (7) LOW — no rate limiting,
+  /docs + /openapi.json unauthenticated, WS token in query string. Full route inventory
+  (23 routes + static + SPA + docs) captured with file:line evidence. NO changes made
+  to funding-arb (locked, verified CLEAN at 0373f5d after the audit).
+- P1 phase3-lab "byte for byte" wording fixed (README pinned constraint #3 +
+  cross_layer_scenarios.py docstring): the two guarantees are now stated separately —
+  fresh run (same seed) = byte-identical journal (design property; suite pins
+  state+event-count; byte-identity verified empirically by me: two fresh runs of the
+  same rich scenario → 1768 == 1768 bytes identical, but no dedicated test pins it);
+  restart = NOT byte-identical by design (restart markers, recovered_fill→fill
+  relabelling, discovery-ts shifts) — semantic equivalence per R6/G6/X5 + twin CL07,
+  matching what the tests actually assert (normalise() in test_engine.py).
+  risk_guardian.decide() docstring left as-is (correct: pure function, ts from state).
+  Gate re-run after the change: 106/106, 135-journal retro-audit clean. Pushed 5581abc.
+- P0-b tower staleness gate (the user's #7 — "stale snapshot can look healthy"):
+  /api/status now returns a top-level freshness block (data_age_s = age of the NEWEST
+  journal cycle, expected_cycle_s 300, stale_after_s 900, status fresh|stale|unknown,
+  branch/log/lifecycle ages) and pipeline.snapshot carries gh-pages scanner age
+  (hourly expected, stale after 2h) — the cron-job.org death detector. UI: header pill
+  driven by data freshness FIRST (stale/unknown ⇒ RED even while the runner pid
+  exists), freshness strip in the funnel card, snapshot age + red SNAPSHOT STALE badge
+  in the pipeline card. NEGATIVE verification (then reverted): thresholds lowered to
+  30s/60s on a live-runner dashboard ⇒ pill immediately red "data stale · 3m old" +
+  SNAPSHOT STALE badge; restored ⇒ green. Browser-verified both modes.
+- Remote data plane corrected while building the gate (real bug the gate exposed):
+  remote mode was reading paper-data/journal.jsonl (the HOURLY sandbox snapshot) for
+  the funnel — structurally stale between pushes (data_age 21 min while the branch was
+  4.5 min fresh). Now the funnel + positions come from the LIVE collector files
+  (paper-data/github-actions/*, ~5-min cadence), backtest/log from the hourly snapshot,
+  and lifecycle_age_s tracks the durability push separately. Mode badge renamed
+  "github branch". Remote data_age now ~100s (fresh), positions RAY visible live.
+- P2 tower README: API example sanitized (pid 12345, cycles 42, scan_total 101530 —
+  explicitly marked illustrative) + freshness block added; Prisma/db marked as INERT
+  template scaffolding with an explicit note (no route imports @/lib/db; the
+  zero-config claim scoped to the running app); two-modes table corrected; new
+  "Staleness gate" section documenting the design.
+- P1 funding-arb README fixes (clone URL → markec12345678, "370+" → 539, issues link,
+  fork attribution): PREPARED as an exact patch but NOT applied — repo locked at
+  0373f5d, zero changes per the user's instruction. Patch ready to apply as one commit
+  whenever the lock lifts (documented in the final report).
+- Verification: lint clean (exit 0), browser both modes green (local: sandbox live +
+  paper runner LIVE + snapshot fresh · 28m; remote: github branch + GH collector LIVE +
+  lifecycle line + RAY position), mobile 401px no horizontal overflow, no console/page
+  errors. funding-arb integrity after all work: CLEAN at 0373f5d, runner PID 12976
+  alive. Tower pushed e2cfc2f; phase3-lab pushed 5581abc.
+
+Stage Summary:
+- All actionable review items are fixed: staleness gate live (with negative proof),
+  phase-3 docs now state exactly what the tests prove, tower README sanitized and
+  Prisma-scoped, remote data plane genuinely live.
+- The funding-arb API audit is documented with a ranked remediation list (fail-open
+  default, missing FARB_LIVE-style gate on the API path, bind-guard bypass via uvicorn
+  launch, wallet/connect as live-enabler, plaintext credential leakage channels) —
+  all candidates for the post-Phase-2 hardening pass, none applied (repo locked).
+- funding-arb README patch prepared, not applied (lock respected).
+- cron-job.org remains an external single point of failure for the Vercel demo
+  snapshot; the tower now DETECTS its death (SNAPSHOT STALE) instead of hiding it,
+  and the last manual dispatch (04:53Z) refreshed the data.
