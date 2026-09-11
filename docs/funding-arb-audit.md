@@ -6,9 +6,9 @@
 | **Lock status** | LOCKED — Phase-2 paper A/B/C measurement in progress; **zero changes made** to the measured system |
 | **Method** | Read-only code inspection at the locked commit (local checkout verified clean at `0373f5d`; identical to GitHub `main`) |
 | **Reference standard** | phase3-lab golden contract v1.1.0 — fail-closed semantics (`VENUE_UNAVAILABLE`/`DATA_UNAVAILABLE`/`PRICE_UNAVAILABLE`/`FEE_UNKNOWN` → BLOCK + ALERT) |
-| **Rounds** | R1 — API surface · R2 — watcher · R3 — executor/runner order-by-order · R4 — state-by-state failure matrix · R5 — targeted integrity audit (config/experiment/concurrency plane) · R6 — measurement-validity audit (PnL instrument / gates / data-quality plane) · R7 — economic-invariants audit (funding math / quantity-notional / price-source plane) |
+| **Rounds** | R1 — API surface · R2 — watcher · R3 — executor/runner order-by-order · R4 — state-by-state failure matrix · R5 — targeted integrity audit (config/experiment/concurrency plane) · R6 — measurement-validity audit (PnL instrument / gates / data-quality plane) · R7 — economic-invariants audit (funding math / quantity-notional / price-source plane) · R8 — red-team closure audit (sign convention / fee double-counting / quantity chain) |
 
-**Register status: 42 findings — 3× P0, 20× P1, 15× P2, 4× P3 · 11 deferred to post-Phase-2 hardening.** *(R7: +NEW-16/17/18/19 — the three remaining audit axes executed; NEW-08 materiality re-measured per-leg and confirmed at the upper bound.)*
+**Register status: 43 findings — 3× P0, 21× P1, 15× P2, 4× P3 · 11 deferred to post-Phase-2 hardening.** *(R8: the final red-team round — two of three checks closed clean, the sign-convention check found NEW-20, the last correctness defect: the spread-PnL instrument's abs()+direction-sign convention is not the position's mark-to-market. With this, the audit is CLOSED — every finding is a registered, measured remediation item, and further searching without a new hypothesis would be anomaly-hunting, not auditing.)*
 
 The dashboard renders this register live (`src/data/audit-findings.ts`) and the failure matrix (`src/data/failure-matrix.ts`); this document holds the evidence.
 
@@ -380,3 +380,44 @@ Identity ✓ (Σspread + Σfunding − Σfees = Σeconomic built to hold on the 
 
 ### R7 remediation placement
 All four are **post-Phase-2** items: NEW-16 (mark-price source or honest rename) and NEW-18 (record executed notionals) are cheap measurement-integrity fixes that land with the NEW-04/NEW-05 experiment-integrity pair; NEW-17 needs no code change at all (the correct per-leg computation now exists in the report layer and the executor's conservative sizing is deliberate); NEW-19 rides the funding-model certification item from the R6 closure list.
+
+---
+
+## Round 8 — red-team closure audit (final review round, 2026-09-11)
+
+Scope: exactly three narrow invariant checks — **sign convention · fee double-counting · quantity rounding/contract conversion** — no new development, no broad searching. Provenance: user-driven final red-team round on the locked `0373f5d`; every claim verified at the locked commit and, where possible, empirically on the full sample. Read-only; the measured system stays untouched. Two checks closed **clean**; the sign-convention check found **NEW-20** — the last correctness defect — and it is registered, measured and rendered.
+
+### Check 1 — sign convention: funding side CLEAN · instrument side NEW-20 (P1)
+
+**Funding cashflow formula — verified correct in every reachable sign combination.** The pair construction is direction-agnostic (`scan_pure_futures_spreads.py:273-299`: “short at higher rate (receives funding), long at lower (pays less)”), so:
+
+| combination | assignment | net funding = short·N_s − long·N_l | verdict |
+|---|---|---|---|
+| long negative, short positive (mixed, forward) | short = higher rate | both legs receive (short receives, long receives) — the strongest carry | ✓ mechanical |
+| long positive, short negative | — | **excluded by construction** (short always ≥ long; a negative-spread pair never clears the entry gate / recheck floor) | n/a |
+| both negative (reverse) | long = more negative | long receives the large rate, short pays the small one → net positive | ✓ mechanical (ZHIPU/ONG empirics agree) |
+| both positive (forward) | short = higher | short receives more, long pays less → net positive | ✓ mechanical |
+
+The per-leg formula in the R7 invariant test (long pays its rate, short receives its rate, the rate sign handles direction) is combination-agnostic — the funding side of the decomposition is sign-correct by construction.
+
+**The instrument is not.** `estimate_spread_pnl` computes `sign_dir × (|open spread| − |close spread|) × qty`, but the executor opens long on `long_venue` and short on `short_venue` **regardless of direction** (no direction usage in leg construction), so the mechanical PnL of the fixed legs is `(S_open − S_close) × qty` with `S = short_venue_price − long_venue_price`, **signed**. The two agree only when `sign_dir × S > 0` throughout the hold — an implicit assumption that the funding-rate direction label predicts the price relationship. Nothing enforces it and no test covers it: the watcher tests exercise only forward pairs with S > 0 (`test_pure_futures_watcher.py:270-312`).
+
+**Empirically (all 12 closes joined): 5/12 violate.** KR200 (forward, S < 0 throughout) and CL (reverse, S > 0 throughout) are **pure sign inversions** — the instrument returns the exact negation of the true leg arithmetic (hand-verified: KR200 long leg +$0.6650 + short leg −$0.0465 = true +$0.6185, instrument −$0.6185; CL long −$28.9656 + short +$29.0725 = true +$0.1069, instrument −$0.1069). SOPH, GPRO#1 and ONG#2 cross zero during the hold and get clamped by `abs()` (partially wrong magnitudes). Corrected aggregates (Σ per-close pct of trade_usd — the primary instrument's unit):
+
+| reading | attributable (7) | E-04 data-gap (5) | raw (12) |
+|---|---|---|---|
+| instrument (abs + direction sign) | **−0.424 %** | **+0.465 %** | **+0.041 %** |
+| signed mark-to-market (NEW-20 corrected) | **−0.313 %** | **−0.150 %** | **−0.463 %** |
+
+**Consequences, stated plainly:** (1) the R4/R6 observation “E-04 contamination is PnL-directional” is **largely a sign-convention artifact** — under signed arithmetic both groups are negative and the raw is not near zero (the E-04 register entry is amended, the policy finding itself stands); (2) the R7 economic estimate's spread component becomes −0.313 % (estimate −0.393 % → **−0.281 %**); funding (+1.599 %) and fees (−1.567 %) are unaffected — their per-leg formulas carry their own signs; (3) the user's carry arithmetic holds in both readings: funding − fees = +0.032 % net carry before the price component — **still no proof of a positive edge**, now with a cleaner instrument. The tower renders both readings side by side (instrument mirror + signed corrected, labeled); the final A/B/C report carries the **signed** reading as the corrected spread-PnL view.
+
+### Check 2 — fee double-counting: CLOSED CLEAN
+Every fee touchpoint enumerated: scanner entry gate (`net_edge = spread − fee`, single subtraction — verified on **15/15** entry rows); funding recheck (no fee term at all — NEW-09, already registered as the opposite defect); watcher exit gate (fee-aware comparison, decision only); `estimate_spread_pnl` (pure price formula — no fee term, confirmed by the formula and the tests); executor close prices (raw tickers — nothing fee-adjusted); the R7 decomposition (fee appears **exactly once**, the explicit round-trip term; the identity `spread + funding − fees = estimate` is built from fee-free components). The R6 two-point estimate's “close spread = edge + fees” reconstruction exists only in the bounds comparison column, not in any reported number. **No double count anywhere.** The user's arithmetic verified: +1.599 − 1.567 = +0.032 % net carry; with the signed spread −0.313 % the corrected economic estimate is −0.281 %.
+
+### Check 3 — quantity chain: CLOSED CLEAN
+The full chain verified for **15/15 opens**: requested `trade_usd` → `base_amount = floor(trade_usd / max(long_px, short_px), qty_prec)` (floor property holds exactly on every row) → both legs carry the **same** `amount_base` → venue dry-run echoes the trade dict **verbatim** (`record = dict(trade)` in binance.py/okx.py — `amount_base` stays in **base units**, no contract conversion happens in the paper path) → `amount_usdt = round(amount_base × ref_price, 4)` on both legs → ledger `qty` identical to the echoed amount. Contract-size conversion (OKX `ctVal` etc.) matters only on the live order path and in the depth check — the depth conversion was verified clean in R7. **The paper quantity chain is exactly consistent end-to-end.**
+
+### R8 closure — the audit is complete
+The three checks did exactly what a red-team closure is for: two invariants confirmed clean, and the third caught the last real correctness defect (NEW-20) before the register was locked. With this round:
+
+> **Audit complete — every remaining finding is a known remediation item, not an undiscovered correctness risk.** Further searching without a new hypothesis would now be anomaly-hunting, not auditing: the register (43 findings over 8 rounds), the failure matrix and the invariant tests are the complete pre-change evidence trail. The Day-5/7 verdict reads: strategy-attributable paper spread PnL **−0.313 % (signed, corrected) / −0.424 % (instrument)**, estimated funding +1.599 % (not realized in paper mode), fees −1.567 % — no proof of a positive edge on this sample, and a measurement chain that is now reproducible end-to-end.

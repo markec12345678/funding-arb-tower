@@ -71,9 +71,15 @@ export interface EconomicLegRow {
   fee_usd: number | null;
   // the primary instrument's quantity, same formula as exit-classification
   spread_pnl_usd: number | null;
-  // the decomposition: spread + funding − fees
+  // R8 (NEW-20): signed mark-to-market variant — (S_open − S_close) × qty,
+  // S = short_venue_price − long_venue_price, SIGNED. The instrument's
+  // abs()+direction-sign convention equals this only when sign_dir × S > 0.
+  spread_signed_usd: number | null;
+  // the decomposition: spread + funding − fees (instrument spread)
   economic_usd: number | null;
   economic_sc_usd: number | null;
+  // decomposition with the SIGNED spread (R8 corrected reading)
+  economic_signed_usd: number | null;
   // old-instrument comparison (R6 two-point estimate bounds, % of trade_usd):
   // entry spread × held/8h (constant) and half of it (linear decay)
   r6_upper_pct: number | null;
@@ -93,6 +99,11 @@ export interface EconomicAggregate {
   // Σ per-close pct of trade_usd — THE primary instrument's unit (Σ of the
   // per-exit spread pnl_pct values); comparable with the R6 estimate range
   spread_total_pct: number | null;
+  // R8 (NEW-20): signed-spread aggregates — the corrected mark-to-market
+  // reading of the same components (funding and fees are unaffected: their
+  // per-leg formulas carry their own signs)
+  spread_signed_total_pct: number | null;
+  economic_signed_total_pct: number | null;
   net_funding_total_pct: number | null;
   fee_total_pct: number | null;
   economic_total_pct: number | null;
@@ -288,11 +299,18 @@ export function decomposeEconomics(
           (Math.abs(longPrice - shortPrice) - Math.abs(closeLongPx - closeShortPx)) *
           qty
         : null;
+    // R8 (NEW-20): signed mark-to-market — the mechanical PnL of the fixed legs
+    const spreadSignedUsd =
+      longPrice !== null && shortPrice !== null && qty !== null &&
+      closeLongPx !== null && closeShortPx !== null
+        ? (shortPrice - longPrice - (closeShortPx - closeLongPx)) * qty
+        : null;
 
     // Per-row DISPLAY rounding first (3 dp), then the decomposition is built
     // FROM the rounded components — the identity holds exactly on the numbers
     // the report shows (definition, not an independent measurement).
     const spreadR = spreadPnlUsd === null ? null : Math.round(spreadPnlUsd * 1000) / 1000;
+    const spreadSignedR = spreadSignedUsd === null ? null : Math.round(spreadSignedUsd * 1000) / 1000;
     const fundingR = netFunding === null ? null : Math.round(netFunding * 1000) / 1000;
     const fundingScR = netFundingSc === null ? null : Math.round(netFundingSc * 1000) / 1000;
     const feeR = feeUsd === null ? null : Math.round(feeUsd * 1000) / 1000;
@@ -303,6 +321,10 @@ export function decomposeEconomics(
     const economicScUsd =
       spreadR !== null && fundingScR !== null && feeR !== null
         ? Math.round((spreadR + fundingScR - feeR) * 1000) / 1000
+        : null;
+    const economicSignedUsd =
+      spreadSignedR !== null && fundingR !== null && feeR !== null
+        ? Math.round((spreadSignedR + fundingR - feeR) * 1000) / 1000
         : null;
 
     // old-instrument bounds (% of trade_usd): entry spread × held/8h, and
@@ -353,8 +375,10 @@ export function decomposeEconomics(
       net_funding_sc_usd: fundingScR,
       fee_usd: feeR,
       spread_pnl_usd: spreadR,
+      spread_signed_usd: spreadSignedR,
       economic_usd: economicUsd,
       economic_sc_usd: economicScUsd,
+      economic_signed_usd: economicSignedUsd,
       r6_upper_pct: r6Upper === null ? null : Math.round(r6Upper * 1000) / 1000,
       r6_lower_pct: r6Lower === null ? null : Math.round(r6Lower * 1000) / 1000,
       new_estimate_pct: newEstimatePct === null ? null : Math.round(newEstimatePct * 1000) / 1000,
@@ -386,11 +410,16 @@ export function decomposeEconomics(
     const econ =
       spread !== null && funding !== null && fees !== null ? spread + funding - fees : null;
     const spreadPct = sumPct((r) => r.spread_pnl_usd);
+    const spreadSignedPct = sumPct((r) => r.spread_signed_usd);
     const fundingPct = sumPct((r) => r.net_funding_usd);
     const feePct = sumPct((r) => r.fee_usd);
     const econPct =
       spreadPct !== null && fundingPct !== null && feePct !== null
         ? spreadPct + fundingPct - feePct
+        : null;
+    const econSignedPct =
+      spreadSignedPct !== null && fundingPct !== null && feePct !== null
+        ? spreadSignedPct + fundingPct - feePct
         : null;
     const r6u = ok.length ? ok.reduce((s, r) => s + (r.r6_upper_pct ?? 0), 0) : null;
     const r6l = ok.length ? ok.reduce((s, r) => s + (r.r6_lower_pct ?? 0), 0) : null;
@@ -403,6 +432,8 @@ export function decomposeEconomics(
       fee_usd: fees === null ? null : Math.round(fees * 100) / 100,
       economic_usd: econ === null ? null : Math.round(econ * 100) / 100,
       spread_total_pct: r2(spreadPct),
+      spread_signed_total_pct: r2(spreadSignedPct),
+      economic_signed_total_pct: r2(econSignedPct),
       net_funding_total_pct: r2(fundingPct),
       fee_total_pct: r2(feePct),
       economic_total_pct: r2(econPct),
@@ -455,6 +486,6 @@ export function decomposeEconomics(
     completeness: { complete, incomplete: perClose.length - complete },
     per_close: perClose.slice(0, 30),
     note:
-      "R7 mathematical invariant test — DIAGNOSTIC decomposition only, NOT a Phase-2 PnL instrument (the Day-5/7 verdict stays on strategy-attributable paper SPREAD PnL; realized funding cashflow is not observed in paper mode — NEW-08/NEW-15). Per close: economic estimate = spread PnL + funding leg long + funding leg short − fees, with every component computed from the ACTUAL per-leg notionals (NEW-17: ref_px = max makes one leg ≤ trade_usd; NEW-18: trade_usd stays the requested value) and entry-snapshot funding rates (E — no rate history exists). Funding accrual shown linearly (held_h / interval_h × rate) and as settlement-count (0 until a settlement lands inside the hold). Prices are futures ticker/last throughout (NEW-16: the code's 'mark price' is the ticker price). Aggregates use the primary instrument's unit (Σ per-close pct of trade_usd — directly comparable with the R6 estimate range); the identity Σspread + Σfunding − Σfees = Σeconomic is built to hold on the displayed numbers. Read-only; the measured system stays untouched at 0373f5d.",
+      "R7 mathematical invariant test — DIAGNOSTIC decomposition only, NOT a Phase-2 PnL instrument (the Day-5/7 verdict stays on strategy-attributable paper SPREAD PnL; realized funding cashflow is not observed in paper mode — NEW-08/NEW-15). Per close: economic estimate = spread PnL + funding leg long + funding leg short − fees, with every component computed from the ACTUAL per-leg notionals (NEW-17: ref_px = max makes one leg ≤ trade_usd; NEW-18: trade_usd stays the requested value) and entry-snapshot funding rates (E — no rate history exists). Funding accrual shown linearly (held_h / interval_h × rate) and as settlement-count (0 until a settlement lands inside the hold). Prices are futures ticker/last throughout (NEW-16: the code's 'mark price' is the ticker price). Aggregates use the primary instrument's unit (Σ per-close pct of trade_usd — directly comparable with the R6 estimate range); the identity Σspread + Σfunding − Σfees = Σeconomic is built to hold on the displayed numbers. R8 (NEW-20): the signed aggregates carry the corrected mark-to-market spread (funding and fees are sign-correct per leg); both readings are shown. Read-only; the measured system stays untouched at 0373f5d.",
   };
 }

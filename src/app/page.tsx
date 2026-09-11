@@ -107,8 +107,19 @@ type Status = {
         edge_pct: number | null;
         held_h: number | null;
         pnl_pct: number | null;
+        pnl_signed_pct: number | null;
+        mis_signed: boolean | null;
+        spread_crossed: boolean | null;
         closed_at: string | null;
       }[];
+      signed_check: {
+        closes: number;
+        mis_signed: number;
+        crossed: number;
+        instrument: { attributable_pct: number | null; contamination_pct: number | null; raw_pct: number | null };
+        signed: { attributable_pct: number | null; contamination_pct: number | null; raw_pct: number | null };
+        identity_signed: boolean | null;
+      };
       note: string;
     } | null;
     economics: {
@@ -122,6 +133,8 @@ type Status = {
         fee_usd: number | null;
         economic_usd: number | null;
         spread_total_pct: number | null;
+        spread_signed_total_pct: number | null;
+        economic_signed_total_pct: number | null;
         net_funding_total_pct: number | null;
         fee_total_pct: number | null;
         economic_total_pct: number | null;
@@ -161,8 +174,10 @@ type Status = {
         net_funding_sc_usd: number | null;
         fee_usd: number | null;
         spread_pnl_usd: number | null;
+        spread_signed_usd: number | null;
         economic_usd: number | null;
         economic_sc_usd: number | null;
+        economic_signed_usd: number | null;
         r6_upper_pct: number | null;
         r6_lower_pct: number | null;
         new_estimate_pct: number | null;
@@ -1030,6 +1045,71 @@ export default function Home() {
                     )}
                   </div>
 
+                  {/* R8 sign-convention audit (NEW-20) — instrument vs signed mark-to-market */}
+                  {p.exits.signed_check && p.exits.signed_check.closes > 0 && (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-sans text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
+                          R8 sign-convention audit · NEW-20
+                        </span>
+                        <span className="font-mono text-[10px] tabular-nums text-zinc-400">
+                          {p.exits.signed_check.mis_signed}/{p.exits.signed_check.closes} closes mis-signed ·{" "}
+                          {p.exits.signed_check.crossed} spread crossings
+                        </span>
+                      </div>
+                      <div className="mt-1.5 overflow-x-auto">
+                        <table className="w-full min-w-[420px] text-[11px]">
+                          <thead>
+                            <tr className="text-left text-zinc-500">
+                              <th className="pr-3 font-medium">reading</th>
+                              <th className="pr-3 text-right font-medium">attributable</th>
+                              <th className="pr-3 text-right font-medium">E-04 group</th>
+                              <th className="text-right font-medium">raw</th>
+                            </tr>
+                          </thead>
+                          <tbody className="font-mono tabular-nums">
+                            <tr className="border-t border-zinc-800/60">
+                              <td className="py-1 pr-3 text-zinc-400">instrument (watcher formula — abs + direction sign)</td>
+                              <td className={`py-1 pr-3 text-right ${(p.exits.signed_check.instrument.attributable_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                                {pct(p.exits.signed_check.instrument.attributable_pct, 3)}
+                              </td>
+                              <td className={`py-1 pr-3 text-right ${(p.exits.signed_check.instrument.contamination_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                                {pct(p.exits.signed_check.instrument.contamination_pct, 3)}
+                              </td>
+                              <td className={`py-1 text-right ${(p.exits.signed_check.instrument.raw_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                                {pct(p.exits.signed_check.instrument.raw_pct, 3)}
+                              </td>
+                            </tr>
+                            <tr className="border-t border-zinc-800/60">
+                              <td className="py-1 pr-3 text-amber-300">
+                                signed (mark-to-market — corrected){" "}
+                                {p.exits.signed_check.identity_signed ? "✓" : ""}
+                              </td>
+                              <td className={`py-1 pr-3 text-right ${(p.exits.signed_check.signed.attributable_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                                {pct(p.exits.signed_check.signed.attributable_pct, 3)}
+                              </td>
+                              <td className={`py-1 pr-3 text-right ${(p.exits.signed_check.signed.contamination_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                                {pct(p.exits.signed_check.signed.contamination_pct, 3)}
+                              </td>
+                              <td className={`py-1 text-right ${(p.exits.signed_check.signed.raw_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                                {pct(p.exits.signed_check.signed.raw_pct, 3)}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
+                        The instrument computes sign × (|open spread| − |close spread|) × qty, but the mechanical PnL of the
+                        fixed legs is (S<sub>open</sub> − S<sub>close</sub>) × qty with S = short venue price − long venue price, signed — they agree
+                        only when the direction label matches the price relationship and the spread never crosses zero. On
+                        this sample 5/12 closes violate (KR200, CL are pure sign inversions — hand-verified leg
+                        arithmetic); the final A/B/C report carries the signed reading as the corrected spread-PnL view,
+                        and the “E-04 contamination is PnL-directional” observation is largely a sign-convention artifact
+                        (signed: both groups negative, raw not near zero).
+                      </p>
+                    </div>
+                  )}
+
                   <ul className="space-y-1.5">
                     {p.exits.categories.map((c) => (
                       <li
@@ -1078,7 +1158,8 @@ export default function Home() {
                           <th className="py-1.5 pr-2 font-medium">cause</th>
                           <th className="py-1.5 pr-2 font-medium text-right">edge</th>
                           <th className="py-1.5 pr-2 font-medium text-right">held</th>
-                          <th className="py-1.5 font-medium text-right">spread pnl</th>
+                          <th className="py-1.5 pr-2 font-medium text-right">spread pnl</th>
+                          <th className="py-1.5 font-medium text-right">signed</th>
                         </tr>
                       </thead>
                       <tbody className="font-mono tabular-nums text-zinc-300">
@@ -1103,9 +1184,27 @@ export default function Home() {
                               {e.held_h === null ? "—" : `${e.held_h.toFixed(1)}h`}
                             </td>
                             <td
-                              className={`py-1.5 text-right ${(e.pnl_pct ?? 0) < 0 ? "text-rose-400" : (e.pnl_pct ?? 0) > 0 ? "text-emerald-400" : "text-zinc-500"}`}
+                              className={`py-1.5 pr-2 text-right ${(e.pnl_pct ?? 0) < 0 ? "text-rose-400" : (e.pnl_pct ?? 0) > 0 ? "text-emerald-400" : "text-zinc-500"}`}
                             >
                               {e.pnl_pct === null ? "—" : pct(e.pnl_pct, 3)}
+                            </td>
+                            <td
+                              className={`py-1.5 text-right ${
+                                e.mis_signed
+                                  ? "font-semibold text-amber-400"
+                                  : (e.pnl_signed_pct ?? 0) < 0
+                                    ? "text-rose-400"
+                                    : (e.pnl_signed_pct ?? 0) > 0
+                                      ? "text-emerald-400"
+                                      : "text-zinc-500"
+                              }`}
+                              title={
+                                e.mis_signed
+                                  ? "NEW-20: instrument reading differs from the signed mark-to-market (amber = mis-signed)"
+                                  : "signed mark-to-market (R8) — agrees with the instrument"
+                              }
+                            >
+                              {e.pnl_signed_pct === null ? "—" : pct(e.pnl_signed_pct, 3)}
                             </td>
                           </tr>
                         ))}
@@ -1117,9 +1216,10 @@ export default function Home() {
                     Naming rule (NEW-15): the primary number is strategy-attributable paper SPREAD PnL —
                     never funding-arbitrage profitability; realized funding cashflow is not observed in
                     paper mode, and the excluded funding component is material (NEW-08). E-04 (runner closes
-                    on a missing scanner row) is measurably firing in this baseline and is PnL-directional —
-                    the near-zero raw number is a mixing artifact, which is exactly why the final A/B/C report
-                    carries the strategy-attributable result as primary. E-04 stays deliberately unfixed
+                    on a missing scanner row) is measurably firing in this baseline and is PnL-directional
+                    under the instrument reading — the R8 signed reading (NEW-20) shows both groups negative,
+                    so the directionality is largely a sign-convention artifact and the final report carries
+                    the signed view as the corrected spread-PnL basis. E-04 stays deliberately unfixed
                     during Phase-2 (fixing mid-sample would mix baselines); watcher-driven categories
                     (stop-loss, funding) stay in the taxonomy and count 0 while the watcher is not part
                     of the paper loop. Small sample = diagnostic signal, not a statistical verdict.
@@ -1182,6 +1282,38 @@ export default function Home() {
                         </span>
                       )}
                     </div>
+                    {p.economics.attributable.spread_signed_total_pct !== null &&
+                      p.economics.attributable.economic_signed_total_pct !== null && (
+                        <div className="mt-1 font-mono text-[11px] tabular-nums leading-relaxed text-zinc-400">
+                          <span className="text-zinc-600">signed variant (NEW-20):</span>{" "}
+                          <span
+                            className={
+                              p.economics.attributable.spread_signed_total_pct < 0 ? "text-rose-400" : "text-emerald-400"
+                            }
+                          >
+                            {pct(p.economics.attributable.spread_signed_total_pct, 3)}
+                          </span>{" "}
+                          spread +{" "}
+                          <span className="text-emerald-400">
+                            {pct(p.economics.attributable.net_funding_total_pct, 3)}
+                          </span>{" "}
+                          funding −{" "}
+                          <span className="text-amber-400">
+                            {pct(p.economics.attributable.fee_total_pct, 3)}
+                          </span>{" "}
+                          fees ={" "}
+                          <span
+                            className={
+                              p.economics.attributable.economic_signed_total_pct < 0
+                                ? "text-rose-400"
+                                : "text-emerald-400"
+                            }
+                          >
+                            {pct(p.economics.attributable.economic_signed_total_pct, 3)}
+                          </span>{" "}
+                          <span className="text-zinc-600">— corrected mark-to-market spread; funding/fees sign-correct per leg</span>
+                        </div>
+                      )}
                     <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">
                       Σ per-close pct of trade_usd — the same unit as the primary spread-PnL number above. Prices are
                       futures ticker/last throughout (NEW-16: the code's “mark price” is the ticker price); funding rates

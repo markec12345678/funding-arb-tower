@@ -4,7 +4,7 @@ export type FindingStatus = "confirmed" | "deferred";
 export interface AuditFinding {
   id: string;
   severity: FindingSeverity;
-  round: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  round: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   area: string;
   title: string;
   detail: string;
@@ -134,7 +134,7 @@ export const auditFindings: AuditFinding[] = [
   {
     id: "E-04", severity: "P2", round: 3, area: "run_pure_futures_spread.py", status: "confirmed",
     title: "Runner treats a scanner data gap as an exit signal",
-    detail: "should_close = row is None or edge <= exit_edge — a venue fetch failure in the scanner removes the row and the position is closed at market. No distinction between 'edge genuinely collapsed' and 'data unavailable' (Phase-3 contract: DATA_UNAVAILABLE → no action + alert). R6 re-confirmation: E-04 is an execution POLICY — missing observation → exit decision — not merely a reporting anomaly; the data-gap exit group in the running baseline (5 closes, +0.465%) are exits taken on missing data.",
+    detail: "should_close = row is None or edge <= exit_edge — a venue fetch failure in the scanner removes the row and the position is closed at market. No distinction between 'edge genuinely collapsed' and 'data unavailable' (Phase-3 contract: DATA_UNAVAILABLE → no action + alert). R6 re-confirmation: E-04 is an execution POLICY — missing observation → exit decision — not merely a reporting anomaly; the data-gap exit group in the running baseline (5 closes, +0.465%) are exits taken on missing data. R8 AMENDMENT (NEW-20): the +0.465% data-gap reading — and with it the 'E-04 contamination is PnL-directional' observation — is sign-convention dependent; under the signed mark-to-market arithmetic the data-gap group reads −0.150% and the attributable group −0.313% (both negative, raw −0.463%, not near zero). The E-04 POLICY finding stands unchanged; only the PnL-directionality characterization is corrected.",
     evidence: "run_pure_futures_spread.py:127-144",
   },
   {
@@ -274,5 +274,11 @@ export const auditFindings: AuditFinding[] = [
     title: "Cross-interval spread is min(interval)-normalized — an edge model, not settlement cashflow",
     detail: "pair_pure_futures_spread() blends both legs to hourly rates and returns spread_pct = (short_hourly − long_hourly) × eff_interval with eff_interval = min(long_interval_h, short_interval_h) — for an HL-1h vs CEX-8h pair the result is a spread normalized to ONE HOUR, not the cash either leg pays at its next settlement. The model is deliberately sophisticated (hourly normalization, mark/index basis blend, settlement progress, venue-specific basis caps) and its own docstring admits it returns 'spread_pct over eff_interval (= min interval)'. Interpretation caveat for the final report: spread_pct × notional is NOT the funding cashflow for cross-interval pairs — per-leg accrual (leg notional × leg rate × held/interval) is, which is why the R7 invariant test computes funding per leg. All pairs in the current sample settle on the same 8h interval (empirically), so the R6-style estimate and the per-leg computation coincide here (both land on +1.60%); on a mixed-interval sample they would diverge. Needs mathematical certification if the project continues post-gate.",
     evidence: "core/cross_interval_funding.py:203-238 (docstring 'over eff_interval (= min interval)', eff_interval = min, spread = (short_hourly − long_hourly) × eff_interval); scan_pure_futures_spreads.py:316-341 (model consumption, annualization); journal entry rows long_interval_h/short_interval_h = 8.0/8.0 on all sampled pairs",
+  },
+  {
+    id: "NEW-20", severity: "P1", round: 8, area: "measurement instrument (watcher)", status: "confirmed",
+    title: "Spread-PnL instrument is not the position's mark-to-market — abs() + direction sign mis-signs closes",
+    detail: "estimate_spread_pnl computes sign_dir × (|open spread| − |close spread|) × qty, but the mechanical PnL of the fixed legs (long on long_venue, short on short_venue — the executor never flips legs by direction) is (S_open − S_close) × qty with S = short_venue_price − long_venue_price, SIGNED. The two agree only when sign_dir × S > 0 throughout the hold — an implicit assumption linking the funding-rate direction label to the price relationship that no code enforces and no test covers (the watcher tests exercise only forward pairs with S > 0). Empirically (R8 red-team, 12 closes): 5/12 violate — KR200 (forward, S<0) and CL (reverse, S>0) are PURE SIGN INVERSIONS (instrument = −true exactly; hand-verified leg arithmetic: KR200 true +$0.6185 vs instrument −$0.6185, CL true +$0.1069 vs instrument −$0.1069); SOPH, GPRO#1, ONG#2 cross zero during the hold and get clamped by abs(). Corrected aggregates (Σ per-close pct of trade_usd): strategy-attributable −0.424% → −0.313%; E-04 data-gap +0.465% → −0.150%; raw +0.041% → −0.463%. CONSEQUENCES: (1) the R4/R6 'E-04 contamination is PnL-directional' reading is largely a sign-convention artifact (both groups negative under signed arithmetic); (2) the R7 economic estimate's spread component becomes −0.313% (estimate −0.393% → −0.281%); funding and fee components are unaffected (per-leg mechanical formulas verified correct in all four sign combinations). The tower renders BOTH readings (instrument mirror + signed mark-to-market, labeled); the final A/B/C report carries the signed one as the corrected spread-PnL view. Post-gate fix: signed spread-PnL formula.",
+    evidence: "pure_futures_watcher.py:247-276 (sign + abs formula, docstring 'reverse: spread narrows -> loss'); executor never flips legs (no direction usage in leg construction — pure_futures_executor.py:345-350,700-703); tests test_pure_futures_watcher.py:270-312 cover only forward S>0; empirical join of 12 closes (ledger + open/close journal actions): 5 mis-signed, 3 crossings; hand-verified leg arithmetic for KR200 and CL",
   },
 ];

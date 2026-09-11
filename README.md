@@ -238,7 +238,11 @@ PnL, failed mark price cached as 0, four economic truths) · **R7 economic-invar
 audit** (funding math / quantity-notional / price-source — 4 findings: the price named
 “mark price” is the futures ticker/last price, trade_usd is not the notional of either
 leg, ledger trade_usd stays the requested value, cross-interval spread is
-min(interval)-normalized — an edge model, not settlement cashflow). R5's headline empirical
+min(interval)-normalized — an edge model, not settlement cashflow) · **R8 red-team closure
+audit** (sign convention / fee double-counting / quantity chain — two checks closed
+clean, the sign check found the last correctness defect: the spread-PnL instrument's
+abs()+direction-sign convention is not the position's mark-to-market — 5/12 closes
+mis-signed, corrected reading −0.313% attributable / −0.150% data-gap / −0.463% raw). R5's headline empirical
 result: across 261 real cycles the journal carries exactly one thresholds variant and
 trade_usd never leaves 500 — for every recorded dimension the Phase-2 sample
 **is one experiment (verified)**. R6's headline: the excluded funding component for
@@ -249,7 +253,12 @@ alongside, never as funding-arbitrage profitability. R7's headline: the rigorous
 per-leg re-measure (notional × rate × held/interval per leg) **confirms the funding
 materiality at the upper bound (+1.599 %)** and shows round-trip fees consume nearly
 all of it — the economic estimate reads −0.39 %, carried strictly as a diagnostic,
-never as a Phase-2 PnL instrument.
+never as a Phase-2 PnL instrument. R8's headline: **audit complete** — the funding
+sign convention is mechanically correct in every reachable combination, fees are
+counted exactly once, the quantity chain is consistent 15/15 — and the spread-PnL
+instrument itself mis-signs 5/12 closes (NEW-20); the corrected signed reading is
+−0.313 % attributable, and the final A/B/C report carries it as the corrected
+spread-PnL view.
 
 ## Exit classification — strategy-attributable vs E-04
 
@@ -274,7 +283,15 @@ raw, verified with ✓/✗ on the rendered totals), and a **survival** line
 
 Current finding: the raw near-zero exit PnL is an artifact — genuine
 strategy exits and E-04 data-gap exits pull in opposite directions, so the
-verdict must read both views.
+verdict must read both views. R8 amendment (NEW-20): under the signed
+mark-to-market arithmetic both groups read negative (−0.313 % / −0.150 %) and
+the raw is −0.463 % — the "PnL-directional contamination" was largely a
+sign-convention artifact of the instrument (abs spread + direction sign,
+which mis-signs a close whenever the price relationship disagrees with the
+funding-direction label or crosses zero). The exit-classification card now
+renders **both readings** (instrument mirror + signed corrected) with a
+per-exit signed column; the final A/B/C report carries the signed reading
+as the corrected spread-PnL view.
 
 ## Economic decomposition — R7 invariant test (diagnostic)
 

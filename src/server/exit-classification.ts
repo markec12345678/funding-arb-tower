@@ -43,7 +43,15 @@ export interface ClassifiedExit {
   category: ExitCategory;
   edge_pct: number | null; // -999 = the data-gap sentinel
   held_h: number | null;
-  pnl_pct: number | null; // watcher-formula spread PnL estimate
+  pnl_pct: number | null; // watcher-formula spread PnL estimate (instrument mirror)
+  // R8 (NEW-20): signed mark-to-market PnL — (S_open − S_close) × qty as % of
+  // trade_usd, S = short_venue_price − long_venue_price, SIGNED. The fixed legs
+  // (long on long_venue, short on short_venue) make this the mechanical PnL of
+  // the position; the instrument's abs()+direction-sign convention equals it
+  // only when sign_dir × S > 0 throughout the hold.
+  pnl_signed_pct: number | null;
+  mis_signed: boolean | null; // instrument reading ≠ signed reading (tolerance ½ of last digit)
+  spread_crossed: boolean | null; // S changed sign between open and close
   opened_at: string | null;
   closed_at: string | null;
 }
@@ -82,6 +90,17 @@ export interface ExitClassification {
     closed_normal: number; // classified closes, non-data-gap
     closed_data_gap: number; // classified closes, data-gap
     still_open: number | null; // ledger rows with status "open"
+  };
+  // R8 sign-convention audit (NEW-20): the instrument (watcher formula,
+  // abs spread + direction sign) vs the signed mark-to-market arithmetic.
+  // Registered after the red-team round found 5/12 closes mis-signed.
+  signed_check: {
+    closes: number;
+    mis_signed: number;
+    crossed: number;
+    instrument: { attributable_pct: number | null; contamination_pct: number | null; raw_pct: number | null };
+    signed: { attributable_pct: number | null; contamination_pct: number | null; raw_pct: number | null };
+    identity_signed: boolean | null; // attributable + contamination = raw on signed numbers
   };
   per_exit: ClassifiedExit[]; // newest first
   note: string;
@@ -126,6 +145,21 @@ function spreadPnlPct(pos: any, closeLongPx: number, closeShortPx: number): numb
   const openSpread = Math.abs(longPrice - shortPrice);
   const closeSpread = Math.abs(closeLongPx - closeShortPx);
   return (sign * (openSpread - closeSpread) * qty * 100) / tradeUsd;
+}
+
+// R8 signed mark-to-market (NEW-20): the mechanical PnL of the fixed legs —
+// long leg (close_long − open_long) + short leg (open_short − close_short)
+// = (S_open − S_close) × qty, S = short_venue_price − long_venue_price, signed.
+// No abs(), no direction sign: the executor never flips legs by direction.
+function signedPnlPct(pos: any, closeLongPx: number, closeShortPx: number): number | null {
+  const longPrice = num(pos?.long_price);
+  const shortPrice = num(pos?.short_price);
+  const qty = num(pos?.qty);
+  const tradeUsd = num(pos?.trade_usd);
+  if (longPrice === null || shortPrice === null || !qty || !tradeUsd) return null;
+  const sOpen = shortPrice - longPrice;
+  const sClose = closeShortPx - closeLongPx;
+  return ((sOpen - sClose) * qty * 100) / tradeUsd;
 }
 
 export function classifyExits(journalRaw: string | null, positionsRaw: string | null): ExitClassification | null {
@@ -211,6 +245,22 @@ export function classifyExits(journalRaw: string | null, positionsRaw: string | 
       pos && closeLongPx !== null && closeShortPx !== null
         ? spreadPnlPct(pos, closeLongPx, closeShortPx)
         : null;
+    const pnlSignedPct =
+      pos && closeLongPx !== null && closeShortPx !== null
+        ? signedPnlPct(pos, closeLongPx, closeShortPx)
+        : null;
+    let crossed: boolean | null = null;
+    if (pos) {
+      const lp = num(pos?.long_price);
+      const sp = num(pos?.short_price);
+      if (lp !== null && sp !== null && closeLongPx !== null && closeShortPx !== null) {
+        crossed = sp - lp > 0 !== closeShortPx - closeLongPx > 0;
+      }
+    }
+    const misSigned =
+      pnlPct !== null && pnlSignedPct !== null
+        ? Math.abs(pnlPct - pnlSignedPct) > 0.005
+        : null;
     const heldH =
       pos && num(pos?.opened_at) && num(pos?.closed_at)
         ? Math.max(0, (num(pos.closed_at)! - num(pos.opened_at)!) / 3_600_000)
@@ -223,6 +273,9 @@ export function classifyExits(journalRaw: string | null, positionsRaw: string | 
       edge_pct: edge,
       held_h: heldH === null ? null : Math.round(heldH * 10) / 10,
       pnl_pct: pnlPct === null ? null : Math.round(pnlPct * 1000) / 1000,
+      pnl_signed_pct: pnlSignedPct === null ? null : Math.round(pnlSignedPct * 1000) / 1000,
+      mis_signed: misSigned,
+      spread_crossed: crossed,
       opened_at: pos?.opened_at ? new Date(num(pos.opened_at)!).toISOString() : null,
       closed_at: pos?.closed_at ? new Date(num(pos.closed_at)!).toISOString() : null,
     });
@@ -277,6 +330,27 @@ export function classifyExits(journalRaw: string | null, positionsRaw: string | 
   const closedNormal = perExit.filter((e) => e.category !== "data_gap").length;
   const closedGap = perExit.filter((e) => e.category === "data_gap").length;
 
+  // R8 signed aggregates (NEW-20): same per-close denominators (pct of
+  // trade_usd, 3-dp rounded) as the instrument, computed from the signed
+  // mark-to-market instead of the abs+direction-sign convention.
+  const r2 = (x: number | null) => (x === null ? null : Math.round(x * 1000) / 1000);
+  const sumSigned = (sel: (e: ClassifiedExit) => boolean) => {
+    const xs = perExit
+      .filter(sel)
+      .map((e) => e.pnl_signed_pct)
+      .filter((p): p is number => p !== null);
+    return xs.length ? r2(xs.reduce((s, x) => s + x, 0)) : null;
+  };
+  const signedAttr = sumSigned((e) => e.category !== "data_gap");
+  const signedGap = sumSigned((e) => e.category === "data_gap");
+  const signedRaw = sumSigned(() => true);
+  const identitySigned =
+    signedAttr !== null && signedGap !== null && signedRaw !== null
+      ? Math.abs(signedAttr + signedGap - signedRaw) <= 0.002
+      : null;
+  const misSignedCount = perExit.filter((e) => e.mis_signed === true).length;
+  const crossedCount = perExit.filter((e) => e.spread_crossed === true).length;
+
   return {
     generated_at: new Date().toISOString(),
     journal_span: { from, to, cycles },
@@ -296,8 +370,24 @@ export function classifyExits(journalRaw: string | null, positionsRaw: string | 
       closed_data_gap: closedGap,
       still_open: positionsRaw === null ? null : stillOpen,
     },
+    signed_check: {
+      closes: perExit.length,
+      mis_signed: misSignedCount,
+      crossed: crossedCount,
+      instrument: {
+        attributable_pct: diagB.total_pnl_pct,
+        contamination_pct: gapB.total_pnl_pct,
+        raw_pct: rawB.total_pnl_pct,
+      },
+      signed: {
+        attributable_pct: signedAttr,
+        contamination_pct: signedGap,
+        raw_pct: signedRaw,
+      },
+      identity_signed: identitySigned,
+    },
     per_exit: perExit.slice(0, 30),
     note:
-      "Passive read-only classification — the runner and the measured system are untouched (0373f5d locked). PnL mirrors the watcher's estimate_spread_pnl (PRICE-spread convergence ± fees — realized funding cashflow is NOT observed in paper mode); close prices come from the executor's own leg fetch, independent of the scanner gap. Reporting contract: the strategy-attributable result is PRIMARY; raw and E-04 contamination are always shown alongside — never a single blended PnL. Naming rule (NEW-15): report as strategy-attributable paper SPREAD PnL, never as funding-arbitrage profitability.",
+      "Passive read-only classification — the runner and the measured system are untouched (0373f5d locked). PnL mirrors the watcher's estimate_spread_pnl (PRICE-spread convergence ± fees — realized funding cashflow is NOT observed in paper mode); close prices come from the executor's own leg fetch, independent of the scanner gap. Reporting contract: the strategy-attributable result is PRIMARY; raw and E-04 contamination are always shown alongside — never a single blended PnL. Naming rule (NEW-15): report as strategy-attributable paper SPREAD PnL, never as funding-arbitrage profitability. R8 (NEW-20): the instrument's abs()+direction-sign convention is NOT the position's mark-to-market — the signed column is the corrected arithmetic; both readings are shown, and the final A/B/C report carries the signed one as the corrected spread-PnL view.",
   };
 }
