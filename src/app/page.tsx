@@ -342,6 +342,9 @@ export default function Home() {
   // The observability rule: green requires LIVE DATA, not just a live
   // process. A stale/unknown data plane is RED even while the runner pid
   // still exists — "healthy" must never degrade to "the process didn't die".
+  // The pill names BOTH planes it certifies (process · data); the full
+  // three-plane breakdown (process / data / log) lives in the paper card —
+  // a single floating "LIVE" is ambiguous and was retired.
   const dataStale = !fr || fr.status === "stale" || fr.status === "unknown";
   const pill = dataStale
     ? {
@@ -356,7 +359,8 @@ export default function Home() {
       ? {
           cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
           icon: <Radio className="h-3.5 w-3.5 animate-pulse" />,
-          text: data?.mode === "remote" ? "GH collector LIVE" : "paper runner LIVE",
+          text:
+            data?.mode === "remote" ? "collector live · data fresh" : "runner live · data fresh",
         }
       : {
           cls: "border-rose-500/40 bg-rose-500/10 text-rose-400",
@@ -529,31 +533,90 @@ export default function Home() {
                   </div>
                 )}
                 {fr && (
-                  <div
-                    className={`mt-3 flex flex-wrap items-center gap-1.5 text-[11px] font-medium ${
-                      fr.status === "fresh"
-                        ? "text-emerald-400"
-                        : fr.status === "stale"
-                          ? "text-rose-400"
-                          : "text-zinc-500"
-                    }`}
-                  >
-                    <Activity className="h-3 w-3" />
-                    data age {age(fr.data_age_s)} · new cycle expected every{" "}
-                    {Math.round(fr.expected_cycle_s / 60)} min · stale after{" "}
-                    {Math.round(fr.stale_after_s / 60)} min without one
-                    {data.mode === "remote" && fr.branch_age_s !== null && (
-                      <span className="text-zinc-500">· paper-data branch {age(fr.branch_age_s)} old</span>
-                    )}
-                    {data.mode === "remote" && fr.lifecycle_age_s !== null && (
-                      <span className="text-zinc-500">
-                        · lifecycle snapshot {age(fr.lifecycle_age_s)} old (hourly)
+                  <div className="mt-3 rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2.5 font-mono text-[11px] tabular-nums">
+                    <div className="mb-1.5 font-sans text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                      status — three separate planes
+                    </div>
+                    {/* PROCESS plane — the pid/process fact on its own */}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="w-16 shrink-0 font-sans text-[10px] uppercase tracking-wider text-zinc-500">
+                        {data.mode === "remote" ? "collector" : "process"}
                       </span>
-                    )}
+                      {data.mode === "remote" ? (
+                        fr.branch_age_s === null ? (
+                          <span className="text-zinc-500">unknown</span>
+                        ) : fr.branch_age_s <= fr.stale_after_s ? (
+                          <span className="font-semibold text-emerald-400">LIVE</span>
+                        ) : (
+                          <span className="font-semibold text-rose-400">STALE</span>
+                        )
+                      ) : p?.runner?.alive ? (
+                        <span className="font-semibold text-emerald-400">LIVE</span>
+                      ) : (
+                        <span className="font-semibold text-rose-400">DOWN</span>
+                      )}
+                      {data.mode === "remote" ? (
+                        <span className="text-zinc-500">· branch pushed {age(fr?.branch_age_s)} ago</span>
+                      ) : (
+                        <span className="text-zinc-500">· pid {p?.runner?.pid ?? "—"}</span>
+                      )}
+                    </div>
+                    {/* DATA plane — the health gate */}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="w-16 shrink-0 font-sans text-[10px] uppercase tracking-wider text-zinc-500">
+                        data
+                      </span>
+                      {fr.status === "fresh" ? (
+                        <span className="font-semibold text-emerald-400">FRESH</span>
+                      ) : fr.status === "stale" ? (
+                        <span className="font-semibold text-rose-400">STALE</span>
+                      ) : (
+                        <span className="text-zinc-500">unknown</span>
+                      )}
+                      <span className="text-zinc-500">
+                        · newest cycle {age(fr.data_age_s)} old · every{" "}
+                        {Math.round(fr.expected_cycle_s / 60)} min · stale after {Math.round(fr.stale_after_s / 60)} min
+                      </span>
+                    </div>
+                    {/* LOG plane — informational only, never a health gate */}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="w-16 shrink-0 font-sans text-[10px] uppercase tracking-wider text-zinc-500">
+                        {data.mode === "remote" ? "snapshot" : "log"}
+                      </span>
+                      {data.mode === "remote" ? (
+                        <span
+                          className={
+                            fr.lifecycle_age_s !== null && fr.lifecycle_age_s > 7200
+                              ? "font-semibold text-amber-400"
+                              : "text-zinc-300"
+                          }
+                        >
+                          {fr.lifecycle_age_s === null ? "—" : `${age(fr.lifecycle_age_s)} old`}
+                        </span>
+                      ) : (
+                        <span
+                          className={
+                            fr.log_age_s !== null && fr.log_age_s > 900
+                              ? "font-semibold text-amber-400"
+                              : "text-zinc-300"
+                          }
+                        >
+                          {fr.log_age_s === null
+                            ? "—"
+                            : fr.log_age_s <= 900
+                              ? `fresh · ${age(fr.log_age_s)} old`
+                              : `stale · ${age(fr.log_age_s)} old`}
+                        </span>
+                      )}
+                      <span className="text-zinc-500">
+                        {data.mode === "remote"
+                          ? "· hourly lifecycle push — informational"
+                          : "· runner stdout flushes on events — informational, not a health gate"}
+                      </span>
+                    </div>
                   </div>
                 )}
                 <div className="mt-1 text-[11px] text-zinc-500">
-                  runner pid {p?.runner?.pid ?? "—"} · log updated {timeAgo(p?.runner?.log_updated_at)} ago ·
                   gates in paper mode: depth ✓ recheck ✓ margin (live-only)
                 </div>
               </Card>

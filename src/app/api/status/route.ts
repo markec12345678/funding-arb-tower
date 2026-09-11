@@ -493,7 +493,7 @@ const PLAN: { step: string; state: string }[] = [
   { step: "30d backtest BTC/ETH/SOL (4 CEX + HL): 0 executable trades, fee gate kills all 27,876 rows", state: "done" },
   { step: "E2E paper-flow integration test (scanner -> strategy -> recheck -> executor -> state -> watcher -> exit)", state: "done" },
   { step: "Phase 2: live paper validation A/B/C (runner live, gates active; day-3 interim, day-5-7 final)", state: "active" },
-  { step: "Phase 3 lab: execution-safety foundation + reconciliation + risk guardian (122 tests, golden contract v1.1.0)", state: "done" },
+  { step: "Phase 3 lab: execution-safety foundation + reconciliation + risk guardian (106 tests, golden contract v1.1.0)", state: "done" },
   { step: "Phase 3 lab: formal cross-layer safety gate — 13/13 scenarios, 135-journal retro-audit, PORT CANDIDATE", state: "done" },
   { step: "Production port of the safety layer into funding-arb (BLOCKED until Phase-2 A/B/C verdict)", state: "pending" },
   { step: "Minimal real-money test (1 pair, smallest notional, manual supervision)", state: "pending" },
