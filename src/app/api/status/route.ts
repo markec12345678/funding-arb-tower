@@ -13,6 +13,7 @@ import path from "path";
 // clean no-ops.
 import "@/server/gh-heartbeat";
 import "@/server/paper-snapshot";
+import { classifyExits, type ExitClassification } from "@/server/exit-classification";
 
 export const dynamic = "force-dynamic";
 
@@ -390,6 +391,7 @@ async function remotePaper() {
     journal,
     positions,
     analysis,
+    exits: classifyExits(collectorJournalRaw, collectorPositionsRaw),
     runner: {
       alive: fresh,
       pid: null,
@@ -508,6 +510,7 @@ export async function GET(req: NextRequest) {
     analysis: any;
     runner: any;
     lifecycle_age_s?: number | null;
+    exits: ExitClassification | null;
   };
   let repo: { branch: string; commits: { sha: string; message: string }[]; dirty: boolean };
 
@@ -527,6 +530,10 @@ export async function GET(req: NextRequest) {
       analysis: safe(() => JSON.parse(readFileSync(ANALYSIS, "utf-8")), null),
       runner: runnerStatus(),
       lifecycle_age_s: null,
+      exits: classifyExits(
+        safe(() => (existsSync(JOURNAL) ? readFileSync(JOURNAL, "utf-8") : null), null),
+        safe(() => (existsSync(POSITIONS) ? readFileSync(POSITIONS, "utf-8") : null), null)
+      ),
     };
     repo = repoStatus();
   }
@@ -590,6 +597,7 @@ export async function GET(req: NextRequest) {
       aborts: paperBlock.journal.aborts,
       totals: paperBlock.journal.totals,
       positions: paperBlock.positions,
+      exits: paperBlock.exits,
     },
     backtest: paperBlock.analysis,
     pipeline: pipelineClean,

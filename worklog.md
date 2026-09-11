@@ -1371,3 +1371,24 @@ Stage Summary:
 - Audit phase formally closed with a durable record: register 26 findings + matrix 21 cells + refined hardening plan + regression proof, all synced to GitHub.
 - NEW empirical datum for the Phase-2 verdict: 45% of paper closes are edge=-999 data-gap closes (E-04 firing in the wild) — exit statistics must be read with this contamination in mind.
 - Next milestone per the review: Phase-2 A/B/C conclusion — no new features, no refactors, no funding-arb changes until the gate.
+
+---
+Task ID: 6
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Build the passive exit-classification evidence layer (review direction: classify every close by cause WITHOUT touching the runner, so the Phase-2 A/B/C verdict can be read on raw AND diagnostic baselines).
+
+Work Log:
+- Data audit first (read-only): watcher.jsonl does not exist (watcher is not part of the paper loop — stop_loss/funding categories stay in the taxonomy and count 0); all 11 journal closes carry BOTH legs' ref_price in executed trades; positions.json closed records carry open prices/qty/times; exit threshold 0.01 is present per cycle in thresholds.exitThresholdPct; scan_total>=50 filter keeps all 11 closes.
+- NEW src/server/exit-classification.ts — pure function classifyExits(journalRaw, positionsRaw): full-journal scan (not the 120-line funnel window), successful closes deduped by position_id (failed closes retry later cycles), categories edge_collapse / stop_loss / funding_condition / safety / data_gap / other (edge=-999 sentinel → data_gap; finite edge ≤ per-cycle exitThresholdPct → edge_collapse; above → other), PnL mirrors the watcher's estimate_spread_pnl verbatim semantics (sign × (open_spread − close_spread) × qty / trade_usd × 100) with close prices from the executor's own leg fetch (independent of the scanner gap), held_h from ledger timestamps, raw + diagnostic baselines with avg/total PnL, per-exit rows newest-first.
+- Route wiring: /api/status paper.exits in BOTH modes — local reads JOURNAL+POSITIONS raw; remote classifies the collector journal+positions (github-actions files already fetched). Remote verified structurally: 227 collector cycles, 0 closes — a data reality (stateless collector: 202 opens, positions never persist across runs), not a classifier bug.
+- UI: new "exit classification — E-04 contamination split" card in page.tsx (after the positions ledger, inside the live-data block): raw vs diagnostic baseline panels, category rows with share bars (data_gap highlighted red when count>0), scrollable per-exit table (closed/base/cause/edge/held/pnl), footer note on the two-view verdict requirement. Status type extended with the exits block.
+- MEASURED RESULT (the review's question answered): the contamination is DIRECTIONAL, not just count-based. Raw baseline: 11 closes, total +0.062% (near zero). Diagnostic baseline (data-gap held apart): 6 closes, total -0.403% (avg -0.067%). Data-gap closes: 5, total +0.465% (avg +0.093%). The raw near-zero is an artifact of mixing two groups pulling in opposite directions — reading only the raw number would conclude "breaks even on exits"; the split shows genuine strategy exits slightly negative while exits taken on missing data happen to be positive.
+- Docs: README new "Exit classification" section; docs/funding-arb-audit.md R4-closure empirical section extended with the directional-contamination measurement + pointer to the continuously-rendered tower card.
+- Verification: lint exit 0; API local (11 closes, raw/diag/baselines verified) + API remote (structural); Agent Browser E2E: card found, both baseline panels, 11 per-exit rows, category counts n=6/0/0/0/5/0, data_gap row red-highlighted, zero page/console errors, 1440px + 401px no horizontal overflow; screenshot tool-results/exit-classification.png.
+- funding-arb integrity: CLEAN at 0373f5d before and after — the classifier is tower-side only, zero changes to the measured system, runner untouched (PID 12976 alive, journal fresh).
+
+Stage Summary:
+- The passive evidence layer the review asked for is live: every new close is now classified by cause automatically, and the two baselines (raw + diagnostic) are rendered continuously on the tower.
+- New measured fact for the A/B/C verdict: E-04 contamination is PnL-directional (genuine -0.403% vs data-gap +0.465%; raw +0.062% is a mixing artifact) — the verdict MUST be computed on both views, which the tower now does continuously.
+- Day-5/7 readiness: X normal exits vs Y E-04-contaminated exits is now a live dashboard number, not a manual journal analysis.

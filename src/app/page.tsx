@@ -73,6 +73,30 @@ type Status = {
     aborts: { reason: string; count: number }[];
     totals: Record<string, number>;
     positions: any[];
+    exits: {
+      generated_at: string;
+      journal_span: { from: string | null; to: string | null; cycles: number };
+      categories: {
+        category: string;
+        count: number;
+        share: number;
+        avg_held_h: number | null;
+        avg_pnl_pct: number | null;
+        total_pnl_pct: number | null;
+      }[];
+      raw_baseline: { closes: number; avg_pnl_pct: number | null; total_pnl_pct: number | null };
+      diagnostic_baseline: { closes: number; avg_pnl_pct: number | null; total_pnl_pct: number | null };
+      per_exit: {
+        position_id: string;
+        base: string;
+        category: string;
+        edge_pct: number | null;
+        held_h: number | null;
+        pnl_pct: number | null;
+        closed_at: string | null;
+      }[];
+      note: string;
+    } | null;
   };
   backtest: any;
   pipeline: {
@@ -156,6 +180,35 @@ const verdictDot: Record<MatrixVerdict, string> = {
   safe: "bg-emerald-400",
   ambiguous: "bg-amber-400",
   gap: "bg-red-400",
+};
+
+/* ---- Exit classification (passive E-04 contamination split) ---- */
+
+const exitCategoryLabel: Record<string, string> = {
+  edge_collapse: "genuine edge collapse",
+  stop_loss: "PnL stop-loss (watcher)",
+  funding_condition: "funding condition (watcher)",
+  safety: "manual / system safety",
+  data_gap: "E-04 data-gap (edge=-999)",
+  other: "other (edge above threshold)",
+};
+
+const exitCategoryBadge: Record<string, string> = {
+  edge_collapse: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
+  stop_loss: "border-orange-500/40 bg-orange-500/10 text-orange-400",
+  funding_condition: "border-teal-500/40 bg-teal-500/10 text-teal-400",
+  safety: "border-amber-500/40 bg-amber-500/10 text-amber-400",
+  data_gap: "border-red-500/40 bg-red-500/10 text-red-400",
+  other: "border-zinc-600/60 bg-zinc-700/30 text-zinc-400",
+};
+
+const exitCategoryDot: Record<string, string> = {
+  edge_collapse: "bg-emerald-400",
+  stop_loss: "bg-orange-400",
+  funding_condition: "bg-teal-400",
+  safety: "bg-amber-400",
+  data_gap: "bg-red-400",
+  other: "bg-zinc-500",
 };
 
 function Card({
@@ -698,6 +751,136 @@ export default function Home() {
                         ))}
                     </tbody>
                   </table>
+                </div>
+              </Card>
+            )}
+
+            {/* Exit classification — passive E-04 contamination split (read-only) */}
+            {p.exits && (
+              <Card title="exit classification — E-04 contamination split" icon={<TrendingDown className="h-4 w-4" />}>
+                <div className="space-y-4">
+                  <p className="text-[11px] leading-relaxed text-zinc-500">
+                    Passive evidence classification over {p.exits.journal_span.cycles} real cycles —
+                    every close sorted by cause, raw vs diagnostic baseline. The runner and the
+                    measured system are untouched; PnL mirrors the watcher's spread-PnL estimate.
+                  </p>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                        raw baseline
+                      </div>
+                      <div className="mt-1 font-mono text-lg tabular-nums text-zinc-100">
+                        {p.exits.raw_baseline.closes} closes
+                      </div>
+                      <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
+                        avg {pct(p.exits.raw_baseline.avg_pnl_pct)} · total {pct(p.exits.raw_baseline.total_pnl_pct)}
+                      </div>
+                      <div className="mt-1 text-[10px] text-zinc-600">what the system actually did</div>
+                    </div>
+                    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                        diagnostic baseline
+                      </div>
+                      <div className="mt-1 font-mono text-lg tabular-nums text-zinc-100">
+                        {p.exits.diagnostic_baseline.closes} closes
+                      </div>
+                      <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
+                        avg {pct(p.exits.diagnostic_baseline.avg_pnl_pct)} · total {pct(p.exits.diagnostic_baseline.total_pnl_pct)}
+                      </div>
+                      <div className="mt-1 text-[10px] text-zinc-600">data-gap exits held apart</div>
+                    </div>
+                  </div>
+
+                  <ul className="space-y-1.5">
+                    {p.exits.categories.map((c) => (
+                      <li
+                        key={c.category}
+                        className={`min-w-0 rounded-lg border p-2.5 ${
+                          c.category === "data_gap" && c.count > 0
+                            ? "border-red-500/30 bg-red-500/5"
+                            : "border-zinc-800/70 bg-zinc-900/40"
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${exitCategoryDot[c.category] ?? "bg-zinc-500"}`} aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate text-xs text-zinc-300" title={exitCategoryLabel[c.category] ?? c.category}>
+                            {exitCategoryLabel[c.category] ?? c.category}
+                          </span>
+                          <span className="shrink-0 font-mono text-[11px] tabular-nums text-zinc-400">
+                            n={c.count} · {(c.share * 100).toFixed(0)}%
+                          </span>
+                          <span className="shrink-0 font-mono text-[11px] tabular-nums text-zinc-500">
+                            held {(c.avg_held_h ?? 0).toFixed(1)}h
+                          </span>
+                          <span
+                            className={`shrink-0 font-mono text-[11px] tabular-nums ${
+                              (c.total_pnl_pct ?? 0) < 0 ? "text-rose-400" : (c.total_pnl_pct ?? 0) > 0 ? "text-emerald-400" : "text-zinc-500"
+                            }`}
+                          >
+                            avg {pct(c.avg_pnl_pct)} · tot {pct(c.total_pnl_pct)}
+                          </span>
+                        </div>
+                        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded bg-zinc-800">
+                          <div
+                            className={`h-full ${exitCategoryDot[c.category] ?? "bg-zinc-500"}`}
+                            style={{ width: `${Math.max(c.share > 0 ? 2 : 0, c.share * 100)}%` }}
+                          />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+
+                  <div className="max-h-60 overflow-y-auto custom-scroll">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-zinc-900 text-zinc-500">
+                        <tr className="text-left">
+                          <th className="py-1.5 pr-2 font-medium">closed</th>
+                          <th className="py-1.5 pr-2 font-medium">base</th>
+                          <th className="py-1.5 pr-2 font-medium">cause</th>
+                          <th className="py-1.5 pr-2 font-medium text-right">edge</th>
+                          <th className="py-1.5 pr-2 font-medium text-right">held</th>
+                          <th className="py-1.5 font-medium text-right">pnl</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono tabular-nums text-zinc-300">
+                        {p.exits.per_exit.map((e) => (
+                          <tr key={e.position_id} className="border-t border-zinc-800/60">
+                            <td className="py-1.5 pr-2 text-zinc-500" title={e.position_id}>
+                              {e.closed_at ? new Date(e.closed_at).toLocaleString("sl-SI", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
+                            </td>
+                            <td className="py-1.5 pr-2">{e.base || "—"}</td>
+                            <td className="py-1.5 pr-2">
+                              <span
+                                className={`rounded-full border px-1.5 py-px text-[10px] ${exitCategoryBadge[e.category] ?? exitCategoryBadge.other}`}
+                                title={exitCategoryLabel[e.category] ?? e.category}
+                              >
+                                {e.category === "data_gap" ? "data-gap" : e.category}
+                              </span>
+                            </td>
+                            <td className="py-1.5 pr-2 text-right text-zinc-400">
+                              {e.edge_pct === null ? "—" : e.edge_pct === -999 ? "gap" : pct(e.edge_pct, 3)}
+                            </td>
+                            <td className="py-1.5 pr-2 text-right text-zinc-400">
+                              {e.held_h === null ? "—" : `${e.held_h.toFixed(1)}h`}
+                            </td>
+                            <td
+                              className={`py-1.5 text-right ${(e.pnl_pct ?? 0) < 0 ? "text-rose-400" : (e.pnl_pct ?? 0) > 0 ? "text-emerald-400" : "text-zinc-500"}`}
+                            >
+                              {e.pnl_pct === null ? "—" : pct(e.pnl_pct, 3)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <p className="border-t border-zinc-800/60 pt-3 text-[11px] leading-relaxed text-zinc-500">
+                    E-04 (runner closes on a missing scanner row) is measurably firing in this baseline —
+                    the A/B/C verdict must read exit statistics on both views. Watcher-driven categories
+                    (stop-loss, funding) stay in the taxonomy and count 0 while the watcher is not part
+                    of the paper loop.
+                  </p>
                 </div>
               </Card>
             )}
