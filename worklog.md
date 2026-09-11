@@ -1558,3 +1558,19 @@ Stage Summary:
 - The link = Wintermute NODE Trading (institutional OTC RFQ platform), not an exchange and not a perp venue: the current funding-arb bot cannot run there.
 - Verdict: makes sense for bigger earnings ONLY as a measured parallel track (qualify → measure RFQ spreads 30–60 days at zero capital → pre-registered gate → minimal defined-risk pilot). Strongest routes: options-based yield (documented on-platform earnings density) and forward basis-lock (best fit with our scanner's funding data).
 - The full plan is now versioned on GitHub (docs/wintermute-node-analysis.md) before any work begins, with audit invariants carried into the future OTC journal schema.
+
+---
+Task ID: 15
+Agent: main (Z.ai Code)
+Date: 2026-09-11 (session date)
+Task: Record the user's decision on the Wintermute NODE plan (user's proposal vs the W0–W4 plan — agent decides per user instruction) and fold the user's three refinements into the plan document as binding parts. Zero code, zero capital, funding-arb untouched.
+
+Work Log:
+- Decision made and recorded: the W0–W4 phased track is adopted (the user's own framing endorsed it as the more disciplined conclusion — NODE-the-OTC-product separated from Wintermute-the-quant-engine; no direct integration build).
+- docs/wintermute-node-analysis.md: new §0 Decision record — (1) Route B elevated to PRIMARY research direction with the canonical pipeline (CEX funding observations → implied carry → forward RFQ quote → compare → ALL-IN EDGE) and the long-term frame funding-arb → multi-strategy arbitrage/quant engine (research direction, not a feature sprint); (2) epistemic rule — the −0.281% estimate may only be phrased as "Na trenutnem vzorcu in uporabljeni rekonstrukciji ni dokaza za pozitiven edge", never as a real-trading loss figure; (3) unit discipline — −0.281% is Σ(per-close % of trade_usd) over the 7 attributable closes = −$1.41 TOTAL across all 7 closes (the user's −$1.41 figure is correct as the total, mislabeled per-cycle); per-cycle mean ≈ −0.040% ≈ −$0.20 per $500 close; per-cycle reading would overstate the loss 7×. Status board recorded (funding-arb: audit GREEN / baseline GREEN / edge unproven YELLOW; NODE: research GREEN / zero-capital GREEN / W0-W1 GREEN / not-a-replacement YELLOW / no-capital-until-RFQ-edge RED; long-term: multi-strategy engine). Doc status header + §7 verdict + W1 forward-basis tracker (primary deliverable) amended accordingly.
+- README: decision paragraph added to the Wintermute section (W0–W4 adopted, Route B primary, canonical phrasing, unit note).
+- No code/schema/API/UI changes; docs-only commit; funding-arb integrity untouched @ 0373f5d; paper runner unaffected.
+
+Stage Summary:
+- The Wintermute track is now formally DECIDED and pre-registered on GitHub: W0–W4 with Route B (implied-carry vs forward-price) as the primary research direction; multi-strategy quant engine is the long-term frame; epistemic + unit rules for the current numbers are canonical.
+- Next physical action belongs to the account owner: W0 onboarding (user credentials). Nothing gets built until the W0 capability sheet and W1 RFQ measurements exist; funding-arb continues to its day-5–7 Phase-2 verdict undisturbed.

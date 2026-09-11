@@ -350,6 +350,14 @@ audit’s measurement invariants (NEW-16/17/18/20 → I-1…I-6) carried into th
 journal schema. Research-only: funding-arb stays locked at `0373f5d`, the tower stays
 read-only, no capital before the W2 gate.
 
+**Decision recorded 2026-09-11 (§0 of the doc):** the W0–W4 track is adopted; Route B
+(implied-carry vs forward-price scanner: CEX funding observations → implied carry →
+forward RFQ quote → compare → all-in edge) is the primary research direction and the
+seed of a long-term multi-strategy arbitrage/quant engine. Canonical result phrasing:
+*on the current sample and reconstruction there is no proof of a positive edge* (the
+−0.281% figure is a diagnostic aggregate — −$1.41 total across the 7 attributable
+closes, ≈ −$0.20 per $500 cycle).
+
 ## Disclaimer
 
 Educational / research tooling around funding-rate arbitrage — not financial

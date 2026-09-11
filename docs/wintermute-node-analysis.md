@@ -3,6 +3,8 @@
 > **Status:** research plan only — zero code written, zero capital committed, funding-arb
 > stays locked at `0373f5d`. This document exists so the plan is on GitHub *before* we
 > decide whether to work on it. Decision owner: user. Research date: 2026-09-11.
+> **Decision recorded 2026-09-11 → §0: the W0–W4 track is adopted; Route B (implied
+> carry vs forward price) is the primary research direction.**
 >
 > **POVZETEK (SL):** Povezava, ki si jo delil, je prijavna povezava za **Wintermute NODE
 > Trading** (`trade.wintermute.com`) — institucionalno OTC platformo enega največjih
@@ -17,6 +19,65 @@
 > dejansko zaslužijo. Odločilni predpogoj: kvalifikacija računa + 30–60 dni merjenja RFQ
 > spreadov, preden se premakne kakšen kapital. Podroben verižni sklep v razdelku 7,
 > načrt s fazami in kill-kriteriji v razdelku 8.
+
+---
+
+## 0. Decision record — 2026-09-11 (user decision, recorded before any work)
+
+Two directions were on the table: (a) a direct push into a Wintermute/NODE
+integration, (b) the phased, zero-capital track in §8. **Decision: (b) — the W0–W4
+plan is adopted as written.** Reason recorded by the decision owner: it separates
+NODE-the-OTC-product from Wintermute-the-quant-engine, and refuses to move capital
+or code before evidence.
+
+Three refinements from the decision discussion are now **binding parts of this plan**:
+
+1. **Route B is elevated to the primary research direction.** The interesting object
+   is not a funding bot and not a NODE bot — it is a scanner for the gap between
+   *implied carry* and the *actual market price of the forward*:
+
+   ```
+   CEX funding observations   (funding-arb scanner — already built)
+        ↓
+   implied carry              (funding-implied forward premium)
+        ↓
+   forward RFQ quote          (W1 journal — to be built, zero capital)
+        ↓
+   compare
+        ↓
+   ALL-IN EDGE
+   ```
+
+   Long-term, this is the seed of a **multi-strategy arbitrage / quant engine**
+   (funding spread + implied-vs-priced carry as the first two strategy modules).
+   It is a *research direction*, not a feature sprint.
+
+2. **Epistemic rule for the current number (canonical formulation).** The −0.281 %
+   economic estimate is a diagnostic reconstruction — funding in paper mode is not a
+   realized cashflow. The only permitted phrasing of the result:
+
+   > “Na trenutnem vzorcu in uporabljeni rekonstrukciji ni dokaza za pozitiven edge.”
+
+   Never “the strategy loses −0.281 % in real trading”.
+
+3. **Unit discipline for the −0.281 % figure.** The aggregate is
+   Σ(per-close % of trade_usd) over the **7** strategy-attributable closes — i.e.
+   **−$1.41 in total across all 7 closes** (not per cycle). Per single $500 cycle the
+   mean is ≈ **−0.040 % ≈ −$0.20**. Both numbers are diagnostic only; rule 2 applies
+   to both. (Recorded because a per-cycle reading of the aggregate would overstate
+   the loss by 7×.)
+
+**Status board at decision time:**
+
+| track | status |
+|---|---|
+| funding-arb | GREEN audit complete · GREEN baseline locked @ `0373f5d` · YELLOW economic edge NOT proven |
+| Wintermute/NODE | GREEN worth researching · GREEN zero capital · GREEN W0/W1 justified · YELLOW not a replacement for funding-arb · RED no real capital until RFQ measurements show an edge |
+| long term | funding-arb → multi-strategy arbitrage / quant engine (research direction, not a feature sprint) |
+
+Nothing else changes: funding-arb stays locked, the tower stays read-only, no
+capital before the W2 gate, and W0 still requires the account owner's own onboarding
+(the credentials are the user's, not the bot's).
 
 ---
 
@@ -233,6 +294,10 @@ Hence the plan below.
   complementary: funding-arb measures realized funding; NODE lets that measurement be
   monetized via forwards *if* the desk under-prices it.
 
+Binding per the §0 decision record (2026-09-11): the W0–W4 track is adopted; Route B
+is the primary research direction; the long-term frame is funding-arb → multi-strategy
+arbitrage / quant engine.
+
 ## 8. The plan (phases, gates, kill criteria)
 
 > Naming: **W-phases** to keep them distinct from funding-arb phases (P0–P3).
@@ -259,7 +324,7 @@ Systematic RFQ sampling, journaled exactly like the funding-arb paper runner
    (min, 2×, 5×); 2–4 quotes/day spanning calm and stressed hours; each record:
    `ts, instrument, side, size, quote_px, ref_mid (Binance+OKX composite), all_in_bps,
    fee_equivalent_bps, quote_age_s`;
-2. **Forward basis tracker** — 1m and 3m forward mids vs funding-implied premium:
+2. **Forward basis tracker** (**primary W1 deliverable** — §0 decision record) — 1m and 3m forward mids vs funding-implied premium:
    `implied_funding_apr = (forward_annualized_premium)`, benchmarked against the
    funding-arb scanner’s realized funding series for the same underlying;
    the edge signal is `realized_implied_gap = realized_funding_apr − implied_apr`,
