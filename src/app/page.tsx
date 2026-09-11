@@ -11,6 +11,7 @@ import {
   CircleDot,
   Clock,
   ExternalLink,
+  FlaskConical,
   Github,
   Grid3x3,
   Layers,
@@ -39,6 +40,7 @@ import {
   type MatrixGroup,
   type MatrixVerdict,
 } from "@/data/failure-matrix";
+import EngineView from "@/components/quant-engine/EngineView";
 
 type Freshness = {
   data_age_s: number | null;
@@ -380,6 +382,11 @@ export default function Home() {
   const [data, setData] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // View switch: the tower now hosts two windows — the funding-arb live
+  // monitor (measurement) and the quant-arb-engine research monitor
+  // (exploration, read-only, synthetic data). Both stay on the single /
+  // route; the footer keeps its sticky contract either way.
+  const [view, setView] = useState<"engine" | "monitor">("engine");
 
   const load = useCallback(async () => {
     try {
@@ -457,11 +464,12 @@ export default function Home() {
                 funding-arb <span className="text-zinc-500">· command center</span>
               </h1>
               <p className="text-xs text-zinc-500">
-                P0 → backtest → paper A/B/C → phase-3 safety lab · prove the edge, then earn the port
+                two systems, one command center — funding-arb measures reality (locked @ 0373f5d) ·
+                quant-arb-engine explores the next generation (paper only)
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {data && (
               <span
                 className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${
@@ -507,18 +515,64 @@ export default function Home() {
           </div>
         </header>
 
-        {!loaded && (
+        {/* View switcher — live monitor (funding-arb) vs quant engine (research, read-only) */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex items-center gap-1 rounded-xl border border-zinc-800 bg-zinc-900/70 p-1">
+            <button
+              type="button"
+              aria-pressed={view === "engine"}
+              onClick={() => setView("engine")}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                view === "engine"
+                  ? "border-teal-500/40 bg-teal-500/15 text-teal-300"
+                  : "border-transparent text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              <FlaskConical className="h-3.5 w-3.5" />
+              quant engine
+              <span className="rounded-full border border-teal-500/40 bg-teal-500/10 px-1.5 py-px text-[9px] font-semibold uppercase text-teal-400">
+                new
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={view === "monitor"}
+              onClick={() => setView("monitor")}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                view === "monitor"
+                  ? "border-zinc-400 bg-zinc-100 text-zinc-900"
+                  : "border-transparent text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              <Radio className="h-3.5 w-3.5" />
+              live monitor
+              {view === "monitor" && data && !dataStale && (
+                <span
+                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
+                  aria-hidden="true"
+                />
+              )}
+            </button>
+          </div>
+          <span className="text-[11px] text-zinc-600">
+            {view === "engine"
+              ? "engine view · synthetic research data · read-only"
+              : "monitor view · live paper-validation data"}
+          </span>
+        </div>
+
+        {view === "monitor" && !loaded && (
           <div className="flex items-center gap-2 text-sm text-zinc-500">
             <Loader2 className="h-4 w-4 animate-spin" /> loading pipeline status…
           </div>
         )}
-        {error && loaded && !data && (
+        {view === "monitor" && error && loaded && !data && (
           <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-300">
             Status API unavailable: {error}
           </div>
         )}
 
-        {data && (
+        {view === "monitor" && data && (
           <>
             {/* KPI row */}
             <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
@@ -1459,6 +1513,10 @@ export default function Home() {
           </>
         )}
 
+        {/* quant-arb-engine — the parallel research engine, monitored read-only */}
+        {view === "engine" && <EngineView />}
+
+        {view === "monitor" && (<>
         {/* Audit findings register — static data, independent of the status API */}
         <Card title="Audit findings" icon={<ShieldAlert className="h-4 w-4" />}>
           <div className="space-y-4">
@@ -1667,12 +1725,13 @@ export default function Home() {
             </p>
           </div>
         </Card>
+        </>)}
       </div>
 
       {/* Sticky footer */}
       <footer className="mt-auto border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-600">
-          <span>funding-arb paper validation · P0 hardened · 539 + 106 phase-3 tests · atomic ledgers · fail-closed gates</span>
+          <span>funding-arb measures (locked @ 0373f5d) · quant-arb-engine explores (synthetic · paper only) · tower observes read-only</span>
           <span className="font-mono">educational / research — not financial advice</span>
         </div>
       </footer>

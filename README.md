@@ -1,11 +1,14 @@
 # funding-arb · command center (tower)
 
-Live operations dashboard for the [funding-arb](https://github.com/markec12345678/funding-arb)
-paper-validation pipeline: backtest verdict, the paper-trading funnel, runner
-health, the delivery pipeline (GitHub · Vercel · snapshots) and the phase-3
-execution-safety certification — all in one page that refreshes every 10 s.
+Live operations dashboard with **two views on one page**: the **live monitor** for the
+[funding-arb](https://github.com/markec12345678/funding-arb) paper-validation pipeline
+(backtest verdict, paper-trading funnel, runner health, delivery pipeline, phase-3 safety
+certification — 10 s refresh) and the **quant engine view** — a read-only monitor of the
+parallel [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) research
+repo (multi-seed machinery validation, ALL-IN EDGE waterfall, NO-GO discipline).
 
 ![desktop](./data-dashboard-desktop.png)
+![engine view](./engine-view-desktop.png)
 
 *Built with Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · shadcn/ui.
 Deployable to Vercel with zero configuration and zero environment variables.*
@@ -20,8 +23,8 @@ This dashboard is one of four coordinated repositories:
 |---|---|---|
 | [`funding-arb`](https://github.com/markec12345678/funding-arb) | the trading system — scanner, strategy, executor, gates | **locked** at `0373f5d` during Phase-2 A/B/C paper validation (539 tests, CI green) |
 | [`phase3-lab`](https://github.com/markec12345678/phase3-lab) | execution-safety laboratory — 4-layer separation, formal safety gate | **certified**: 106/106 tests (foundation 80 · reconciliation 19 · risk guardian 23 · cross-layer 13), golden contract v1.1.0, PORT CANDIDATE — port blocked by Phase-2 verdict |
-| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, forward-basis strategy on a deterministic mock RFQ world | **paper/research only** — built 2026-09-11 per its decision record; the old system measures reality, this one explores the next generation |
-| **funding-arb-tower** (this repo) | command center — reads the pipeline, never trades | runs sandbox-local and/or deployed |
+| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, forward-basis strategy on a deterministic mock RFQ world | **v0.2.0 · paper/research only** — research layer added (40-seed sweep, realized-vs-locked validation, z-gate calibration); monitored read-only from this tower's engine view |
+| **funding-arb-tower** (this repo) | command center — reads both pipelines, never trades | runs sandbox-local and/or deployed |
 
 The validation ladder the dashboard reflects:
 
@@ -110,7 +113,12 @@ elsewhere:
   dataset (journal, positions, config, logs) to the `paper-data` branch via
   git plumbing — the funding-arb working tree is never touched (sandbox only).
 - `src/app/api/status/route.ts` — the status API (both modes, see above).
-- `src/app/page.tsx` — the dashboard (client component, 10 s polling).
+- `src/app/api/engine/overview/route.ts` — the quant-arb-engine monitor API (read-only;
+  local sandbox checkout → GitHub raw fallback, 60 s remote cache).
+- `src/app/page.tsx` — the dashboard (client component, 10 s polling) with the
+  monitor/engine view switcher.
+- `src/components/quant-engine/EngineView.tsx` — the engine view (60 s polling).
+- `src/lib/engine-types.ts` — the engine artifact contract (shared by API + view).
 - `scripts/push-paper-snapshot.sh` — the plumbing-based snapshot pusher.
 
 ## Quickstart
@@ -185,9 +193,14 @@ carries live runtime numbers.
 ```
 src/
   app/
-    page.tsx                  # the dashboard (client, 10 s polling)
+    page.tsx                  # the dashboard (client, 10 s polling, view switcher)
     layout.tsx                # metadata + fonts
     api/status/route.ts       # the status API — local/remote dual data plane
+    api/engine/overview/route.ts  # quant-arb-engine monitor API (read-only, dual data plane)
+  components/quant-engine/
+    EngineView.tsx            # the engine view — sweep stats, waterfall, NO-GO strip
+  lib/
+    engine-types.ts           # engine artifact contract (run-latest / sweep-latest)
   data/
     audit-findings.ts         # audit findings register (static data — the locked-repo audit)
     failure-matrix.ts          # R4 state-by-state failure matrix (21 ambiguity cells + root causes)
@@ -335,6 +348,38 @@ complete pre-change audit trail, the refined hardening-pass plan
 (M-01+M-05 as one submit contract, M-02+M-03 as one safety combination,
 M-04 terminal state machine) and the re-run-the-matrix regression proof
 live in `docs/funding-arb-audit.md` ("R4 closure").
+
+## Quant engine view — the parallel research track, monitored
+
+The **quant engine** tab (default on load) is the tower's read-only window into
+`quant-arb-engine` — the sibling repo that explores Route B (forward basis-lock)
+on a deterministic synthetic world. It renders exactly what the engine's
+research artifacts carry, with the engine's own epistemic note traveling with
+the data:
+
+- **Machinery validation (40-seed sweep)** — pooled distributions for PnL % of
+  notional, realized−locked bps (the dated-forward lock through settlement:
+  −2.93 bps mean ≈ the desk spot half-spread on exit, well inside the
+  pre-registered 8 bps buffer) and locked−perp-alternative APR (the
+  route-choice metric); risk-cap reject histogram; per-seed realized PnL
+  chart + table.
+- **z-gate calibration** — the honest estimator diagnostic: 98.7 % of settled
+  entries drifted past 2× the instantaneous EWMA σ over the 90-day window
+  (regime drift dominates). Reported as-is, never tuned — it sizes the
+  question of how honest the waterfall's k·σ·T/365 buffer line is.
+- **Latest run (end-to-end)** — the representative seed's pipeline funnel,
+  settled positions with locked vs realized bps, and the verbatim unit rule.
+- **ALL-IN EDGE waterfall** — the last gated opportunity decomposed line by
+  line (gross → entry/exit fees → carry σ buffer → slippage → execution risk
+  → net), with both pre-registered gates shown with their actual values.
+- **NO-GO strip (binding)** — live trading, NODE auto-trading, real capital,
+  FIX production, ML money decisions, portfolio allocator: never built.
+
+`GET /api/engine/overview` follows the same dual data plane as `/api/status`:
+local sandbox checkout (`/home/z/quant-arb-engine`, read directly, includes
+uncommitted sweeps) → GitHub raw fallback (`raw.githubusercontent.com/…/
+research/artifacts/{run,sweep}-latest.json`, 60 s local-memory cache). The
+tower never writes to the engine, never triggers runs, holds no engine state.
 
 ## Parallel research track — Wintermute NODE (plan only, no code)
 
