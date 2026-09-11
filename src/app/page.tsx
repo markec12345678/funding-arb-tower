@@ -86,6 +86,19 @@ type Status = {
       }[];
       raw_baseline: { closes: number; avg_pnl_pct: number | null; total_pnl_pct: number | null };
       diagnostic_baseline: { closes: number; avg_pnl_pct: number | null; total_pnl_pct: number | null };
+      e04_contamination: { closes: number; avg_pnl_pct: number | null; total_pnl_pct: number | null };
+      attribution_check: {
+        attributable_total_pct: number | null;
+        contamination_total_pct: number | null;
+        raw_total_pct: number | null;
+        consistent: boolean | null;
+      };
+      survival: {
+        opened: number | null;
+        closed_normal: number;
+        closed_data_gap: number;
+        still_open: number | null;
+      };
       per_exit: {
         position_id: string;
         base: string;
@@ -757,14 +770,48 @@ export default function Home() {
 
             {/* Exit classification — passive E-04 contamination split (read-only) */}
             {p.exits && (
-              <Card title="exit classification — E-04 contamination split" icon={<TrendingDown className="h-4 w-4" />}>
+              <Card title="exit classification — strategy-attributable vs E-04" icon={<TrendingDown className="h-4 w-4" />}>
                 <div className="space-y-4">
                   <p className="text-[11px] leading-relaxed text-zinc-500">
                     Passive evidence classification over {p.exits.journal_span.cycles} real cycles —
-                    every close sorted by cause, raw vs diagnostic baseline. The runner and the
-                    measured system are untouched; PnL mirrors the watcher's spread-PnL estimate.
+                    every close sorted by cause. The runner and the measured system are untouched;
+                    PnL mirrors the watcher's spread-PnL estimate. Reporting contract: the
+                    strategy-attributable result is primary; raw and E-04 contamination are always
+                    shown alongside — never a single blended PnL.
                   </p>
 
+                  {/* PRIMARY — strategy-attributable (final-report view) */}
+                  <div className="rounded-lg border border-zinc-700 bg-zinc-900/70 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
+                        strategy-attributable
+                      </span>
+                      <span className="rounded-full border border-zinc-600 bg-zinc-800 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-zinc-300">
+                        primary
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span
+                        className={`font-mono text-2xl tabular-nums ${
+                          (p.exits.diagnostic_baseline.total_pnl_pct ?? 0) < 0
+                            ? "text-rose-400"
+                            : (p.exits.diagnostic_baseline.total_pnl_pct ?? 0) > 0
+                              ? "text-emerald-400"
+                              : "text-zinc-100"
+                        }`}
+                      >
+                        {pct(p.exits.diagnostic_baseline.total_pnl_pct, 2)}
+                      </span>
+                      <span className="font-mono text-[11px] tabular-nums text-zinc-400">
+                        {p.exits.diagnostic_baseline.closes} closes · avg {pct(p.exits.diagnostic_baseline.avg_pnl_pct)}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[10px] text-zinc-500">
+                      genuine strategy exits — E-04 data-gap closes held apart
+                    </div>
+                  </div>
+
+                  {/* SECONDARY — raw + E-04 contamination decomposition */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
@@ -776,20 +823,86 @@ export default function Home() {
                       <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
                         avg {pct(p.exits.raw_baseline.avg_pnl_pct)} · total {pct(p.exits.raw_baseline.total_pnl_pct)}
                       </div>
-                      <div className="mt-1 text-[10px] text-zinc-600">what the system actually did</div>
+                      <div className="mt-1 text-[10px] text-zinc-600">what the system actually did (both groups mixed)</div>
                     </div>
-                    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                    <div
+                      className={`rounded-lg border p-3 ${
+                        p.exits.e04_contamination.closes > 0
+                          ? "border-red-500/30 bg-red-500/5"
+                          : "border-zinc-800 bg-zinc-900/40"
+                      }`}
+                    >
                       <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-                        diagnostic baseline
+                        E-04 contamination
                       </div>
                       <div className="mt-1 font-mono text-lg tabular-nums text-zinc-100">
-                        {p.exits.diagnostic_baseline.closes} closes
+                        {p.exits.e04_contamination.closes} closes
                       </div>
                       <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
-                        avg {pct(p.exits.diagnostic_baseline.avg_pnl_pct)} · total {pct(p.exits.diagnostic_baseline.total_pnl_pct)}
+                        avg {pct(p.exits.e04_contamination.avg_pnl_pct)} · total {pct(p.exits.e04_contamination.total_pnl_pct)}
                       </div>
-                      <div className="mt-1 text-[10px] text-zinc-600">data-gap exits held apart</div>
+                      <div className="mt-1 text-[10px] text-zinc-600">exits taken on a missing scanner row (edge=-999)</div>
                     </div>
+                  </div>
+
+                  {/* Arithmetic identity — the split must decompose the raw number */}
+                  <div
+                    className={`flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 font-mono text-[11px] tabular-nums ${
+                      p.exits.attribution_check.consistent === false
+                        ? "border-red-500/40 bg-red-500/5 text-red-300"
+                        : "border-zinc-800/70 bg-zinc-900/40 text-zinc-400"
+                    }`}
+                  >
+                    <span className="text-[10px] font-sans font-semibold uppercase tracking-widest text-zinc-500">
+                      attribution check
+                    </span>
+                    {p.exits.attribution_check.consistent === null ? (
+                      <span className="text-zinc-500">insufficient PnL data</span>
+                    ) : (
+                      <>
+                        <span className={(p.exits.attribution_check.attributable_total_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}>
+                          {pct(p.exits.attribution_check.attributable_total_pct)}
+                        </span>
+                        <span className="text-zinc-600">+</span>
+                        <span className={(p.exits.attribution_check.contamination_total_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}>
+                          {pct(p.exits.attribution_check.contamination_total_pct)}
+                        </span>
+                        <span className="text-zinc-600">=</span>
+                        <span className={(p.exits.attribution_check.raw_total_pct ?? 0) < 0 ? "text-rose-400" : "text-emerald-400"}>
+                          {pct(p.exits.attribution_check.raw_total_pct)}
+                        </span>
+                        <span
+                          className={`font-sans text-[10px] font-semibold ${
+                            p.exits.attribution_check.consistent ? "text-emerald-400" : "text-red-400"
+                          }`}
+                        >
+                          {p.exits.attribution_check.consistent ? "✓ split decomposes raw exactly" : "✗ split does not sum to raw"}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Survival — how many opened positions reach a normal close */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-zinc-800/70 bg-zinc-900/40 px-3 py-2 font-mono text-[11px] tabular-nums text-zinc-400">
+                    <span className="font-sans text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                      survival
+                    </span>
+                    {p.exits.survival.opened === null ? (
+                      <span className="text-zinc-500">positions ledger unavailable</span>
+                    ) : (
+                      <>
+                        <span className="text-zinc-200">{p.exits.survival.opened} opened</span>
+                        <span className="text-zinc-600">→</span>
+                        <span>
+                          {p.exits.survival.closed_normal + p.exits.survival.closed_data_gap} closed
+                        </span>
+                        <span className="text-zinc-500">
+                          ({p.exits.survival.closed_normal} genuine · {p.exits.survival.closed_data_gap} data-gap)
+                        </span>
+                        <span className="text-zinc-600">·</span>
+                        <span className="text-zinc-200">{p.exits.survival.still_open ?? "—"} still open</span>
+                      </>
+                    )}
                   </div>
 
                   <ul className="space-y-1.5">
@@ -876,10 +989,12 @@ export default function Home() {
                   </div>
 
                   <p className="border-t border-zinc-800/60 pt-3 text-[11px] leading-relaxed text-zinc-500">
-                    E-04 (runner closes on a missing scanner row) is measurably firing in this baseline —
-                    the A/B/C verdict must read exit statistics on both views. Watcher-driven categories
-                    (stop-loss, funding) stay in the taxonomy and count 0 while the watcher is not part
-                    of the paper loop.
+                    E-04 (runner closes on a missing scanner row) is measurably firing in this baseline and
+                    is PnL-directional — the near-zero raw number is a mixing artifact, which is exactly why
+                    the final A/B/C report carries the strategy-attributable result as primary. E-04 stays
+                    deliberately unfixed during Phase-2 (fixing mid-sample would mix baselines); watcher-driven
+                    categories (stop-loss, funding) stay in the taxonomy and count 0 while the watcher is not
+                    part of the paper loop. Small sample = diagnostic signal, not a statistical verdict.
                   </p>
                 </div>
               </Card>

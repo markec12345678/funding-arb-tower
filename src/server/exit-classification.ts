@@ -14,6 +14,14 @@
 //   raw baseline        — everything the system actually did;
 //   diagnostic baseline — what remains when data-gap exits are held apart.
 //
+// Reporting contract (recorded 2026-09-11, review decision): the FINAL A/B/C
+// report shows the strategy-attributable result (diagnostic baseline) as the
+// PRIMARY number, with the raw result and the E-04 contamination split always
+// alongside — never a single blended PnL. The arithmetic identity
+//   attributable + contamination = raw
+// is carried as a built-in integrity check so the split can never silently
+// drift from the raw number it decomposes.
+//
 // PnL estimate mirrors the watcher's estimate_spread_pnl() exactly (same
 // instrument as the measured system): sign × (open_spread − close_spread) ×
 // qty, as % of trade_usd. Close prices come from the close action's executed
@@ -60,7 +68,21 @@ export interface ExitClassification {
   journal_span: { from: string | null; to: string | null; cycles: number };
   categories: ExitCategoryStat[];
   raw_baseline: ExitBaseline;
-  diagnostic_baseline: ExitBaseline; // data_gap held apart
+  diagnostic_baseline: ExitBaseline; // data_gap held apart = strategy-attributable
+  e04_contamination: ExitBaseline; // the data_gap group on its own
+  attribution_check: {
+    attributable_total_pct: number | null;
+    contamination_total_pct: number | null;
+    raw_total_pct: number | null;
+    // |attributable + contamination − raw| within rounding tolerance
+    consistent: boolean | null;
+  };
+  survival: {
+    opened: number | null; // positions ledger rows (each = one opened position)
+    closed_normal: number; // classified closes, non-data-gap
+    closed_data_gap: number; // classified closes, data-gap
+    still_open: number | null; // ledger rows with status "open"
+  };
   per_exit: ClassifiedExit[]; // newest first
   note: string;
 }
@@ -110,13 +132,18 @@ export function classifyExits(journalRaw: string | null, positionsRaw: string | 
   if (!journalRaw) return null;
 
   // positions ledger → open-side record per position_id (prices, qty, times).
+  // Each ledger row is one successfully opened position — the survival denominator.
   const positions = new Map<string, any>();
+  let stillOpen = 0;
   if (positionsRaw) {
     try {
       const rows = JSON.parse(positionsRaw);
       if (Array.isArray(rows)) {
         for (const p of rows) {
-          if (p && typeof p.id === "string") positions.set(p.id, p);
+          if (p && typeof p.id === "string") {
+            positions.set(p.id, p);
+            if (String(p?.status ?? "").toLowerCase() === "open") stillOpen++;
+          }
         }
       }
     } catch {
@@ -224,20 +251,53 @@ export function classifyExits(journalRaw: string | null, positionsRaw: string | 
     .filter((e) => e.category !== "data_gap")
     .map((e) => e.pnl_pct)
     .filter((p): p is number => p !== null);
+  const gapPnls = perExit
+    .filter((e) => e.category === "data_gap")
+    .map((e) => e.pnl_pct)
+    .filter((p): p is number => p !== null);
   const baseline = (pnls: number[], closes: number): ExitBaseline => ({
     closes,
     avg_pnl_pct: pnls.length ? Math.round((pnls.reduce((s, x) => s + x, 0) / pnls.length) * 1000) / 1000 : null,
     total_pnl_pct: pnls.length ? Math.round(pnls.reduce((s, x) => s + x, 0) * 1000) / 1000 : null,
   });
 
+  const rawB = baseline(rawPnls, perExit.length);
+  const diagB = baseline(diagPnls, perExit.filter((e) => e.category !== "data_gap").length);
+  const gapB = baseline(gapPnls, perExit.filter((e) => e.category === "data_gap").length);
+
+  // Integrity check on the displayed (rounded) totals: the split must decompose
+  // the raw number exactly, within the 3-decimal rounding tolerance.
+  const identitySum =
+    diagB.total_pnl_pct !== null && gapB.total_pnl_pct !== null ? diagB.total_pnl_pct + gapB.total_pnl_pct : null;
+  const consistent =
+    identitySum !== null && rawB.total_pnl_pct !== null
+      ? Math.abs(identitySum - rawB.total_pnl_pct) <= 0.002
+      : null;
+
+  const closedNormal = perExit.filter((e) => e.category !== "data_gap").length;
+  const closedGap = perExit.filter((e) => e.category === "data_gap").length;
+
   return {
     generated_at: new Date().toISOString(),
     journal_span: { from, to, cycles },
     categories: TAXONOMY.map(stat),
-    raw_baseline: baseline(rawPnls, perExit.length),
-    diagnostic_baseline: baseline(diagPnls, perExit.filter((e) => e.category !== "data_gap").length),
+    raw_baseline: rawB,
+    diagnostic_baseline: diagB,
+    e04_contamination: gapB,
+    attribution_check: {
+      attributable_total_pct: diagB.total_pnl_pct,
+      contamination_total_pct: gapB.total_pnl_pct,
+      raw_total_pct: rawB.total_pnl_pct,
+      consistent,
+    },
+    survival: {
+      opened: positionsRaw === null ? null : positions.size,
+      closed_normal: closedNormal,
+      closed_data_gap: closedGap,
+      still_open: positionsRaw === null ? null : stillOpen,
+    },
     per_exit: perExit.slice(0, 30),
     note:
-      "Passive read-only classification — the runner and the measured system are untouched (0373f5d locked). PnL mirrors the watcher's estimate_spread_pnl; close prices come from the executor's own leg fetch, independent of the scanner gap.",
+      "Passive read-only classification — the runner and the measured system are untouched (0373f5d locked). PnL mirrors the watcher's estimate_spread_pnl; close prices come from the executor's own leg fetch, independent of the scanner gap. Reporting contract: the strategy-attributable result is PRIMARY; raw and E-04 contamination are always shown alongside — never a single blended PnL.",
   };
 }

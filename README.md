@@ -226,21 +226,30 @@ audit round each finding came from. The full evidence register lives at
 Phase-2 A/B/C measurement — findings are recorded only, the measured system is
 untouched, and remediation is deferred to the post-Phase-2 hardening pass.
 
-## Exit classification — the E-04 contamination split
+## Exit classification — strategy-attributable vs E-04
 
 The "exit classification" card is the passive evidence layer for the Phase-2
 A/B/C verdict: every paper close is classified by cause — genuine edge
 collapse · PnL stop-loss · funding condition · manual/system safety ·
-**E-04 data-gap (edge=-999)** — and the exit statistics are shown on two
-views: the **raw baseline** (what the system actually did) and the
-**diagnostic baseline** (data-gap exits held apart). PnL per exit mirrors the
-watcher's `estimate_spread_pnl` formula with close prices from the executor's
-own leg fetch (independent of the scanner gap). Read-only by design:
+**E-04 data-gap (edge=-999)**. PnL per exit mirrors the watcher's
+`estimate_spread_pnl` formula with close prices from the executor's own leg
+fetch (independent of the scanner gap). Read-only by design:
 `src/server/exit-classification.ts` only reads the journal + positions ledger
-— the runner and the measured system are untouched. Current finding: the
-raw near-zero exit PnL is an artifact — genuine strategy exits and E-04
-data-gap exits pull in opposite directions, so the verdict must read both
-views.
+— the runner and the measured system are untouched.
+
+**Reporting contract (final A/B/C report):** the **strategy-attributable**
+result (genuine strategy exits, data-gap held apart) is the **primary**
+number; the **raw** result and the **E-04 contamination** split are always
+shown alongside — never a single blended PnL. The card enforces this
+hierarchy: primary panel first, then the raw + contamination decomposition,
+an inline **attribution check** (strategy-attributable + contamination =
+raw, verified with ✓/✗ on the rendered totals), and a **survival** line
+(opened positions → closed genuine · closed data-gap · still open) — so
+"how many opens survive to a normal close" is a live dashboard number.
+
+Current finding: the raw near-zero exit PnL is an artifact — genuine
+strategy exits and E-04 data-gap exits pull in opposite directions, so the
+verdict must read both views.
 
 ## Failure matrix (R4)
 
