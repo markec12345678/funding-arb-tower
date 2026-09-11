@@ -23,7 +23,7 @@ This dashboard is one of four coordinated repositories:
 |---|---|---|
 | [`funding-arb`](https://github.com/markec12345678/funding-arb) | the trading system — scanner, strategy, executor, gates | **locked** at `0373f5d` during Phase-2 A/B/C paper validation (539 tests, CI green) |
 | [`phase3-lab`](https://github.com/markec12345678/phase3-lab) | execution-safety laboratory — 4-layer separation, formal safety gate | **certified**: 106/106 tests (foundation 80 · reconciliation 19 · risk guardian 23 · cross-layer 13), golden contract v1.1.0, PORT CANDIDATE — port blocked by Phase-2 verdict |
-| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, TWO carry families (forward lock + perp float) ranked every quote day on a deterministic mock RFQ world, PLUS the W0 real-RFQ ingestion lane (immutable hash-chained raw journal + adapters) | **v0.6.0 · paper/research only** — W0: real RFQ ingestion shipped (15-field schema, R-1…R-13 fail-closed invariants, source wall real\|synthetic, file/webhook adapters, deterministic ALL-IN EDGE accounting — descriptive only; 0 real records until a feed is connected); on top of v0.5.0 (adverse-side horizon σ, holdout ladder, quadruple panels, P1..P5 all SUPPORTED); monitored read-only from this tower's engine view |
+| [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, TWO carry families (forward lock + perp float) ranked every quote day on a deterministic mock RFQ world, PLUS the W0 real-RFQ ingestion lane (immutable hash-chained raw journal + adapters) | **v0.6.1 · paper/research only** — W0: real RFQ ingestion shipped (15-field schema, R-1…R-13 fail-closed invariants, source wall real\|synthetic, file/webhook adapters with `--dry-run` first-contact validation that writes nothing, deterministic ALL-IN EDGE accounting — descriptive only; invariant-checked by 46 tracked checks reproducible from the repo via `verify_w0_invariants.py`; 0 real records until a feed is connected); on top of v0.5.0 (adverse-side horizon σ, holdout ladder, quadruple panels, P1..P5 all SUPPORTED); monitored read-only from this tower's engine view |
 | **funding-arb-tower** (this repo) | command center — reads both pipelines, never trades | runs sandbox-local and/or deployed |
 
 The validation ladder the dashboard reflects:
@@ -358,21 +358,24 @@ day** (v0.3.0): `forward_basis_v1` (lock the carry through a dated forward) vs
 `perp_carry_v1` (float it on a short CEX perp). As of **v0.5.0** the horizon σ
 is ADVERSE-SIDE (the falling visible trend charged in full, a rising trend
 charged zero — the optimistic bound of the reversal-ignorance interval; v0.4
-was the pessimistic bound — one σ, one meaning everywhere). As of **v0.6.0**
+was the pessimistic bound — one σ, one meaning everywhere). As of **v0.6**
 the engine also runs the **W0 real-RFQ ingestion lane** — an immutable
 hash-chained raw journal fed by pluggable adapters — monitored by a dedicated
 card. It renders exactly what the engine's research artifacts carry, with the
 engine's own epistemic note traveling with the data:
 
-- **W0 · real RFQ ingestion lane (v0.6)** — the real-world data layer's status:
-  journal lines + chain head (hash-chain verified, truncation-bounded), the
-  **source wall** chips (real vs synthetic — never pooled), venue/instrument
-  census, the four ingestion paths with their honest states (file ingest ready,
-  webhook receiver ready, REST poller a documented W1 slot, synthetic
-  test-only), the last journaled records, and the honest amber status line —
-  currently **0 real records** (no desk credentials in this environment);
-  descriptive ALL-IN EDGE accounting only, uncertainty → ranking → GO/NO-GO on
-  real data is W1 and requires its own sealed decision record.
+- **W0 · real RFQ ingestion lane (v0.6, hardened v0.6.1)** — the real-world data
+  layer's status: journal lines + chain head (hash-chain verified,
+  truncation-bounded), the **source wall** chips (real vs synthetic — never
+  pooled), venue/instrument census, the four ingestion paths with their honest
+  states (file ingest ready with `--dry-run` first-contact validation that
+  writes nothing, webhook receiver ready, REST poller a documented W1 slot,
+  synthetic test-only), the last journaled records, and the honest amber status
+  line — currently **0 real records** (no desk credentials in this environment;
+  the 46 invariant checks are tracked in the engine repo, reproducible via
+  `research/exploration/verify_w0_invariants.py`); descriptive ALL-IN EDGE
+  accounting only, uncertainty → ranking → GO/NO-GO on real data is W1 and
+  requires its own sealed decision record.
 - **Machinery validation (80-seed sweep: screening 1..60 + holdout ladder
   61..80 + like-for-like 1..40)** — pooled PnL distribution plus per-family
   diagnostics: realized−locked bps (the forward lock through settlement, ≈

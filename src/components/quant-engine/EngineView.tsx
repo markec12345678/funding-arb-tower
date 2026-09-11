@@ -381,7 +381,7 @@ function RfqLaneCard({ rfq }: { rfq: RfqStatus | null }) {
           {[
             {
               p: "file ingest",
-              state: "ready — desk exports / user-held RFQ history (JSONL · JSON · CSV) via declarative field map",
+              state: "ready — desk exports / RFQ history (JSONL · JSON · CSV) via declarative field map; --dry-run validates first contact, writes nothing",
               tone: "good" as const,
             },
             {
@@ -475,9 +475,10 @@ function RfqLaneCard({ rfq }: { rfq: RfqStatus | null }) {
               <>
                 honest status: <span className="font-semibold text-amber-300">0 real records</span>{" "}
                 — no RFQ desk credentials exist in this environment. The machinery is complete and
-                invariant-checked (37 checks: chain tamper/reorder/insert/truncate detection,
-                duplicate-id, future reference rejection, source wall, edge accounting); real data
-                starts the moment a feed is connected.
+                invariant-checked (46 tracked checks, reproducible from the repo via
+                verify_w0_invariants.py: chain tamper/reorder/insert/truncate detection,
+                duplicate-id, future reference rejection, source wall, edge accounting,
+                dry-run writes-nothing); real data starts the moment a feed is connected.
               </>
             )}
           </div>
