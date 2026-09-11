@@ -1861,3 +1861,21 @@ Work Log:
 Stage Summary:
 - W0 hardened honestly: the invariant-checked claim is now reproducible from the repo alone (46 tracked checks), and the user's first contact with a real desk export is a zero-risk validation preview (named per-row errors, duplicate detection, exit-code semantics) before any byte is written. One real defect found by e2e and fixed at the root (per-record isolation in the provider layer) — the shipped --keep-going now delivers its documented contract.
 - Shipped state: quant-arb-engine @ 596ee7e (v0.6.1, pushed) · tower @ 8d41756 + engine checkout v0.6.1 (read-only, no tower change needed) · funding-arb @ 0373f5d (untouched, Phase-2 day 1.25). Next owned events unchanged: daily Phase-2 check (~Sep 12/13), Day-3 interim (~Sep 13), A/B/C (~Sep 17); user-owned: connect a real feed (--dry-run first, then ingest); W1 still gated on its own sealed decision record.
+
+---
+Task ID: 30
+Agent: main (Z.ai Code)
+Date: 2026-09-11 21:10–21:25 UTC (session 6)
+Task: Continue per user's "odlicno pushaj na github ce se nisi sinhroniziraj in nadaljuj posodobi readme da odraza kode" — sync both repos to GitHub and make the README(s) reflect the shipped v0.6.1 code.
+
+Work Log:
+- Sync check: quant-arb-engine fully synced (local 596ee7e == origin/main, ls-remote verified — the Task-29 push landed); tower was ahead 3 (environment worklog auto-commits, not yet pushed).
+- Stale-reference sweep across both repos (37 checks / v0.6.0 mentions): engine clean except docs/w0-rfq-ingestion.md:7 "version: 0.6.0" — deliberately NOT touched (sealed design records are not edited post-hoc; v0.6.1 is additive hardening, same discipline as decision-record-v0.5.0.md staying frozen after v0.6). Tower had exactly three stale spots: README repo-table row (v0.6.0), README engine-view W0 bullet, EngineView.tsx honest-status line ("37 checks") + the file-ingest ingestion-path row missing --dry-run.
+- Tower updates (2 files): README repo-table row → v0.6.1 with the two new facts (--dry-run first-contact validation that writes nothing; 46 tracked checks reproducible from the repo via verify_w0_invariants.py); engine-view section bullet → "v0.6, hardened v0.6.1" with the same facts + the 0-real-records status unchanged; EngineView W0 card honest-amber line → "46 tracked checks, reproducible from the repo via verify_w0_invariants.py: chain tamper/reorder/insert/truncate detection, duplicate-id, future reference rejection, source wall, edge accounting, dry-run writes-nothing"; file-ingest path row → "ready — … ; --dry-run validates first contact, writes nothing".
+- Verification: bun run lint clean; agent-browser e2e — page shows v0.6.1 (dynamic from the engine pyproject, now matches the copy), "46 tracked checks", "--dry-run", "verify_w0_invariants.py", ZERO stale "37" occurrences, W0 card intact (source wall chips, 0 real records, tail table renders), footer natural-push on tall content, overflowX=0 at 1280px, ZERO page errors; dev.log all 200s. Screenshot: screenshots/engine-v061-tower-synced.png.
+- Tower commit 8292214 PUSHED (2af3c87..8292214, includes the 3 worklog auto-commits); branch now synced (main == origin/main).
+- funding-arb untouched @ 0373f5d throughout; runner alive; journal on cadence (383 lines at last check).
+
+Stage Summary:
+- Both repos fully synced to GitHub: quant-arb-engine @ 596ee7e (v0.6.1) · funding-arb-tower @ 8292214 · funding-arb @ 0373f5d (locked, untouched). Every user-facing description (tower README, W0 card) now reflects the shipped code exactly — 46 tracked checks, --dry-run, 0 real records — with the sealed design record intentionally frozen per discipline.
+- No owned work remains: daily Phase-2 check next (~Sep 12/13), Day-3 interim (~Sep 13), A/B/C (~Sep 17); user-owned: connect a real feed (dry-run first); W1 gated on its own sealed decision record.
