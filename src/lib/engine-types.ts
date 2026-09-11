@@ -135,6 +135,7 @@ export type OpportunityExample = {
     sigma_level_apr?: number;
     sigma_horizon_apr?: number;
     sigma_horizon_iid_apr?: number; // v0.4: the v0.3 iid-block value, journaled as audit
+    sigma_horizon_twosided_apr?: number; // v0.5: the v0.4 two-sided value, journaled as audit
     forward_implied_apr?: number;
     gap_apr?: number;
     signal_z_level?: number;
@@ -182,6 +183,9 @@ export type SweepParams = {
   // v0.4: screening vs holdout confirmation design + the σ_H method line
   screening_set_seeds?: number[];
   holdout_seeds?: number[];
+  // v0.5: like-for-like seed set (1..40) — the v0.3/v0.4 baseline seed set,
+  // used ONLY for the P3/P5 verdicts, never for a second headline
+  like_for_like_seeds?: number[];
   sigma_horizon_method?: string;
 };
 
@@ -224,6 +228,13 @@ export type RankingStats = {
   misses: number;
   ties: number;
   hit_rate_pct: number | null;
+  // v0.5: contest day-bucket decomposition (boundary COLLAPSE_START − tenor)
+  day_bucket?: {
+    boundary_day: number;
+    window_avoids_collapse?: DayBucket;
+    window_touches_collapse?: DayBucket;
+    definition: string;
+  };
   forward_selection_share_ramp_pct: number | null;
   forward_selection_share_collapse_pct: number | null;
   contests_ramp_phase: number;
@@ -231,10 +242,21 @@ export type RankingStats = {
   definition: string;
 };
 
+/** v0.5: one contest day-bucket of the ranking hit-rate. */
+export type DayBucket = {
+  n_contests: number;
+  hits: number;
+  hit_rate_pct: number | null;
+  definition: string;
+};
+
 /** One calibration panel (σ_level = the v0.2 finding kept for audit; iid = the
- * v0.3 finding kept for audit; horizon = the v0.4 trend-aware σ_H). */
+ * v0.3 finding kept for audit; twosided = the v0.4 finding kept for audit;
+ * horizon = the v0.5 adverse-side σ_down; upside = the honest-cost panel). */
 export type CalibrationPanel = {
   sigma: string;
+  // v0.5: "two-sided" | "one-sided downside" | "one-sided upside"
+  sided?: string;
   n_checks: number;
   n_breaches: number;
   empirical_breach_pct: number | null;
@@ -264,7 +286,16 @@ export type Prediction = {
   perp_gated_in_share_pct?: number | null;
   hit_rate_pct?: number | null;
   v0_3_baseline_pct?: number;
+  v0_4_baseline_pct?: number;
   forward_share_collapse_pct?: number | null;
+  // v0.5 measured fields
+  pooled_downside_breach_pct?: number | null;
+  avoids_hit_rate_pct?: number | null;
+  touches_hit_rate_pct?: number | null;
+  gap_pp?: number | null;
+  part_a_holds?: boolean;
+  upside_surprise_pct?: number | null;
+  part_b_holds?: boolean;
 };
 
 /** Per-family census entry in the sweep artifact. */
@@ -293,8 +324,12 @@ export type SweepArtifact = {
   contested_share_of_selected_days_pct?: number | null;
   gate_fire_rate_pct?: number | null; // v0.2 compat
   reject_reasons: { reason: string; count: number }[];
-  family_census?: Record<string, FamilyCensusEntry>;
+  family_census?: Record<string, FamilyCensusEntry> & { _definition?: string };
   ranking?: RankingStats;
+  // v0.5: the three-set split — pooled headline, screening twin, like-for-like
+  // (the v0.3/v0.4 baseline seed set, used ONLY for the P3/P5 verdicts)
+  ranking_screening_set?: RankingStats;
+  ranking_like_for_like?: RankingStats;
   settled_stats: {
     n: number;
     pnl_pct_of_notional: Dist;
@@ -305,12 +340,16 @@ export type SweepArtifact = {
   z_gate_calibration: {
     threshold_z: number;
     nominal_two_sided_pct: number;
+    // v0.5: one-sided nominal for the adverse-side panel (1−Φ(2) ≈ 2.28%)
+    nominal_one_sided_pct?: number;
     empirical_breach_pct?: number | null; // v0.2 compat
     n_checks?: number;
     n_breaches?: number;
     panel_level?: CalibrationPanel;
     panel_horizon_iid?: CalibrationPanel; // v0.4: the v0.3 finding, kept for audit
-    panel_horizon?: CalibrationPanel; // v0.4: trend-aware σ_H (the redefined diagnostic)
+    panel_horizon_twosided?: CalibrationPanel; // v0.5: the v0.4 finding, kept for audit
+    panel_horizon?: CalibrationPanel; // v0.5: adverse-side σ_down (the redefined diagnostic)
+    panel_horizon_upside?: CalibrationPanel; // v0.5: the honest-cost panel (NOT a calibration target)
     holdout_split?: {
       holdout_seeds: string;
       screening_set_seeds: string;
@@ -318,6 +357,10 @@ export type SweepArtifact = {
       holdout_panel_horizon?: CalibrationPanel;
       screening_set_panel_horizon_iid?: CalibrationPanel;
       holdout_panel_horizon_iid?: CalibrationPanel;
+      screening_set_panel_horizon_twosided?: CalibrationPanel;
+      holdout_panel_horizon_twosided?: CalibrationPanel;
+      screening_set_panel_horizon_upside?: CalibrationPanel;
+      holdout_panel_horizon_upside?: CalibrationPanel;
       definition: string;
     };
     estimator_screening?: {
@@ -326,11 +369,16 @@ export type SweepArtifact = {
       candidates: {
         id: string;
         estimand: string;
-        breach_pct: number;
+        breach_pct?: number;
+        // v0.5 candidate fields (S symmetric baseline vs G1 adverse-side)
+        two_sided_breach_pct?: number;
+        downside_breach_pct?: number;
+        upside_surprise_pct?: number;
         mean_sigma_pp: number;
         verdict: string;
       }[];
       residual_note?: string;
+      residual_anatomy?: string;
     };
     definition: string;
   };
@@ -340,6 +388,9 @@ export type SweepArtifact = {
     synthetic: boolean;
     epistemic_note: string;
     unit_rule: string;
+    // v0.5: the stop rule against weight fishing + the population note
+    stop_rule?: string;
+    population_note?: string;
   };
 };
 

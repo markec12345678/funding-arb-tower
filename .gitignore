@@ -57,3 +57,4 @@ server.log
 /agent-ctx/
 # sandbox runtime pid
 .zscripts/*.pid
+.scratch/
