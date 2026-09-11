@@ -19,10 +19,23 @@ import {
   Zap,
 } from "lucide-react";
 
+type Freshness = {
+  data_age_s: number | null;
+  expected_cycle_s: number;
+  stale_after_s: number;
+  stale: boolean | null;
+  status: "fresh" | "stale" | "unknown";
+  checked_at: string;
+  branch_age_s: number | null;
+  log_age_s: number | null;
+  lifecycle_age_s: number | null;
+};
+
 type Status = {
   now: string;
   mode: "local" | "remote";
   source: { kind: string; detail: string };
+  freshness: Freshness;
   repo: { branch: string; commits: { sha: string; message: string }[]; dirty: boolean };
   paper: {
     runner: { alive: boolean; pid: number | null; log_updated_at: string | null; log_tail: string[] };
@@ -53,13 +66,29 @@ type Status = {
       status: string;
     } | null;
     vercel: any;
-    snapshot: any;
+    snapshot: {
+      source: string;
+      refreshed_by: string;
+      lifecycle: string;
+      generated_at: string | null;
+      age_s: number | null;
+      expected_s: number;
+      stale: boolean | null;
+      status: string;
+    } | null;
   };
   plan: { step: string; state: string }[];
 };
 
 const fmt = (n: number | undefined | null) =>
   n === undefined || n === null ? "—" : n.toLocaleString("sl-SI");
+
+const age = (s: number | null | undefined) => {
+  if (s === null || s === undefined) return "—";
+  if (s < 60) return `${Math.floor(s)}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+};
 
 const pct = (n: number | undefined | null, d = 4) =>
   n === undefined || n === null ? "—" : `${n.toFixed(d)}%`;
@@ -181,9 +210,36 @@ export default function Home() {
 
   const bt = data?.backtest;
   const p = data?.paper;
+  const fr = data?.freshness;
+  const snap = data?.pipeline?.snapshot ?? null;
   const totals = p?.totals ?? {};
   const lastCycle = p?.cycles?.[0];
   const funnelMax = Math.max(1, totals.scan_total || 0, totals.candidates || 0, totals.opens || 0, totals.open_simulated || 0);
+
+  // The observability rule: green requires LIVE DATA, not just a live
+  // process. A stale/unknown data plane is RED even while the runner pid
+  // still exists — "healthy" must never degrade to "the process didn't die".
+  const dataStale = !fr || fr.status === "stale" || fr.status === "unknown";
+  const pill = dataStale
+    ? {
+        cls: "border-rose-500/40 bg-rose-500/10 text-rose-400",
+        icon: <Activity className="h-3.5 w-3.5" />,
+        text:
+          fr?.status === "unknown"
+            ? "no data yet"
+            : `data stale · ${age(fr?.data_age_s)} old`,
+      }
+    : p?.runner?.alive
+      ? {
+          cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
+          icon: <Radio className="h-3.5 w-3.5 animate-pulse" />,
+          text: data?.mode === "remote" ? "GH collector LIVE" : "paper runner LIVE",
+        }
+      : {
+          cls: "border-rose-500/40 bg-rose-500/10 text-rose-400",
+          icon: <Radio className="h-3.5 w-3.5" />,
+          text: data?.mode === "remote" ? "collector stale" : "runner down",
+        };
 
   return (
     <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100">
@@ -214,25 +270,20 @@ export default function Home() {
                 title={data.source.detail}
               >
                 <Layers className="h-3.5 w-3.5" />
-                {data.mode === "local" ? "sandbox live" : "github snapshot"}
+                {data.mode === "local" ? "sandbox live" : "github branch"}
               </span>
             )}
             {data && (
               <span
-                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${
-                  p?.runner?.alive
-                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
-                    : "border-rose-500/40 bg-rose-500/10 text-rose-400"
-                }`}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${pill.cls}`}
+                title={
+                  fr
+                    ? `newest cycle ${age(fr.data_age_s)} old · new cycle expected every ${Math.round(fr.expected_cycle_s / 60)} min · stale after ${Math.round(fr.stale_after_s / 60)} min`
+                    : undefined
+                }
               >
-                <Radio className={`h-3.5 w-3.5 ${p?.runner?.alive ? "animate-pulse" : ""}`} />
-                {data.mode === "remote"
-                  ? p?.runner?.alive
-                    ? "GH collector LIVE"
-                    : "collector stale"
-                  : p?.runner?.alive
-                    ? "paper runner LIVE"
-                    : "runner down"}
+                {pill.icon}
+                {pill.text}
               </span>
             )}
             <a
@@ -354,7 +405,31 @@ export default function Home() {
                     ))}
                   </div>
                 )}
-                <div className="mt-4 text-[11px] text-zinc-500">
+                {fr && (
+                  <div
+                    className={`mt-3 flex flex-wrap items-center gap-1.5 text-[11px] font-medium ${
+                      fr.status === "fresh"
+                        ? "text-emerald-400"
+                        : fr.status === "stale"
+                          ? "text-rose-400"
+                          : "text-zinc-500"
+                    }`}
+                  >
+                    <Activity className="h-3 w-3" />
+                    data age {age(fr.data_age_s)} · new cycle expected every{" "}
+                    {Math.round(fr.expected_cycle_s / 60)} min · stale after{" "}
+                    {Math.round(fr.stale_after_s / 60)} min without one
+                    {data.mode === "remote" && fr.branch_age_s !== null && (
+                      <span className="text-zinc-500">· paper-data branch {age(fr.branch_age_s)} old</span>
+                    )}
+                    {data.mode === "remote" && fr.lifecycle_age_s !== null && (
+                      <span className="text-zinc-500">
+                        · lifecycle snapshot {age(fr.lifecycle_age_s)} old (hourly)
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="mt-1 text-[11px] text-zinc-500">
                   runner pid {p?.runner?.pid ?? "—"} · log updated {timeAgo(p?.runner?.log_updated_at)} ago ·
                   gates in paper mode: depth ✓ recheck ✓ margin (live-only)
                 </div>
@@ -470,6 +545,27 @@ export default function Home() {
                       </div>
                       <div className="text-zinc-500">{data.pipeline.snapshot.refreshed_by}</div>
                       <div className="text-zinc-600 pt-1">lifecycle: {data.pipeline.snapshot.lifecycle}</div>
+                      {snap && (
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          {snap.status === "stale" && (
+                            <span className="rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 py-px text-[10px] font-medium text-rose-400">
+                              SNAPSHOT STALE
+                            </span>
+                          )}
+                          <span
+                            className={
+                              snap.status === "fresh"
+                                ? "text-emerald-400"
+                                : snap.status === "stale"
+                                  ? "text-rose-400"
+                                  : "text-zinc-500"
+                            }
+                          >
+                            snapshot {snap.status} · {age(snap.age_s)} old
+                          </span>
+                          <span className="text-zinc-600">(hourly expected, external cron)</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </Card>
@@ -560,7 +656,7 @@ export default function Home() {
               data refreshes every 10 s · statuses {new Date(data.now).toLocaleTimeString("sl-SI")} ·{" "}
               {data.mode === "local"
                 ? "sandbox session — the paper runner keeps cycling while the box is up"
-                : "deployed mode — lifecycle snapshots + 5-min github-actions cycles from the paper-data branch"}
+                : "deployed mode — live collector cycles (~5 min) + hourly lifecycle snapshots from the paper-data branch"}
             </p>
           </>
         )}

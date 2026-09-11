@@ -33,6 +33,20 @@ const rawPaper = (file: string) =>
   `https://raw.githubusercontent.com/${GH_OWNER}/funding-arb/${PAPER_BRANCH}/paper-data/${file}`;
 const VERCEL_DEMO = "https://funding-arb-dun.vercel.app";
 
+// ---- Freshness contract (the observability gate) ----
+// "Healthy" must mean the DATA is live, not just that a process exists.
+// The paper collector writes a cycle every ~5 min; if the newest cycle is
+// older than 3 missed intervals the data plane is stale and the UI must go
+// RED even though the runner may still be "alive". The gh-pages scanner
+// snapshot (Vercel demo data source) is refreshed hourly by an EXTERNAL
+// cron-job.org trigger — if that cron dies everything looks green while the
+// demo serves stale data, so its age is tracked separately.
+const EXPECTED_CYCLE_S = 300; // paper cycles: every 5 min
+const STALE_AFTER_S = 900; // >3 missed cycles = stale
+const SNAPSHOT_EXPECTED_S = 3600; // gh-pages snapshot: hourly
+const SNAPSHOT_STALE_AFTER_S = 7200;
+const GH_PAGES_SNAPSHOT = `https://raw.githubusercontent.com/${GH_OWNER}/funding-arb/gh-pages/scanner-latest.json`;
+
 type JournalCycle = {
   ts: string;
   scan_total: number;
@@ -330,22 +344,47 @@ function paperPositions() {
 // ---------------------------------------------------------------------------
 
 async function remotePaper() {
-  const [journalRaw, positionsRaw, analysisRaw, logRaw, branch] = await Promise.all([
-    rawText(rawPaper("journal.jsonl")),
-    rawText(rawPaper("positions.json")),
-    rawText(rawPaper("backtest_analysis.json")),
-    rawText(rawPaper("paper_runner.log")),
-    ghJson(`/repos/${GH_OWNER}/funding-arb/branches/${PAPER_BRANCH}`),
-  ]);
+  // Two datasets live on the paper-data branch:
+  //  - github-actions/* : the stateless collector's own cycles + positions,
+  //    committed every ~5 min — the LIVE data plane (funnel + ledger).
+  //  - root files        : the hourly lifecycle snapshot of the sandbox
+  //    runner (journal history, backtest analysis, runner log) — durable
+  //    backup; its age is tracked separately as lifecycle_age_s.
+  const [collectorJournalRaw, collectorPositionsRaw, sandboxJournalRaw, analysisRaw, logRaw, branch] =
+    await Promise.all([
+      rawText(rawPaper("github-actions/journal.jsonl")),
+      rawText(rawPaper("github-actions/positions.json")),
+      rawText(rawPaper("journal.jsonl")),
+      rawText(rawPaper("backtest_analysis.json")),
+      rawText(rawPaper("paper_runner.log")),
+      ghJson(`/repos/${GH_OWNER}/funding-arb/branches/${PAPER_BRANCH}`),
+    ]);
 
-  const journal = journalRaw ? parseJournalRaw(journalRaw) : { cycles: [], aborts: [], totals: {} };
-  const positions = safe(() => mapPositions(JSON.parse(positionsRaw ?? "[]")), [] as any[]);
+  const journal = collectorJournalRaw
+    ? parseJournalRaw(collectorJournalRaw)
+    : { cycles: [], aborts: [], totals: {} };
+  const positions = safe(
+    () => mapPositions(JSON.parse(collectorPositionsRaw ?? "[]")),
+    [] as any[]
+  );
   const analysis = safe(() => JSON.parse(analysisRaw ?? "null"), null);
   const logTail = (logRaw ?? "").trim().split("\n").filter(Boolean).slice(-12);
+
+  // Hourly lifecycle snapshot age (sandbox runner's journal, pushed by
+  // scripts/push-paper-snapshot.sh): informational — the live gate is the
+  // collector cadence, this tells you whether the hourly durability push
+  // is still landing.
+  let lifecycleAgeS: number | null = null;
+  if (sandboxJournalRaw) {
+    const sandboxCycles = parseJournalRaw(sandboxJournalRaw).cycles;
+    const lastTs = sandboxCycles.length ? sandboxCycles[sandboxCycles.length - 1].ts : "";
+    const ms = lastTs && !Number.isNaN(new Date(lastTs).getTime()) ? new Date(lastTs).getTime() : null;
+    lifecycleAgeS = ms !== null ? Math.max(0, (Date.now() - ms) / 1000) : null;
+  }
+
   const pushedAt: string | null =
     branch?.commit?.commit?.committer?.date ?? branch?.commit?.commit?.author?.date ?? null;
-  // Liveness proxy: the github-actions collector commits a cycle every ~5 min;
-  // the hourly lifecycle snapshot rides the same branch.
+  // Liveness proxy: the github-actions collector commits a cycle every ~5 min.
   const fresh = pushedAt ? Date.now() - new Date(pushedAt).getTime() < 15 * 60_000 : false;
   return {
     journal,
@@ -358,6 +397,7 @@ async function remotePaper() {
       log_tail: logTail,
       supervisor: null,
     },
+    lifecycle_age_s: lifecycleAgeS === null ? null : Math.round(lifecycleAgeS),
   };
 }
 
@@ -366,11 +406,12 @@ async function remotePaper() {
 // ---------------------------------------------------------------------------
 
 async function pipeline(repoCommitsLocal: { sha: string; message: string }[], remoteMode: boolean) {
-  const [farbRepo, farbCommits, p3Commits, health] = await Promise.all([
+  const [farbRepo, farbCommits, p3Commits, health, snapRaw] = await Promise.all([
     ghJson(`/repos/${GH_OWNER}/funding-arb`),
     remoteMode ? ghJson(`/repos/${GH_OWNER}/funding-arb/commits?per_page=6`) : Promise.resolve(null),
     ghJson(`/repos/${GH_OWNER}/phase3-lab/commits?per_page=1`),
     vercelHealth(),
+    rawText(GH_PAGES_SNAPSHOT),
   ]);
 
   const commits: { sha: string; message: string }[] = remoteMode
@@ -383,6 +424,15 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
     : repoCommitsLocal;
 
   const p3 = Array.isArray(p3Commits) ? p3Commits[0] : null;
+
+  // gh-pages scanner snapshot freshness (Vercel demo data source).
+  const snapMeta = safe(() => (JSON.parse(snapRaw ?? "null") || {}).meta, null as any);
+  const snapGeneratedAt: string | null =
+    snapMeta?.generated_at ?? snapMeta?.scan_timestamp ?? null;
+  const snapAgeS =
+    snapGeneratedAt && !Number.isNaN(new Date(snapGeneratedAt).getTime())
+      ? Math.max(0, (Date.now() - new Date(snapGeneratedAt).getTime()) / 1000)
+      : null;
 
   return {
     github: {
@@ -418,8 +468,18 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
     },
     snapshot: {
       source: `raw.githubusercontent.com/${GH_OWNER}/funding-arb/gh-pages/scanner-latest.json`,
-      refreshed_by: "TG Funding Push workflow (dispatch / cron-job.org)",
+      refreshed_by: "TG Funding Push workflow (external cron-job.org trigger / dispatch)",
       lifecycle: `paper-data branch (hourly snapshot + 5-min github-actions cycles)`,
+      generated_at: snapGeneratedAt,
+      age_s: snapAgeS === null ? null : Math.round(snapAgeS),
+      expected_s: SNAPSHOT_EXPECTED_S,
+      stale: snapAgeS === null ? null : snapAgeS > SNAPSHOT_STALE_AFTER_S,
+      status:
+        snapAgeS === null
+          ? "unknown"
+          : snapAgeS > SNAPSHOT_STALE_AFTER_S
+            ? "stale"
+            : "fresh",
     },
     _commits: commits,
   };
@@ -447,6 +507,7 @@ export async function GET(req: NextRequest) {
     positions: any[];
     analysis: any;
     runner: any;
+    lifecycle_age_s?: number | null;
   };
   let repo: { branch: string; commits: { sha: string; message: string }[]; dirty: boolean };
 
@@ -465,6 +526,7 @@ export async function GET(req: NextRequest) {
       positions: paperPositions(),
       analysis: safe(() => JSON.parse(readFileSync(ANALYSIS, "utf-8")), null),
       runner: runnerStatus(),
+      lifecycle_age_s: null,
     };
     repo = repoStatus();
   }
@@ -473,18 +535,54 @@ export async function GET(req: NextRequest) {
   repo.commits = (pipe as any)._commits ?? repo.commits;
   const { _commits, ...pipelineClean } = pipe as any;
 
+  // ---- Freshness gate: the age of the NEWEST data point, not process state.
+  // cycles are chronological here (newest last) — the slice/reverse happens
+  // only when building the display payload below.
+  const cyclesAll = paperBlock.journal.cycles;
+  const lastCycleTs = cyclesAll.length ? cyclesAll[cyclesAll.length - 1].ts : "";
+  const lastCycleMs =
+    lastCycleTs && !Number.isNaN(new Date(lastCycleTs).getTime())
+      ? new Date(lastCycleTs).getTime()
+      : null;
+  const dataAgeS =
+    lastCycleMs !== null ? Math.max(0, (Date.now() - lastCycleMs) / 1000) : null;
+  const runnerTsMs =
+    paperBlock.runner.log_updated_at &&
+    !Number.isNaN(new Date(paperBlock.runner.log_updated_at).getTime())
+      ? new Date(paperBlock.runner.log_updated_at).getTime()
+      : null;
+  const auxAgeS =
+    runnerTsMs !== null ? Math.max(0, (Date.now() - runnerTsMs) / 1000) : null;
+  const dataStale = dataAgeS !== null ? dataAgeS > STALE_AFTER_S : null;
+  const freshness = {
+    data_age_s: dataAgeS === null ? null : Math.round(dataAgeS),
+    expected_cycle_s: EXPECTED_CYCLE_S,
+    stale_after_s: STALE_AFTER_S,
+    stale: dataStale,
+    status: dataAgeS === null ? "unknown" : dataStale ? "stale" : "fresh",
+    checked_at: new Date().toISOString(),
+    // remote: age of the paper-data branch tip; local: age of the runner log.
+    branch_age_s: remoteMode ? (auxAgeS === null ? null : Math.round(auxAgeS)) : null,
+    log_age_s: remoteMode ? null : auxAgeS === null ? null : Math.round(auxAgeS),
+    // remote only: age of the hourly sandbox lifecycle snapshot (durability
+    // push) — informational, expected hourly.
+    lifecycle_age_s: remoteMode ? (paperBlock.lifecycle_age_s ?? null) : null,
+  };
+
   const payload = {
     now: new Date().toISOString(),
     mode: remoteMode ? ("remote" as const) : ("local" as const),
     source: remoteMode
       ? {
-          kind: "github-snapshot",
-          detail: "paper-data branch via raw.githubusercontent.com · ~5 min collector cadence",
+          kind: "github-branch",
+          detail:
+            "paper-data branch: live collector cycles (~5 min) + hourly lifecycle snapshot",
         }
       : {
           kind: "sandbox-live",
           detail: "reading the funding-arb checkout directly · 10 s refresh",
         },
+    freshness,
     repo,
     paper: {
       runner: paperBlock.runner,

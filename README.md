@@ -39,12 +39,13 @@ data planes, chosen automatically:
 
 | | `mode: "local"` (sandbox) | `mode: "remote"` (deployed) |
 |---|---|---|
-| journal · positions · backtest | read directly from the `/home/z/funding-arb` checkout | fetched from the `paper-data` branch via `raw.githubusercontent.com` |
-| runner liveness | `pgrep` + pidfile + log mtime | freshness of the `paper-data` branch (github-actions commits a cycle every ~5 min) |
+| funnel · positions | read directly from the `/home/z/funding-arb` checkout (sandbox runner) | **live collector cycles + positions** from `paper-data/github-actions/*` (updated every ~5 min) |
+| backtest · runner log | local files | hourly lifecycle snapshot at the `paper-data` branch root |
+| runner liveness | `pgrep` + pidfile + log mtime | freshness of the collector's newest cycle on the branch |
 | repo commits | local `git log` | GitHub REST API |
 | latency | ~50 ms | cold ~1–6 s, then cached (60 s raw / 300 s API TTL, ETag revalidation) |
 
-The mode is shown in the UI (`sandbox live` / `github snapshot` badge) and can
+The mode is shown in the UI (`sandbox live` / `github branch` badge) and can
 be forced for verification — on the API or on the whole page:
 
 ```bash
@@ -61,12 +62,36 @@ against public data: **no environment variables, no secrets in this repo.**
 
 ```
 sandbox paper runner (5-min cycles)
-   └─ journal.jsonl / positions.json ── hourly snapshot push ──► paper-data branch
+   └─ journal.jsonl / positions.json ── hourly snapshot push ──► paper-data/ (branch root)
 github-actions collector (repository_dispatch heartbeat, every 5 min)
-   └─ appends its own cycles to the same branch
+   └─ live cycles + positions ─────────────────────────────► paper-data/github-actions/*
 funding-arb-tower (deployed)
-   └─ reads the branch via the raw CDN + REST API
+   └─ funnel + ledger from the collector files (live),
+      backtest + log from the hourly snapshot
 ```
+
+### Staleness gate (why green means the data is live)
+
+The pipeline's weakest point is that its liveness depends on *other* things
+running: the sandbox runner, the github-actions collector, and — for the
+[Vercel demo](https://funding-arb-dun.vercel.app) — an **external**
+cron-job.org trigger. If any of them dies, every box can still look green
+while serving stale data. The dashboard therefore never infers health from
+process state alone:
+
+- `freshness.data_age_s` — the age of the **newest data point** (newest
+  journal cycle). A new cycle is expected every 5 min; after 15 min without
+  one the whole status pill goes **RED** (`data stale · Xm old`) even while
+  the runner pid still exists. No data at all → `unknown`.
+- `freshness.lifecycle_age_s` (remote) — age of the hourly sandbox lifecycle
+  snapshot, tracked separately.
+- `pipeline.snapshot.age_s` — age of the `gh-pages` scanner snapshot that
+  feeds the Vercel demo (hourly, external cron). Stale → a red
+  `SNAPSHOT STALE` badge — this is the detector for a dead cron-job.org
+  schedule.
+
+Verified both ways: lowering the thresholds makes a live-runner dashboard go
+red immediately; restoring them returns it to green.
 
 ## What runs where
 
@@ -105,8 +130,8 @@ datasource wired up.
    Framework preset **Next.js** is auto-detected; the build command is a
    plain `next build` — no environment variables needed.
 3. Open the deployment: the dashboard comes up in `remote` mode
-   (GitHub-snapshot data plane) because no `/home/z/funding-arb` checkout
-   exists on the serverless runtime.
+   (GitHub-branch data plane — live collector cycles) because no
+   `/home/z/funding-arb` checkout exists on the serverless runtime.
 
 That is the whole setup — the remote mode is read-only over public GitHub
 data, so there is nothing to configure and nothing that can leak.
@@ -115,25 +140,40 @@ data, so there is nothing to configure and nothing that can leak.
 
 ### `GET /api/status[?source=remote]`
 
+Example values below are illustrative (`12345`, `42`, …) — the real payload
+carries live runtime numbers.
+
 ```jsonc
 {
   "now": "…ISO…",
   "mode": "local" | "remote",
-  "source": { "kind": "sandbox-live" | "github-snapshot", "detail": "…" },
+  "source": { "kind": "sandbox-live" | "github-branch", "detail": "…" },
+  "freshness": {                      // the staleness gate — see above
+    "data_age_s": 42,                 // age of the NEWEST journal cycle
+    "expected_cycle_s": 300,
+    "stale_after_s": 900,
+    "stale": false,
+    "status": "fresh",                // fresh | stale | unknown
+    "branch_age_s": null,             // remote: paper-data tip age
+    "log_age_s": 480,                 // local: runner log age
+    "lifecycle_age_s": null           // remote: hourly snapshot age
+  },
   "repo":   { "branch": "main", "commits": [ { "sha": "0373f5d", "message": "…" } ], "dirty": false },
   "paper": {
-    "runner":  { "alive": true, "pid": 12976, "log_updated_at": "…", "log_tail": ["…"], "supervisor": { } },
+    "runner":  { "alive": true, "pid": 12345, "log_updated_at": "…", "log_tail": ["…"], "supervisor": { } },
     "cycles":  [ { "ts": "…", "scan_total": 2419, "candidates": 5, "opens": 1, "open_simulated": 0, "open_aborted": 1, "open_positions": 6 } ],
     "aborts":  [ { "reason": "order-book depth gate", "count": 12 } ],
-    "totals":  { "cycles": 120, "scan_total": 291481, "…": "…" },
+    "totals":  { "cycles": 42, "scan_total": 101530, "…": "…" },
     "positions": [ { "id": "…", "base": "RVN", "long_venue": "binance", "short_venue": "bybit", "status": "open" } ]
   },
   "backtest": { "fee_gate": { "best_spread_pct": 0.0218, "…": "…" } },
   "pipeline": {
     "github":  { "repo": "markec12345678/funding-arb", "pushed_at": "…", "ci": "…" },
-    "phase3":  { "latest": { "sha": "9723f14", "message": "…" }, "tests": "106/106 (…)", "status": "cross-layer CERTIFIED — port candidate BLOCKED by Phase-2 A/B/C" },
+    "phase3":  { "latest": { "sha": "5581abc", "message": "…" }, "tests": "106/106 (…)", "status": "cross-layer CERTIFIED — port candidate BLOCKED by Phase-2 A/B/C" },
     "vercel":  { "url": "https://funding-arb-dun.vercel.app", "healthy": true },
-    "snapshot":{ "source": "raw.githubusercontent.com/…/scanner-latest.json", "lifecycle": "paper-data branch (…)" }
+    "snapshot":{ "source": "raw.githubusercontent.com/…/scanner-latest.json",
+                 "generated_at": "…", "age_s": 1800, "expected_s": 3600,
+                 "stale": false, "status": "fresh" }
   },
   "plan": [ { "step": "P0 hardening: …", "state": "done" }, { "step": "Phase 2: live paper validation A/B/C", "state": "active" } ]
 }
@@ -153,8 +193,17 @@ src/
   instrumentation-node.ts     # paper-runner supervisor (sandbox-only, guarded)
 scripts/
   push-paper-snapshot.sh      # git-plumbing snapshot pusher
-db/  prisma/                  # template Prisma/SQLite (unused by the dashboard)
+db/  prisma/                  # INERT template scaffolding — no route imports
+                              # @/lib/db; delete freely (kept only because the
+                              # sandbox tooling references it)
 ```
+
+> **Note on Prisma:** the dashboard itself never touches a database — it is a
+> read-only observer over files, git and the GitHub API. The `db/`, `prisma/`
+> directories, the `@prisma/client` dependency and the `db:*` scripts are
+> leftover scaffolding from the underlying Next.js template and can be
+> removed without affecting anything. The "zero configuration" claim refers
+> to the running app: no route reads `DATABASE_URL`.
 
 ## Status
 
