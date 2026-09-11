@@ -6,9 +6,9 @@
 | **Lock status** | LOCKED — Phase-2 paper A/B/C measurement in progress; **zero changes made** to the measured system |
 | **Method** | Read-only code inspection at the locked commit (local checkout verified clean at `0373f5d`; identical to GitHub `main`) |
 | **Reference standard** | phase3-lab golden contract v1.1.0 — fail-closed semantics (`VENUE_UNAVAILABLE`/`DATA_UNAVAILABLE`/`PRICE_UNAVAILABLE`/`FEE_UNKNOWN` → BLOCK + ALERT) |
-| **Rounds** | R1 — API surface · R2 — watcher · R3 — executor/runner order-by-order · R4 — state-by-state failure matrix · R5 — targeted integrity audit (config/experiment/concurrency plane) |
+| **Rounds** | R1 — API surface · R2 — watcher · R3 — executor/runner order-by-order · R4 — state-by-state failure matrix · R5 — targeted integrity audit (config/experiment/concurrency plane) · R6 — measurement-validity audit (PnL instrument / gates / data-quality plane) |
 
-**Register status: 33 findings — 3× P0, 16× P1, 11× P2, 3× P3 · 7 deferred to post-Phase-2 hardening (D-01, NEW-01/02/04/05/06/07).** *(R5 addition; the pre-R5 header line understated P1 by one — 13→12 at the time, sums now verified against the rendered register.)*
+**Register status: 38 findings — 3× P0, 18× P1, 13× P2, 4× P3 · 11 deferred to post-Phase-2 hardening.** *(R6: +NEW-08/09/10/13/15, NEW-03 amended P2→P3 after a full template re-read — see Round 6.)*
 
 The dashboard renders this register live (`src/data/audit-findings.ts`) and the failure matrix (`src/data/failure-matrix.ts`); this document holds the evidence.
 
@@ -239,7 +239,7 @@ The group's structural fact — every cell below inherits it:
 
 ## R4 closure — hardening-pass plan (review decision, 2026-09-11)
 
-**The audit phase is CLOSED.** R4 proved the boundary of the system (a stronger result than the 539-test green matrix, which covers only designed failures); further blind bug-hunting in funding-arb is explicitly retired. The register (26 findings at closure; 33 after the R5 targeted integrity round) + matrix (21 cells) are the complete **pre-change audit trail** — which is exactly why they were recorded before touching anything. *R5 refinement of the closure scope: random bug hunting stays retired, but targeted integrity audit (experiment-validity plane) remains valid — see Round 5.*
+**The audit phase is CLOSED.** R4 proved the boundary of the system (a stronger result than the 539-test green matrix, which covers only designed failures); further blind bug-hunting in funding-arb is explicitly retired. The register (26 findings at closure; 33 after R5; 38 after R6) + matrix (21 cells) are the complete **pre-change audit trail** — which is exactly why they were recorded before touching anything. *R5/R6 refinement of the closure scope: random bug hunting stays retired, but targeted integrity + measurement-validity audit remains valid — see Rounds 5 and 6.*
 
 **Nothing is fixed now, deliberately:** the Phase-2 A/B/C measurement is running on `0373f5d`; changing execution semantics mid-measurement would mix the baseline with post-hardening results and destroy the experiment's value. Decision gate: Phase-2 verdict → **A/B** = harden + port (Phase-3 safety) · **C** = root-cause + archive lab.
 
@@ -277,8 +277,8 @@ The paper runner gates every open on `active_positions` / `active_keys` / `maxCo
 ### NEW-02 · P1 · auto-spawned watcher can run a DIFFERENT config than the runner
 `_run_pure_futures_mode()` builds its own cfg via `load_strategy_config()` + `apply_strategy_to_pure_futures_cfg()` (lines 436, 449), but the `--auto-spread-watch` watcher is launched with `watcher_cfg = args.config or <raw template path>` (line 549) — **the strategy overlay is not passed**. Runner and watcher can disagree on trade_usd, thresholds and max_positions: a config split in which two processes believe they execute the same experiment while they do not. Not active in the current paper loop (the watcher is not spawned); latent for the orchestrator/live path.
 
-### NEW-03 · P2 · paper funding re-check is fail-open (paper gate divergence)
-`fail_open = fundingRecheckFailOpen or dry_run` (`pure_futures_executor.py:399`): in paper mode a funding recheck API failure lets the candidate proceed. The code documents the intent ("dry-run defaults to fail-open so paper testing is not blocked on flaky APIs"), but methodologically it means the paper runner does not simulate the same gate as live on a data failure — paper can open a signal live would reject. Notably this is the **only** fail-open gate in the paper baseline: the template explicitly sets `depthCheckFailOpen: false` and `marginCheckFailOpen: false`. Carried into the final A/B report as **PAPER GATE DIVERGENCE — fail-open funding recheck**; such opens are not divergence-free opens. (Status: confirmed behavior, documented — deliberately not fixed during Phase-2.)
+### NEW-03 · P2→P3 (amended in R6) · paper funding re-check — code default vs active template
+`fail_open = fundingRecheckFailOpen or dry_run` (`pure_futures_executor.py:399`): in paper mode a funding recheck API failure lets the candidate proceed *when the config omits the key*. **R6 AMENDMENT (full template re-read — the R5 read was truncated):** the locked paper template explicitly sets `fundingRecheckFailOpen: false` (and `fundingRecheck: true`, `fundingRecheckMinSpreadPct: 0.02`, `feeAwareExit: true`, `parallelLegs: true`), and `cfg_lookup` checks the `pureFuturesArbitrage` block first — so the **ACTIVE Phase-2 baseline is fail-closed on ALL three pre-open gates** (depth, margin, funding recheck). The original R5 claim of an active paper-gate divergence was **wrong** and is corrected here. What remains is the capability/config distinction: the executor *supports* fail-open and any config without the override silently re-enables it in paper mode — a latent risk, not an active divergence. The final A/B/C report needs **no PAPER GATE DIVERGENCE label for this baseline**. Severity amended P2→P3.
 
 ### NEW-04 · P1 · corrupt strategy config silently becomes DEFAULT config
 `load_strategy_config()` wraps the read in `except Exception: pass` and returns `DEFAULT_STRATEGY` (`core/strategy_config.py:35-46`) — trade_usd 5000, 4-CEX scans, default thresholds. A configuration error changes the experimental parameters with **no crash and no alarm**. For Phase-2 the config is effectively part of the immutable experimental baseline; a silent default swap mid-run would be contamination. P1 for validation integrity, P2 for execution. Post-Phase-2 fix: fail loud.
@@ -299,3 +299,43 @@ The **scanner plane** was specifically checked for a false-safe hole and is clea
 
 ### R5 remediation placement
 All seven are **post-Phase-2** items and slot into the existing hardening plan without changing its order: NEW-01/NEW-07 extend the M-02+M-03 safety combination (ledger truth + locking); NEW-02 rides the M-04 state-machine patch (watcher lifecycle); NEW-04/NEW-05 are the experiment-integrity pair (fail loud + config hash) — cheap, and the first thing to land after the gate; NEW-06 is a one-line durability addition. NEW-03 needs no code change before the verdict: it is carried as a labeled divergence in the final A/B/C report.
+
+---
+
+## Round 6 — measurement-validity audit (review round, 2026-09-11)
+
+Scope: the locked `0373f5d` read through the **measurement instrument itself** — PnL formulas, entry/exit gates, funding semantics, data-quality paths. Provenance: user-driven review round; every claim independently re-verified at the locked commit before entering the register. Read-only: all new findings are post-Phase-2 candidates or report-labeling rules; **nothing is fixed during the measurement**.
+
+### NEW-08 · P1 · paper PnL does not measure actual funding cashflow
+`estimate_spread_pnl()` (`pure_futures_watcher.py:247-272`) computes **price-spread convergence only** — its own docstring: "Price P&L = inter-venue spread at open - inter-venue spread now". Funding appears only as a stop-loss **estimate** (current spread × elapsed periods, fixed `interval_h = 8.0` — see W-05), never as realized cashflow; in paper mode actual funding does not exist. Therefore: **paper result = spread convergence ± fees, NOT the strategy's economics** (price convergence + realized funding received/paid − fees). Phase-2 can validate execution/funnel/price-convergence behavior; it cannot by itself prove funding-cashflow ROI.
+
+**Materiality (read-only, rough 2-point estimate over the classified closes; settlements = held_h / 8h per W-05, close spread from edge+fees, data-gap closes decayed to 0):** for the **7 strategy-attributable closes** the excluded funding component is **≈ +1.03 %** (linear decay open→close) to **+1.60 %** (spread held constant) — versus the measured **−0.424 %** paper spread PnL. The excluded component is **2–4× the measured one and opposite in sign**. If the estimate is even roughly right, the true strategy economics are *positive* while the paper spread PnL reads negative — the paper instrument cannot decide the strategy's economics, and the Day-5/7 verdict must say so explicitly.
+
+### NEW-09 · P2 · funding recheck verifies RAW spread, not net executable edge
+`recheck_funding_edge()` (`funding_recheck.py:139-176`) re-fetches both legs and checks `spread_pct >= fundingRecheckMinSpreadPct` (template: 0.02) — the **raw funding spread only, no fee subtraction**, while the scanner entry gate required `net_edge >= 0.02` (spread ≥ fees + 0.02 ≈ 0.13 at 0.11 fees). Example: funding spread 0.06 % + fees 0.11 % → net edge −0.05 %, recheck says OK. It is the **last economic gate before submit in paper mode** (margin is live-only, depth is non-economic), so a spread collapse into [0.02, fees+0.02) can open at negative net edge — bounded by the exit logic closing it on the next cycle. Architecturally the recheck is weaker than the economic decision it re-verifies.
+
+### NEW-10 · P2 · exit decision is funding-based, PnL attribution is price-based
+Close signal: runner exit = net **funding** spread ≤ exit threshold; watcher `check_exit` = **funding** spread − fees ≤ threshold (`feeAwareExit`). Attributed result: **price**-spread convergence (`estimate_spread_pnl`). The signal triggering a close and the PnL booked to it are different economic components — an attribution-integrity caveat that must accompany any per-exit PnL reading, including the strategy-attributable primary view.
+
+### NEW-13 · P2 · failed mark price is CACHED as 0.0 for the TTL
+`_get_mark_price()` (`pure_futures_watcher.py:141-159`): on API failure `price = 0.0` and **then it is written into the cache** — a transient failure becomes a cached unavailable price for the whole TTL, unlike the usual failure→don't-cache pattern. Downstream the PnL stop runs only when both legs > 0, so a short data failure silently extends the PnL-stop outage beyond the failing call. (W-03 records the skip; this registers the failure-caching that extends it.)
+
+### NEW-15 · P1 · four different economic truths — the naming rule (validation limitation)
+The paper experiment carries four distinct metrics that are not one quantity: **entry edge** = funding spread − fees · **exit edge** = funding spread − fees · **PnL** = price-spread convergence · **funding** = estimated only, never realized. Consequence — the naming rule, now enforced in the tower labels: the primary result is reported as **strategy-attributable paper SPREAD PnL**, with the explicit limitation **"realized funding cashflow = not observed in paper mode"** — never as funding-arbitrage profitability. A validation limitation, not a reason to stop Phase-2. Post-gate fix if the project continues: realized-funding accounting in the paper instrument.
+
+### Re-confirmations of already-registered findings (no new entries)
+- **NEW-11 → E-04** (re-confirmed): `row is None → exit` in `run_once()` — E-04 is an **execution policy** (missing observation → exit decision), not merely a reporting anomaly; the +0.465 % data-gap group are exits taken on missing data. E-04's register entry amended with this insight.
+- **NEW-12 → W-06** (re-confirmed): `if actual_lq:` truthiness drops a legitimate 0.0 quantity in rebalance.
+- **NEW-14 → W-04** (re-confirmed): fee-provider failure degrades to `taker = 0.0` — `feeAwareExit=true` does not mean fee-aware when the provider is down.
+
+### Template capability vs active configuration (NEW-03 corrected)
+The locked template is **safer than the executor code reads**: `depthCheckFailOpen: false` · `marginCheckFailOpen: false` · `fundingRecheck: true` · `fundingRecheckFailOpen: false` · `feeAwareExit: true` · `parallelLegs: true`. The ACTIVE Phase-2 baseline is fail-closed on all three pre-open gates. Generic "fail-open gate" findings are therefore **code-capability notes, not active baseline problems** — see the NEW-03 amendment above (P2→P3, R5 claim corrected: the R5 template read was truncated).
+
+### R6 scope-closure — the three remaining audit axes
+Generic bug hunting stays retired. Remaining axes where genuinely new information is still possible (all post-gate, all read-only until then):
+1. **Funding-calculation correctness** — is `short_rate − long_rate` economically correct for every forward/reverse/interval combination?
+2. **Quantity/notional correctness** — is every PnL, fee, depth and margin computation on the same notional basis?
+3. **Timestamp/data-freshness correctness** — is every rate/price/fee used with a known timestamp, and can stale data influence a decision?
+
+### Live-sample note (advanced during this round)
+The sample moved while R6 was being processed: **12 closes** (7 strategy-attributable, −0.424 % · 5 data-gap, +0.465 % · raw +0.041 %; identity holds), 15 opened → 12 closed (7 genuine · 5 data-gap) · 3 still open. All numbers in this section refer to this snapshot; the tower renders them continuously.

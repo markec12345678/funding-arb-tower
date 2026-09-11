@@ -227,13 +227,21 @@ Phase-2 A/B/C measurement — findings are recorded only, the measured system is
 untouched, and remediation is deferred to the post-Phase-2 hardening pass.
 
 Rounds: R1 API surface · R2 watcher · R3 executor/runner · R4 failure matrix ·
-**R5 targeted integrity audit** (config/experiment/concurrency plane — 7 findings:
-orchestrator duplicate gate, watcher config split, fail-open paper funding recheck,
+R5 targeted integrity audit (config/experiment/concurrency plane — 7 findings:
+orchestrator duplicate gate, watcher config split, fail-open funding-recheck
+code default *amended in R6: the template overrides it — capability, not active*,
 silent strategy-config defaults, unlocked config invariant, non-durable atomic write,
-multi-process TOCTOU). R5's headline empirical result: across 261 real cycles the
-journal carries exactly one thresholds variant and trade_usd never leaves 500 —
-for every recorded dimension the Phase-2 sample **is one experiment (verified)**;
-NEW-05 stays open as an *unenforced* invariant, with no evidence of actual mutation.
+multi-process TOCTOU) · **R6 measurement-validity audit** (PnL instrument / gates /
+data-quality — 5 findings + 3 re-confirmations: paper PnL excludes realized funding
+cashflow, recheck verifies raw spread not net edge, funding-based exit vs price-based
+PnL, failed mark price cached as 0, four economic truths). R5's headline empirical
+result: across 261 real cycles the journal carries exactly one thresholds variant and
+trade_usd never leaves 500 — for every recorded dimension the Phase-2 sample
+**is one experiment (verified)**. R6's headline: the excluded funding component for
+the attributable closes is ≈ +1.0 % to +1.6 % (2–4× the measured −0.42 % spread PnL,
+opposite sign) — so the primary result is labeled **strategy-attributable paper
+SPREAD PnL** with "realized funding cashflow not observed in paper mode" stamped
+alongside, never as funding-arbitrage profitability.
 
 ## Exit classification — strategy-attributable vs E-04
 

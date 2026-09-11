@@ -4,7 +4,7 @@ export type FindingStatus = "confirmed" | "deferred";
 export interface AuditFinding {
   id: string;
   severity: FindingSeverity;
-  round: 1 | 2 | 3 | 4 | 5;
+  round: 1 | 2 | 3 | 4 | 5 | 6;
   area: string;
   title: string;
   detail: string;
@@ -134,7 +134,7 @@ export const auditFindings: AuditFinding[] = [
   {
     id: "E-04", severity: "P2", round: 3, area: "run_pure_futures_spread.py", status: "confirmed",
     title: "Runner treats a scanner data gap as an exit signal",
-    detail: "should_close = row is None or edge <= exit_edge — a venue fetch failure in the scanner removes the row and the position is closed at market. No distinction between 'edge genuinely collapsed' and 'data unavailable' (Phase-3 contract: DATA_UNAVAILABLE → no action + alert).",
+    detail: "should_close = row is None or edge <= exit_edge — a venue fetch failure in the scanner removes the row and the position is closed at market. No distinction between 'edge genuinely collapsed' and 'data unavailable' (Phase-3 contract: DATA_UNAVAILABLE → no action + alert). R6 re-confirmation: E-04 is an execution POLICY — missing observation → exit decision — not merely a reporting anomaly; the data-gap exit group in the running baseline (5 closes, +0.465%) are exits taken on missing data.",
     evidence: "run_pure_futures_spread.py:127-144",
   },
   {
@@ -192,10 +192,10 @@ export const auditFindings: AuditFinding[] = [
     evidence: "cli/orchestrate_funding.py:424-449 vs 549-561",
   },
   {
-    id: "NEW-03", severity: "P2", round: 5, area: "pure_futures_executor.py", status: "confirmed",
-    title: "Paper funding re-check is fail-open (paper gate divergence)",
-    detail: "fail_open = fundingRecheckFailOpen or dry_run — in paper mode a funding recheck API failure lets the candidate proceed (documented intent: 'dry-run defaults to fail-open so paper testing is not blocked on flaky APIs'). The paper runner therefore does not simulate the same gate as live on data failure: paper can open a signal live would reject. Notably this is the ONLY fail-open gate in the paper baseline — the template explicitly sets depthCheckFailOpen:false and marginCheckFailOpen:false. To be carried in the final A/B report as PAPER GATE DIVERGENCE — fail-open funding recheck, not as a divergence-free open.",
-    evidence: "pure_futures_executor.py:396-399 + comment 388-393; templates/config.pure_futures.spread.json (fundingRecheckFailOpen unset)",
+    id: "NEW-03", severity: "P3", round: 5, area: "pure_futures_executor.py", status: "confirmed",
+    title: "Fail-open funding-recheck CODE DEFAULT (template overrides — capability, not active)",
+    detail: "AMENDED in R6 (full template re-read): the locked paper template sets fundingRecheckFailOpen=false, so the ACTIVE Phase-2 baseline is fail-closed on ALL three pre-open gates (depth, margin, funding recheck) — the original R5 claim of an active paper-gate divergence was wrong (truncated template read; cfg_lookup checks the pureFuturesArbitrage block first and finds the override). What remains is a capability risk: fail_open = fundingRecheckFailOpen OR dry_run means any config that omits the key silently re-enables fail-open in paper mode. Capability vs active-configuration distinction; no divergence in the current sample — the final A/B/C report needs no PAPER GATE DIVERGENCE label for this baseline.",
+    evidence: "pure_futures_executor.py:399; funding_recheck.py:40-56 (cfg_lookup); templates/config.pure_futures.spread.json (fundingRecheckFailOpen:false)",
   },
   {
     id: "NEW-04", severity: "P1", round: 5, area: "core/strategy_config.py", status: "deferred",
@@ -220,5 +220,35 @@ export const auditFindings: AuditFinding[] = [
     title: "Multi-process TOCTOU on the open decision",
     detail: "The file lock covers ledger WRITES only. The open decision spans load positions → compute slots → choose candidate → place orders → record — unlocked throughout. Two concurrent runners both see 2/3 slots, both open, both record: capacity exceeded and potential same-pair duplicates. Distinct from M-02/M-03 (corrupt ledger) — this is a race on a healthy ledger. Not proven active with the current single PID (12976); real for production. P2 now, P1 for the live path.",
     evidence: "run_pure_futures_spread.py:147-199 (read → decide → open → later save; lock only inside _save_positions)",
+  },
+  {
+    id: "NEW-08", severity: "P1", round: 6, area: "measurement instrument", status: "deferred",
+    title: "Paper PnL does not measure actual funding cashflow",
+    detail: "estimate_spread_pnl() computes price-spread convergence only (open price spread − close price spread, scaled by qty; its own docstring says 'Price P&L = inter-venue spread at open - inter-venue spread now'). Funding appears only as a stop-loss ESTIMATE (current spread × elapsed periods, fixed interval_h=8.0), never as realized cashflow — in paper mode actual funding does not exist. So paper result = spread convergence ± fees, NOT the strategy's economics (price convergence + realized funding received/paid − fees). Phase-2 can validate execution/funnel/price-convergence behavior but cannot by itself prove funding-cashflow ROI. MATERIALITY (read-only, 2-point estimate over the classified closes): the excluded funding component for the 7 strategy-attributable closes is ≈ +1.03% (linear decay open→close) to +1.60% (spread constant) — 2–4× the magnitude of the measured −0.424% spread PnL and OPPOSITE IN SIGN. The excluded component dominates the measured one: the paper instrument cannot decide the strategy's economics.",
+    evidence: "pure_futures_watcher.py:247-272 (formula), 592 (interval_h=8.0); rough estimate: open candidate spread_pct × settlements=held_h/8, linear & constant bounds",
+  },
+  {
+    id: "NEW-09", severity: "P2", round: 6, area: "execution/funding_recheck.py", status: "deferred",
+    title: "Funding recheck verifies RAW spread, not net executable edge",
+    detail: "recheck_funding_edge() re-fetches both legs and checks spread_pct >= fundingRecheckMinSpreadPct (0.02 in the template) — the RAW funding spread only, no fee subtraction. The scanner entry gate required net_edge >= 0.02 (i.e. spread >= fees + 0.02 ≈ 0.13 with 0.11 fees). Example: funding spread 0.06% + fees 0.11% → net edge −0.05%, yet the recheck says OK. It is the LAST economic gate before submit in paper mode (margin is live-only, depth is non-economic), so a spread collapse into [0.02, fees+0.02) can open at negative net edge — bounded by the exit logic closing it on the next cycle (net edge ≤ exit threshold). Architecturally: the recheck is weaker than the original economic decision it is supposed to re-verify.",
+    evidence: "funding_recheck.py:139-176 (ok = spread_pct >= floor, no fee term); pure_futures_executor.py:388-402 (call site); template fundingRecheckMinSpreadPct=0.02 vs journal thresholds minNetEdgePct=0.02",
+  },
+  {
+    id: "NEW-10", severity: "P2", round: 6, area: "measurement instrument", status: "deferred",
+    title: "Exit decision is funding-based, PnL attribution is price-based",
+    detail: "The close signal and the PnL attributed to that close are different economic components: runner exit = net FUNDING spread ≤ exit threshold; watcher check_exit = FUNDING spread − fees ≤ exit threshold (feeAwareExit); but the recorded/attributed PnL = PRICE spread convergence (estimate_spread_pnl). Deliberate design, but it means the signal triggering a close and the result booked to it are not the same quantity — an attribution-integrity caveat that must accompany any per-exit PnL reading (including the strategy-attributable primary view).",
+    evidence: "run_pure_futures_spread.py:127-144 (funding edge exit); pure_futures_watcher.py:206-236 (check_exit, funding−fee); estimate_spread_pnl price formula 247-272",
+  },
+  {
+    id: "NEW-13", severity: "P2", round: 6, area: "pure_futures_watcher.py", status: "deferred",
+    title: "Failed mark price is CACHED as 0.0 for the TTL",
+    detail: "On API failure _get_mark_price() sets price = 0.0 and then writes it into _mark_price_cache — a transient failure becomes a cached 'unavailable price' for the whole TTL window (10 s), unlike the usual failure → don't-cache pattern. Downstream, the PnL stop runs only when both legs' prices > 0, so a short data failure silently extends the PnL-stop outage beyond the failing call. Data-quality/watcher behavior; harmless for the current paper baseline, real for a live watcher. (Related mechanism already recorded in W-03 — the skip; this registers the failure-caching that extends it.)",
+    evidence: "pure_futures_watcher.py:141-159 (except → price=0.0 → cache write)",
+  },
+  {
+    id: "NEW-15", severity: "P1", round: 6, area: "experiment methodology", status: "confirmed",
+    title: "Four different economic truths — 'paper PnL' must never be named 'funding PnL'",
+    detail: "The paper experiment carries four distinct metrics that are not one quantity: entry edge = funding spread − fees; exit edge = funding spread − fees; PnL = price-spread convergence; funding = estimated only (never realized — it does not exist in paper mode). Consequence (naming rule, enforced in the tower labels): the primary result is reported as STRATEGY-ATTRIBUTABLE PAPER SPREAD PnL, with the explicit limitation 'realized funding cashflow = not observed in paper mode' — never as funding-arbitrage profitability. Validation limitation, not a reason to stop Phase-2; recorded for the final A/B/C report. Post-gate fix if the project continues: realized-funding accounting in the paper instrument.",
+    evidence: "scanner pair model + check_exit (funding) vs estimate_spread_pnl (price) vs estimated-only funding stop; naming rule applied in tower exit-classification card",
   },
 ];

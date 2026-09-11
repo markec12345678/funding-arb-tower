@@ -298,6 +298,6 @@ export function classifyExits(journalRaw: string | null, positionsRaw: string | 
     },
     per_exit: perExit.slice(0, 30),
     note:
-      "Passive read-only classification — the runner and the measured system are untouched (0373f5d locked). PnL mirrors the watcher's estimate_spread_pnl; close prices come from the executor's own leg fetch, independent of the scanner gap. Reporting contract: the strategy-attributable result is PRIMARY; raw and E-04 contamination are always shown alongside — never a single blended PnL.",
+      "Passive read-only classification — the runner and the measured system are untouched (0373f5d locked). PnL mirrors the watcher's estimate_spread_pnl (PRICE-spread convergence ± fees — realized funding cashflow is NOT observed in paper mode); close prices come from the executor's own leg fetch, independent of the scanner gap. Reporting contract: the strategy-attributable result is PRIMARY; raw and E-04 contamination are always shown alongside — never a single blended PnL. Naming rule (NEW-15): report as strategy-attributable paper SPREAD PnL, never as funding-arbitrage profitability.",
   };
 }

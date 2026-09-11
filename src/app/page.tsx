@@ -838,7 +838,8 @@ export default function Home() {
                   <p className="text-[11px] leading-relaxed text-zinc-500">
                     Passive evidence classification over {p.exits.journal_span.cycles} real cycles —
                     every close sorted by cause. The runner and the measured system are untouched;
-                    PnL mirrors the watcher's spread-PnL estimate. Reporting contract: the
+                    PnL mirrors the watcher's spread-PnL estimate (price-spread convergence ± fees —
+                    realized funding cashflow is NOT observed in paper mode). Reporting contract: the
                     strategy-attributable result is primary; raw and E-04 contamination are always
                     shown alongside — never a single blended PnL.
                   </p>
@@ -847,7 +848,7 @@ export default function Home() {
                   <div className="rounded-lg border border-zinc-700 bg-zinc-900/70 p-4">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
-                        strategy-attributable
+                        strategy-attributable · paper spread pnl
                       </span>
                       <span className="rounded-full border border-zinc-600 bg-zinc-800 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-zinc-300">
                         primary
@@ -869,8 +870,9 @@ export default function Home() {
                         {p.exits.diagnostic_baseline.closes} closes · avg {pct(p.exits.diagnostic_baseline.avg_pnl_pct)}
                       </span>
                     </div>
-                    <div className="mt-1 text-[10px] text-zinc-500">
-                      genuine strategy exits — E-04 data-gap closes held apart
+                    <div className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+                      genuine strategy exits — E-04 data-gap closes held apart ·
+                      realized funding cashflow not observed in paper mode (NEW-08/NEW-15)
                     </div>
                   </div>
 
@@ -1016,7 +1018,7 @@ export default function Home() {
                           <th className="py-1.5 pr-2 font-medium">cause</th>
                           <th className="py-1.5 pr-2 font-medium text-right">edge</th>
                           <th className="py-1.5 pr-2 font-medium text-right">held</th>
-                          <th className="py-1.5 font-medium text-right">pnl</th>
+                          <th className="py-1.5 font-medium text-right">spread pnl</th>
                         </tr>
                       </thead>
                       <tbody className="font-mono tabular-nums text-zinc-300">
@@ -1052,12 +1054,15 @@ export default function Home() {
                   </div>
 
                   <p className="border-t border-zinc-800/60 pt-3 text-[11px] leading-relaxed text-zinc-500">
-                    E-04 (runner closes on a missing scanner row) is measurably firing in this baseline and
-                    is PnL-directional — the near-zero raw number is a mixing artifact, which is exactly why
-                    the final A/B/C report carries the strategy-attributable result as primary. E-04 stays
-                    deliberately unfixed during Phase-2 (fixing mid-sample would mix baselines); watcher-driven
-                    categories (stop-loss, funding) stay in the taxonomy and count 0 while the watcher is not
-                    part of the paper loop. Small sample = diagnostic signal, not a statistical verdict.
+                    Naming rule (NEW-15): the primary number is strategy-attributable paper SPREAD PnL —
+                    never funding-arbitrage profitability; realized funding cashflow is not observed in
+                    paper mode, and the excluded funding component is material (NEW-08). E-04 (runner closes
+                    on a missing scanner row) is measurably firing in this baseline and is PnL-directional —
+                    the near-zero raw number is a mixing artifact, which is exactly why the final A/B/C report
+                    carries the strategy-attributable result as primary. E-04 stays deliberately unfixed
+                    during Phase-2 (fixing mid-sample would mix baselines); watcher-driven categories
+                    (stop-loss, funding) stay in the taxonomy and count 0 while the watcher is not part
+                    of the paper loop. Small sample = diagnostic signal, not a statistical verdict.
                   </p>
                 </div>
               </Card>
