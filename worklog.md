@@ -1879,3 +1879,21 @@ Work Log:
 Stage Summary:
 - Both repos fully synced to GitHub: quant-arb-engine @ 596ee7e (v0.6.1) · funding-arb-tower @ 8292214 · funding-arb @ 0373f5d (locked, untouched). Every user-facing description (tower README, W0 card) now reflects the shipped code exactly — 46 tracked checks, --dry-run, 0 real records — with the sealed design record intentionally frozen per discipline.
 - No owned work remains: daily Phase-2 check next (~Sep 12/13), Day-3 interim (~Sep 13), A/B/C (~Sep 17); user-owned: connect a real feed (dry-run first); W1 gated on its own sealed decision record.
+
+---
+Task ID: 31
+Agent: main (Z.ai Code)
+Date: 2026-09-11 ~21:00–21:20 UTC (session 6)
+Task: Continue per user's "odlicno nadaljuj" — with both repos synced and the daily check not due, the honest owned work was finishing the documentation-reflects-code sweep (architecture.md was still v0.6.0-stale) and closing the last reproducibility gap (the webhook receiver's e2e was ad-hoc, untracked).
+
+Work Log:
+- Recon: time ~21:00 UTC Sep 11 (daily Phase-2 check done 19:46, next ~Sep 12/13 — not due); 3 processes alive; engine clean @ 596ee7e; funding-arb journal 384 lines (on cadence).
+- Gap 1 — architecture.md stale: rfq/providers and rfq/ingest module-contract rows described only the v0.6.0 surface (no safe_records/effective_map/--dry-run), and extension point 1 said just "EXISTS (v0.6)". Updated all three: providers row now states the v0.6.1 provider contract (strict records() + safe_records() per-record isolation (index, record|None, error|None); effective_map() dialect hook — synthetic overrides the hook, not records(), so strict/safe walks identical by construction); ingest row now states dry_run() (writes NOTHING: no line/lock/status/dirs; per-row named errors; duplicate detection vs journal AND within batch; exit 1 on would-skip); extension point 1 marked "hardened v0.6.1" + the tracked-harness reproduction line.
+- Gap 2 — webhook receiver untracked: Task-27's webhook e2e (200/422/422) lived in ad-hoc .scratch. Harness section 9 added: in-process ThreadingHTTPServer on an ephemeral port, real HTTP POSTs — valid accepted (200, seq=1, ok, rfq_id, hash); WRONG token 401; MISSING token 401; duplicate rfq_id 422 naming R-1; future reference_ts 422 naming R-11; malformed JSON 400; unknown path 404; closing invariant: exactly ONE line journaled after the whole barrage (source=real, chain verified) — rejected payloads never journaled.
+- Verification: 54/54 invariant checks PASS (46 + 8 webhook). Engine README honest-status paragraph + harness reproduction line updated to 54 with the webhook items listed (the v0.4 historical "46/46 positive-direction breaches" line deliberately untouched — different 46). Module code UNCHANGED this round → version honestly stays 0.6.1 (docs + harness only). Commit 87525ba PUSHED.
+- Tower sync (3 spots): README repo-table row + engine-view bullet + W0 card amber line — "54 tracked checks" + coverage list now names "webhook token/rejection gates". Lint clean; agent-browser e2e: v0.6.1 + "54 tracked checks" + webhook gates rendered, ZERO stale "46 tracked" occurrences, W0 card intact, ZERO page errors. Screenshot: screenshots/engine-v061-54checks.png. Tower commit b2428d3 PUSHED (8292214..b2428d3).
+- funding-arb untouched @ 0373f5d throughout; runner alive; sealed records untouched (w0-rfq-ingestion.md still version 0.6.0 by discipline).
+
+Stage Summary:
+- Documentation now fully reflects the shipped code everywhere it is rendered (engine README + architecture.md + tower README + W0 card), and every W0 invariant claim — core path AND webhook receiver — is reproducible from the engine repo alone (54 tracked checks, exit = failure count).
+- Shipped state: quant-arb-engine @ 87525ba (v0.6.1, pushed) · funding-arb-tower @ b2428d3 (pushed) · funding-arb @ 0373f5d (locked, untouched). Next owned events: daily Phase-2 check (~Sep 12/13), Day-3 interim (~Sep 13), A/B/C (~Sep 17); user-owned: connect a real feed (dry-run first); W1 gated on its own sealed decision record.
