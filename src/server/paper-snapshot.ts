@@ -23,7 +23,11 @@ import { execFile } from "child_process";
 import { writeFileSync, readFileSync, existsSync } from "fs";
 
 const g = globalThis as any;
-if (!g.__fundingArbPaperSnapshot) {
+// Sandbox-only module: the snapshot script pushes files from the local
+// funding-arb checkout. Deployed environments (Vercel) have neither the
+// checkout nor the script — import there must be a no-op, not hourly bash
+// failures in a setInterval.
+if (!g.__fundingArbPaperSnapshot && existsSync("/home/z/funding-arb")) {
   g.__fundingArbPaperSnapshot = true;
 
   const SCRIPT = "/home/z/my-project/scripts/push-paper-snapshot.sh";

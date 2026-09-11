@@ -15,17 +15,15 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "funding-arb · command center",
-  description: "funding-arb P0→backtest→paper validation command center: pipeline status, backtest verdict, live paper funnel.",
-  keywords: ["Z.ai", "Next.js", "TypeScript", "Tailwind CSS", "shadcn/ui", "AI development", "React"],
-  authors: [{ name: "Z.ai Team" }],
+  description:
+    "funding-arb paper-validation command center: pipeline status, backtest verdict, live paper funnel, phase-3 safety certification.",
+  keywords: ["funding rate arbitrage", "paper trading", "Next.js", "TypeScript", "Tailwind CSS", "dashboard"],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/logo.svg",
   },
   openGraph: {
     title: "funding-arb · command center",
     description: "funding arbitrage validation dashboard",
-    url: "https://chat.z.ai",
-    siteName: "Z.ai",
     type: "website",
   },
   twitter: {

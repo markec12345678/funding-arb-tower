@@ -22,7 +22,10 @@ import { execSync } from "child_process";
 import { openSync, closeSync, writeFileSync, readFileSync, existsSync } from "fs";
 
 const g = globalThis as any;
-if (!g.__fundingArbGhHeartbeat) {
+// Sandbox-only module: outside the sandbox (e.g. deployed on Vercel) there is
+// no funding-arb checkout and no PAT to read — importing this module there
+// must be a clean no-op, not a 20 s interval that fails forever.
+if (!g.__fundingArbGhHeartbeat && existsSync("/home/z/funding-arb")) {
   g.__fundingArbGhHeartbeat = true;
 
   const REPO = "/home/z/funding-arb";

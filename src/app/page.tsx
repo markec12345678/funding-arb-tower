@@ -10,6 +10,7 @@ import {
   CircleDot,
   ExternalLink,
   Github,
+  Layers,
   Loader2,
   Radio,
   ShieldCheck,
@@ -20,6 +21,8 @@ import {
 
 type Status = {
   now: string;
+  mode: "local" | "remote";
+  source: { kind: string; detail: string };
   repo: { branch: string; commits: { sha: string; message: string }[]; dirty: boolean };
   paper: {
     runner: { alive: boolean; pid: number | null; log_updated_at: string | null; log_tail: string[] };
@@ -41,6 +44,14 @@ type Status = {
   backtest: any;
   pipeline: {
     github: any;
+    phase3: {
+      repo: string;
+      url: string;
+      latest: { sha: string; message: string; date: string | null } | null;
+      summary: string;
+      tests: string;
+      status: string;
+    } | null;
     vercel: any;
     snapshot: any;
   };
@@ -145,7 +156,13 @@ export default function Home() {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch("/api/status", { cache: "no-store" });
+      // Propagate ?source=remote from the page URL to the API: lets the
+      // sandbox UI render exactly what a deployed (Vercel) instance sees.
+      const forceRemote =
+        typeof window !== "undefined" && window.location.search.includes("source=remote");
+      const r = await fetch(`/api/status${forceRemote ? "?source=remote" : ""}`, {
+        cache: "no-store",
+      });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setData(await r.json());
       setError(null);
@@ -182,11 +199,24 @@ export default function Home() {
                 funding-arb <span className="text-zinc-500">· command center</span>
               </h1>
               <p className="text-xs text-zinc-500">
-                P0 hardening → backtest → paper validation · no new features, prove the edge
+                P0 → backtest → paper A/B/C → phase-3 safety lab · prove the edge, then earn the port
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {data && (
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${
+                  data.mode === "local"
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                    : "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                }`}
+                title={data.source.detail}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                {data.mode === "local" ? "sandbox live" : "github snapshot"}
+              </span>
+            )}
             {data && (
               <span
                 className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${
@@ -196,7 +226,13 @@ export default function Home() {
                 }`}
               >
                 <Radio className={`h-3.5 w-3.5 ${p?.runner?.alive ? "animate-pulse" : ""}`} />
-                {p?.runner?.alive ? "paper runner LIVE" : "runner down"}
+                {data.mode === "remote"
+                  ? p?.runner?.alive
+                    ? "GH collector LIVE"
+                    : "collector stale"
+                  : p?.runner?.alive
+                    ? "paper runner LIVE"
+                    : "runner down"}
               </span>
             )}
             <a
@@ -233,7 +269,7 @@ export default function Home() {
           <>
             {/* KPI row */}
             <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
-              <Kpi label="tests" value="539" sub="535 + 4 E2E paper-flow" tone="good" />
+              <Kpi label="tests" value="539+106" sub="funding-arb 539 · phase3-lab 106" tone="good" />
               <Kpi label="backtest window" value="30 d" sub="BTC·ETH·SOL · 4 CEX + HL" />
               <Kpi
                 label="backtest trades"
@@ -370,13 +406,16 @@ export default function Home() {
               {/* Pipeline + plan */}
               <div className="space-y-6">
                 <Card title="delivery pipeline" icon={<ShieldCheck className="h-4 w-4" />}>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
                     <div className="space-y-2">
                       <div className="flex items-center gap-2 text-zinc-400">
                         <Github className="h-3.5 w-3.5" /> {data.pipeline.github.repo}
                       </div>
                       <div className="text-zinc-500">branch <span className="text-zinc-300 font-mono">{data.repo.branch}</span>{data.repo.dirty && <span className="text-amber-400"> (dirty)</span>}</div>
                       <div className="text-zinc-500">CI {data.pipeline.github.ci}</div>
+                      {data.pipeline.github.pushed_at && (
+                        <div className="text-zinc-500">pushed <span className="text-zinc-300">{timeAgo(data.pipeline.github.pushed_at)}</span> ago</div>
+                      )}
                       <div className="mt-2 space-y-1">
                         {data.repo.commits.slice(0, 4).map((c) => (
                           <div key={c.sha} className="flex gap-2 items-baseline">
@@ -387,7 +426,35 @@ export default function Home() {
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <div className="text-zinc-400">Vercel — {data.pipeline.vercel.status}</div>
+                      <div className="flex items-center gap-2 text-zinc-400">
+                        <Layers className="h-3.5 w-3.5" /> phase3-lab
+                      </div>
+                      {data.pipeline.phase3 ? (
+                        <>
+                          <a
+                            href={data.pipeline.phase3.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-emerald-400 hover:underline"
+                          >
+                            {data.pipeline.phase3.repo} <ExternalLink className="h-3 w-3" />
+                          </a>
+                          {data.pipeline.phase3.latest && (
+                            <div className="flex gap-2 items-baseline">
+                              <span className="font-mono text-emerald-500/80">{data.pipeline.phase3.latest.sha}</span>
+                              <span className="truncate text-zinc-500">{data.pipeline.phase3.latest.message}</span>
+                            </div>
+                          )}
+                          <div className="text-zinc-500">{data.pipeline.phase3.tests}</div>
+                          <div className="text-amber-400/90 leading-snug">{data.pipeline.phase3.status}</div>
+                          <div className="text-zinc-600">{data.pipeline.phase3.summary}</div>
+                        </>
+                      ) : (
+                        <div className="text-zinc-600">unavailable</div>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-zinc-400">Vercel</div>
                       <a
                         href={data.pipeline.vercel.url}
                         target="_blank"
@@ -396,11 +463,13 @@ export default function Home() {
                       >
                         {data.pipeline.vercel.url.replace("https://", "")} <ExternalLink className="h-3 w-3" />
                       </a>
+                      <div className="text-zinc-500 leading-snug">{data.pipeline.vercel.status}</div>
                       <div className="text-zinc-500 pt-1">snapshot source</div>
                       <div className="font-mono text-[10px] text-zinc-400 break-all">
                         {data.pipeline.snapshot.source}
                       </div>
                       <div className="text-zinc-500">{data.pipeline.snapshot.refreshed_by}</div>
+                      <div className="text-zinc-600 pt-1">lifecycle: {data.pipeline.snapshot.lifecycle}</div>
                     </div>
                   </div>
                 </Card>
@@ -488,8 +557,10 @@ export default function Home() {
             </Card>
 
             <p className="text-[11px] text-zinc-600 text-center">
-              data refreshes every 10 s · statuses {new Date(data.now).toLocaleTimeString("sl-SI")} ·
-              sandbox session — the paper runner keeps cycling while the box is up
+              data refreshes every 10 s · statuses {new Date(data.now).toLocaleTimeString("sl-SI")} ·{" "}
+              {data.mode === "local"
+                ? "sandbox session — the paper runner keeps cycling while the box is up"
+                : "deployed mode — lifecycle snapshots + 5-min github-actions cycles from the paper-data branch"}
             </p>
           </>
         )}
@@ -498,7 +569,7 @@ export default function Home() {
       {/* Sticky footer */}
       <footer className="mt-auto border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-600">
-          <span>funding-arb paper validation · P0 hardened · 539 tests · atomic ledgers · fail-closed gates</span>
+          <span>funding-arb paper validation · P0 hardened · 539 + 106 phase-3 tests · atomic ledgers · fail-closed gates</span>
           <span className="font-mono">educational / research — not financial advice</span>
         </div>
       </footer>

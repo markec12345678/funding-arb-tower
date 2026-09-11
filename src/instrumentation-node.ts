@@ -25,7 +25,12 @@ import "@/server/gh-heartbeat";
 import "@/server/paper-snapshot";
 
 const g = globalThis as any;
-if (!g.__fundingArbPaperSupervisor) {
+// Deployed environments (e.g. Vercel) have no /home/z/funding-arb checkout:
+// the supervisor, the GitHub heartbeat and the snapshot pusher are
+// sandbox-only duties. Guard on the checkout so importing this module on a
+// serverless deployment is a clean no-op instead of a crash loop (openSync
+// on a non-existent log path would throw inside the setInterval callback).
+if (!g.__fundingArbPaperSupervisor && existsSync("/home/z/funding-arb")) {
   g.__fundingArbPaperSupervisor = true;
 
   const REPO = "/home/z/funding-arb";
