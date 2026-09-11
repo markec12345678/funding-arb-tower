@@ -386,7 +386,7 @@ function RfqLaneCard({ rfq }: { rfq: RfqStatus | null }) {
             },
             {
               p: "webhook receiver",
-              state: "ready — one command for push providers (shared-secret token, constant-time)",
+              state: "ready — one command for push providers (shared-secret token, constant-time); refreshes rfq-status.json per accepted record so this tower stays live; honest 500 surface",
               tone: "good" as const,
             },
             {
@@ -475,10 +475,11 @@ function RfqLaneCard({ rfq }: { rfq: RfqStatus | null }) {
               <>
                 honest status: <span className="font-semibold text-amber-300">0 real records</span>{" "}
                 — no RFQ desk credentials exist in this environment. The machinery is complete and
-                invariant-checked (92 tracked checks, reproducible from the repo via
+                invariant-checked (100 tracked checks, reproducible from the repo via
                 verify_w0_invariants.py: chain tamper/reorder/insert/truncate detection,
                 duplicate-id, future reference rejection, source wall, edge accounting,
-                dry-run writes-nothing, webhook token/rejection gates, replay adapter mapping,
+                dry-run writes-nothing, webhook token/rejection gates + per-append status
+                refresh with honest stale/500 surfaces, replay adapter mapping,
                 coverage census); real data starts
                 the moment a feed is connected.
               </>
