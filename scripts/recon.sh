@@ -241,6 +241,29 @@ PYEOF
     ) && countdown "$lane_next" "phase2 lane next fire" \
       || { echo "  ERROR: phase2 meta unreadable"; degrade "phase2 meta unreadable"; }
     jq -r '"  lane meta: runs=\(.runs) ok=\(.ok) last_result=\"\(.last_result)\""' "$PHASE2_META" 2>/dev/null || true
+
+    # INVARIANT: a lane fire that ended "ok" must have refreshed the
+    # report — generated_at >= the fire's own start (last_run). Without
+    # this check, "analyzer exited 0 but report-latest was not rewritten"
+    # would only surface via the 26 h check_overdue grace — a full day
+    # late, with two more fires on top. Seeded state is exempt BY
+    # CONSTRUCTION: its last_run IS the report's mtime, which postdates
+    # generated_at by the write lag, so the comparison only applies to
+    # real "ok" fires.
+    lane_result=$(jq -r '.last_result // ""' "$PHASE2_META" 2>/dev/null || true)
+    if [ "$lane_result" = "ok" ]; then
+      fire_start_ms=$(jq -r '.last_run // 0 | floor' "$PHASE2_META" 2>/dev/null || echo 0)
+      gen_ts=$(jq -r '.generated_at // empty' "$FARB/scripts/data/phase2/report-latest.json" 2>/dev/null || true)
+      if [ -n "$gen_ts" ]; then
+        gen_ms=$(( $(date -u -d "${gen_ts// /T}" +%s 2>/dev/null || echo 0) * 1000 ))
+        if [ "$gen_ms" -lt "$fire_start_ms" ]; then
+          echo "  lane-report mismatch: fire started $(date -u -d @$((fire_start_ms/1000)) +%H:%M:%SZ) but report generated_at $(date -u -d @$((gen_ms/1000)) +%H:%M:%SZ)"
+          degrade "lane ok but report-latest stale (generated_at precedes the fire)"
+        fi
+      else
+        degrade "lane ok but report-latest unreadable (generated_at missing)"
+      fi
+    fi
   else
     echo "  (no $PHASE2_META — lane never armed)"; degrade "phase2 meta absent"
   fi

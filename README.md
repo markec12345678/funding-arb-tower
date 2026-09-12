@@ -196,7 +196,12 @@ elsewhere:
   journal-window totals carry the window line — from/to, span in hours, and
   the sliding warning that these counts DROP as lines age out — positions
   say `(whole ledger)`, economics says `(experiment-lifetime)`; mixed
-  coverages never share a section unlabeled). Exit `0` = all
+  coverages never share a section unlabeled). Plus the **lane-report
+  invariant** (Task 68): a lane fire that ended `ok` must show
+  `report-latest.generated_at ≥ lane.last_run` — catching "analyzer
+  exited 0 but the report was not rewritten" the same morning instead
+  of waiting out the 26 h `check_overdue` grace (seeded state is exempt
+  by construction). Exit `0` = all
   green, `1` = degraded with named reasons; failure paths (dead API, lock
   drift) verified by test, not assumption.
 - `scripts/e2e.sh` — **browser-level golden path**: recon's sibling for the
