@@ -342,6 +342,188 @@ function paperPositions() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase-2 A/B/C discipline — the read-only analyzer's stable artifact,
+// rendered VERBATIM. The daily verify-only check
+// (funding-arb scripts/analysis/phase2_report.py — locked framework) writes
+// report-latest.json into its own output dir; this block consumes it without
+// ever recomputing a decision input: the numbers the A/B/C verdict reads are
+// the analyzer's, by construction. Local mode reads the checkout; remote mode
+// reads the copy pushed hourly to the paper-data branch by the tower-owned
+// snapshot pusher (scripts/push-paper-snapshot.sh — plumbing push, the
+// funding-arb working tree is never touched).
+// ---------------------------------------------------------------------------
+
+const PHASE2_LOCAL = path.join(REPO, "scripts/data/phase2/report-latest.json");
+// The discipline is a DAILY check; 26h = one day + 2h grace before the tower
+// calls it overdue. This makes the discipline itself verifiable: a skipped
+// day is visible, not silent.
+const PHASE2_DAILY_GRACE_S = 26 * 3600;
+
+type Phase2Block = {
+  available: boolean;
+  source: "local-analyzer" | "paper-data-branch" | null;
+  reason: string | null;
+  generated_at: string | null;
+  age_s: number | null;
+  check_overdue: boolean | null;
+  day: number | null;
+  stage: string | null;
+  baseline_start: string | null;
+  day3_at: string | null;
+  day7_at: string | null;
+  totals: {
+    price: number;
+    fees: number;
+    funding: number;
+    net: number;
+    retention_avg_pct: number;
+    wins: number;
+    closed: number;
+  } | null;
+  integrity: {
+    parse_errors: number | null;
+    duplicate_ts: number | null;
+    ts_back_jumps: number | null;
+    gaps_over_15min: number | null;
+    duplicate_position_ids: number | null;
+    open_now: number | null;
+    last_cycle_open_positions: number | null;
+    collector_coverage_pct: number | null;
+    collector_duplicate_ts: number | null;
+    collector_gaps_over_10min: number | null;
+    supervisor_alive: boolean | null;
+    snapshot_pusher_runs: number | null;
+    snapshot_pusher_ok: number | null;
+    sandbox_snapshot_resets: number | null;
+    gh_snapshot_resets: number | null;
+  } | null;
+};
+
+// The analyzer stamps "2026-09-12 04:12:31Z" (space, not ISO T) — normalize.
+function parseStamp(s: unknown): number {
+  return typeof s === "string" ? new Date(s.replace(" ", "T")).getTime() : NaN;
+}
+
+function phase2FromReport(rep: any, source: "local-analyzer" | "paper-data-branch"): Phase2Block {
+  const genMs = parseStamp(rep?.generated_at);
+  const ageS = Number.isNaN(genMs) ? null : Math.max(0, (Date.now() - genMs) / 1000);
+  // Display-only timeline arithmetic (baseline + 3d / + 7d) — not a decision
+  // input; the decision-support numbers below are the analyzer's own.
+  const baseMs = parseStamp(rep?.baseline_start);
+  const c = rep?.continuity ?? {};
+  const sb = c.sandbox ?? {};
+  const ac = c.actions ?? {};
+  const meta = c.meta ?? {};
+  const files = c.branch?.files ?? {};
+  const snapSb = files.sandbox_snapshots ?? {};
+  const snapGh = files.github_actions ?? {};
+  return {
+    available: true,
+    source,
+    reason: null,
+    generated_at: typeof rep?.generated_at === "string" ? rep.generated_at : null,
+    age_s: ageS === null ? null : Math.round(ageS),
+    check_overdue: ageS === null ? null : ageS > PHASE2_DAILY_GRACE_S,
+    day: typeof rep?.day === "number" ? rep.day : null,
+    stage: typeof rep?.stage === "string" ? rep.stage : null,
+    baseline_start: typeof rep?.baseline_start === "string" ? rep.baseline_start : null,
+    day3_at: Number.isNaN(baseMs) ? null : new Date(baseMs + 3 * 86400_000).toISOString(),
+    day7_at: Number.isNaN(baseMs) ? null : new Date(baseMs + 7 * 86400_000).toISOString(),
+    totals: rep?.totals ?? null,
+    integrity: {
+      parse_errors: sb.parse_errors ?? null,
+      duplicate_ts: sb.duplicate_ts ?? null,
+      ts_back_jumps: sb.ts_back_jumps ?? null,
+      gaps_over_15min: Array.isArray(sb.gaps_over_15min) ? sb.gaps_over_15min.length : null,
+      duplicate_position_ids: Array.isArray(sb.duplicate_position_ids)
+        ? sb.duplicate_position_ids.length
+        : null,
+      open_now: sb.open_now ?? null,
+      last_cycle_open_positions: sb.last_cycle_open_positions_field ?? null,
+      collector_coverage_pct: ac.coverage_pct ?? null,
+      collector_duplicate_ts: ac.duplicate_ts ?? null,
+      collector_gaps_over_10min: Array.isArray(ac.gaps_over_10min) ? ac.gaps_over_10min.length : null,
+      supervisor_alive: meta.runner?.supervisor_alive ?? null,
+      snapshot_pusher_runs: meta.snapshot_pusher?.runs ?? null,
+      snapshot_pusher_ok: meta.snapshot_pusher?.ok ?? null,
+      sandbox_snapshot_resets: Array.isArray(snapSb.line_count_resets)
+        ? snapSb.line_count_resets.length
+        : null,
+      gh_snapshot_resets: Array.isArray(snapGh.line_count_resets)
+        ? snapGh.line_count_resets.length
+        : null,
+    },
+  };
+}
+
+function phase2Local(): Phase2Block {
+  if (!existsSync(PHASE2_LOCAL)) {
+    return {
+      available: false,
+      source: null,
+      reason:
+        "report-latest.json not found — the daily verify-only check (scripts/analysis/phase2_report.py) has not run in this checkout yet",
+      generated_at: null,
+      age_s: null,
+      check_overdue: null,
+      day: null,
+      stage: null,
+      baseline_start: null,
+      day3_at: null,
+      day7_at: null,
+      totals: null,
+      integrity: null,
+    };
+  }
+  const rep = safe(() => JSON.parse(readFileSync(PHASE2_LOCAL, "utf-8")), null);
+  if (!rep) {
+    return {
+      available: false,
+      source: null,
+      reason: "report-latest.json present but unreadable",
+      generated_at: null,
+      age_s: null,
+      check_overdue: null,
+      day: null,
+      stage: null,
+      baseline_start: null,
+      day3_at: null,
+      day7_at: null,
+      totals: null,
+      integrity: null,
+    };
+  }
+  return phase2FromReport(rep, "local-analyzer");
+}
+
+async function phase2Remote(): Promise<Phase2Block> {
+  const unavailable = (reason: string): Phase2Block => ({
+    available: false,
+    source: null,
+    reason,
+    generated_at: null,
+    age_s: null,
+    check_overdue: null,
+    day: null,
+    stage: null,
+    baseline_start: null,
+    day3_at: null,
+    day7_at: null,
+    totals: null,
+    integrity: null,
+  });
+  const raw = await rawText(rawPaper("phase2-report-latest.json"));
+  if (!raw) {
+    return unavailable(
+      "not yet on the paper-data branch — the tower-owned hourly snapshot pusher ships it after the next run"
+    );
+  }
+  const rep = safe(() => JSON.parse(raw), null);
+  if (!rep) return unavailable("phase2-report-latest.json unreadable on the paper-data branch");
+  return phase2FromReport(rep, "paper-data-branch");
+}
+
+// ---------------------------------------------------------------------------
 // Remote (paper-data branch) readers — the deployed mode
 // ---------------------------------------------------------------------------
 
@@ -549,6 +731,9 @@ export async function GET(req: NextRequest) {
   repo.commits = (pipe as any)._commits ?? repo.commits;
   const { _commits, ...pipelineClean } = pipe as any;
 
+  // Phase-2 discipline: read-only consumption of the analyzer's artifact.
+  const phase2 = remoteMode ? await phase2Remote() : phase2Local();
+
   // ---- Freshness gate: the age of the NEWEST data point, not process state.
   // cycles are chronological here (newest last) — the slice/reverse happens
   // only when building the display payload below.
@@ -608,6 +793,7 @@ export async function GET(req: NextRequest) {
       economics: paperBlock.economics,
     },
     backtest: paperBlock.analysis,
+    phase2,
     pipeline: pipelineClean,
     plan: PLAN,
   };

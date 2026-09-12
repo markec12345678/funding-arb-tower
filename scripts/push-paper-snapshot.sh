@@ -26,6 +26,11 @@ for attempt in 1 2 3; do
     ["paper-data/backtest_30d_btc_eth_sol.json"]="data/backtest_30d_btc_eth_sol.json"
     ["paper-data/paper_runner.log"]="data/paper_runner.log"
     ["paper-data/funding_reconstruction_probe.json"]="data/funding_reconstruction_probe.json"
+    # Phase-2 A/B/C discipline: the read-only analyzer's stable artifact
+    # (overwritten by every daily verify-only check). Tower-owned push — the
+    # funding-arb working tree and main branch stay untouched; the remote
+    # data plane renders the SAME discipline state as the sandbox checkout.
+    ["paper-data/phase2-report-latest.json"]="scripts/data/phase2/report-latest.json"
   )
   for dest in "${!FILES[@]}"; do
     src="${FILES[$dest]}"

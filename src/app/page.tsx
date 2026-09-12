@@ -5,6 +5,7 @@ import {
   Activity,
   ArrowRight,
   BarChart3,
+  CalendarClock,
   Calculator,
   CheckCircle2,
   Circle,
@@ -54,11 +55,52 @@ type Freshness = {
   lifecycle_age_s: number | null;
 };
 
+type Phase2 = {
+  available: boolean;
+  source: string | null;
+  reason: string | null;
+  generated_at: string | null;
+  age_s: number | null;
+  check_overdue: boolean | null;
+  day: number | null;
+  stage: string | null;
+  baseline_start: string | null;
+  day3_at: string | null;
+  day7_at: string | null;
+  totals: {
+    price: number;
+    fees: number;
+    funding: number;
+    net: number;
+    retention_avg_pct: number;
+    wins: number;
+    closed: number;
+  } | null;
+  integrity: {
+    parse_errors: number | null;
+    duplicate_ts: number | null;
+    ts_back_jumps: number | null;
+    gaps_over_15min: number | null;
+    duplicate_position_ids: number | null;
+    open_now: number | null;
+    last_cycle_open_positions: number | null;
+    collector_coverage_pct: number | null;
+    collector_duplicate_ts: number | null;
+    collector_gaps_over_10min: number | null;
+    supervisor_alive: boolean | null;
+    snapshot_pusher_runs: number | null;
+    snapshot_pusher_ok: number | null;
+    sandbox_snapshot_resets: number | null;
+    gh_snapshot_resets: number | null;
+  } | null;
+};
+
 type Status = {
   now: string;
   mode: "local" | "remote";
   source: { kind: string; detail: string };
   freshness: Freshness;
+  phase2?: Phase2 | null;
   repo: { branch: string; commits: { sha: string; message: string }[]; dirty: boolean };
   paper: {
     runner: { alive: boolean; pid: number | null; log_updated_at: string | null; log_tail: string[] };
@@ -227,6 +269,21 @@ const age = (s: number | null | undefined) => {
 const pct = (n: number | undefined | null, d = 4) =>
   n === undefined || n === null ? "—" : `${n.toFixed(d)}%`;
 
+const usd = (n: number | undefined | null) =>
+  n === undefined || n === null ? "—" : `${n < 0 ? "−" : "+"}$${Math.abs(n).toFixed(2)}`;
+
+// Time-until formatter for the Phase-2 milestones (re-evaluated on every
+// 10s status poll — good enough for hour/day-scale countdowns).
+const until = (iso: string | null | undefined) => {
+  if (!iso) return "—";
+  const s = (new Date(iso).getTime() - Date.now()) / 1000;
+  if (Number.isNaN(s)) return "—";
+  if (s <= 0) return "due now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+};
+
 function timeAgo(iso: string | null | undefined): string {
   if (!iso) return "—";
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -378,6 +435,33 @@ function FunnelBar({
   );
 }
 
+// Phase-2 integrity chip — good (emerald) / warn (amber, inspect-grade by the
+// analyzer's own verdict language) / bad (rose). Non-interactive, informational.
+function P2Chip({
+  label,
+  value,
+  state,
+}: {
+  label: string;
+  value: string;
+  state: "good" | "bad" | "warn";
+}) {
+  const cls =
+    state === "good"
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+      : state === "warn"
+        ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+        : "border-red-500/40 bg-red-500/10 text-red-400";
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] ${cls}`}
+      title={label}
+    >
+      {label} <span className="tabular-nums font-semibold">{value}</span>
+    </span>
+  );
+}
+
 export default function Home() {
   const [data, setData] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -416,6 +500,7 @@ export default function Home() {
   const bt = data?.backtest;
   const p = data?.paper;
   const fr = data?.freshness;
+  const ph = data?.phase2 ?? null;
   const snap = data?.pipeline?.snapshot ?? null;
   const totals = p?.totals ?? {};
   const lastCycle = p?.cycles?.[0];
@@ -597,6 +682,220 @@ export default function Home() {
                 tone={(totals.open_simulated ?? 0) > 0 ? "good" : "default"}
               />
             </div>
+
+            {/* Phase-2 A/B/C window — the 7-day decision process made visible.
+                Consumes the locked analyzer's report-latest.json VERBATIM
+                (the tower never recomputes decision inputs); the daily
+                verify-only check is enforced by visibility: if the report
+                ages past 26h the card says OVERDUE, not silent. */}
+            <Card
+              title="phase-2 A/B/C — window, discipline & decision support"
+              icon={<CalendarClock className="h-4 w-4" />}
+            >
+              {ph && ph.available ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <div className="font-mono text-2xl font-semibold tabular-nums text-zinc-100">
+                      day {ph.day !== null ? ph.day.toFixed(2) : "—"}
+                      <span className="text-sm font-normal text-zinc-500"> of 7</span>
+                    </div>
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold ${
+                        ph.stage === "FINAL-WINDOW"
+                          ? "border-red-500/40 bg-red-500/10 text-red-400"
+                          : "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                      }`}
+                    >
+                      stage {ph.stage ?? "—"}
+                    </span>
+                    {ph.check_overdue === true ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[11px] font-semibold text-amber-400">
+                        DAILY CHECK OVERDUE
+                      </span>
+                    ) : ph.check_overdue === false ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[11px] font-semibold text-emerald-400">
+                        daily check fresh
+                      </span>
+                    ) : null}
+                    <span className="text-[11px] text-zinc-500">
+                      baseline {ph.baseline_start ?? "—"} · report generated{" "}
+                      {ph.generated_at ?? "—"} ({age(ph.age_s)} ago) · source {ph.source}
+                    </span>
+                  </div>
+
+                  <div
+                    className="h-2 overflow-hidden rounded bg-zinc-800"
+                    role="progressbar"
+                    aria-label="Phase-2 window progress"
+                    aria-valuenow={ph.day ?? 0}
+                    aria-valuemin={0}
+                    aria-valuemax={7}
+                  >
+                    <div
+                      className="h-full bg-amber-500/80"
+                      style={{ width: `${Math.min(100, ((ph.day ?? 0) / 7) * 100)}%` }}
+                    />
+                  </div>
+
+                  <div className="grid gap-2 text-xs sm:grid-cols-2">
+                    <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+                        Day-3 interim read
+                      </div>
+                      <div className="mt-1 font-mono text-zinc-200">{ph.day3_at ?? "—"}</div>
+                      <div className="mt-0.5 text-zinc-500">in {until(ph.day3_at)}</div>
+                    </div>
+                    <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+                        Day-7 A/B/C decision
+                      </div>
+                      <div className="mt-1 font-mono text-zinc-200">{ph.day7_at ?? "—"}</div>
+                      <div className="mt-0.5 text-zinc-500">in {until(ph.day7_at)}</div>
+                    </div>
+                  </div>
+
+                  {ph.integrity && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <P2Chip
+                        label="parse errors"
+                        value={fmt(ph.integrity.parse_errors)}
+                        state={(ph.integrity.parse_errors ?? 1) === 0 ? "good" : "bad"}
+                      />
+                      <P2Chip
+                        label="dup ts"
+                        value={fmt(ph.integrity.duplicate_ts)}
+                        state={(ph.integrity.duplicate_ts ?? 1) === 0 ? "good" : "bad"}
+                      />
+                      <P2Chip
+                        label="ts back-jumps"
+                        value={fmt(ph.integrity.ts_back_jumps)}
+                        state={(ph.integrity.ts_back_jumps ?? 1) === 0 ? "good" : "bad"}
+                      />
+                      <P2Chip
+                        label="journal gaps>15m"
+                        value={fmt(ph.integrity.gaps_over_15min)}
+                        state={(ph.integrity.gaps_over_15min ?? 1) === 0 ? "good" : "bad"}
+                      />
+                      <P2Chip
+                        label="dup position ids"
+                        value={fmt(ph.integrity.duplicate_position_ids)}
+                        state={(ph.integrity.duplicate_position_ids ?? 1) === 0 ? "good" : "bad"}
+                      />
+                      <P2Chip
+                        label="opens = last-cycle"
+                        value={`${fmt(ph.integrity.open_now)} = ${fmt(ph.integrity.last_cycle_open_positions)}`}
+                        state={
+                          ph.integrity.open_now !== null &&
+                          ph.integrity.open_now === ph.integrity.last_cycle_open_positions
+                            ? "good"
+                            : "bad"
+                        }
+                      />
+                      <P2Chip
+                        label="collector coverage"
+                        value={ph.integrity.collector_coverage_pct !== null ? `${ph.integrity.collector_coverage_pct.toFixed(1)}%` : "—"}
+                        state={(ph.integrity.collector_coverage_pct ?? 0) >= 99.5 ? "good" : "warn"}
+                      />
+                      <P2Chip
+                        label="collector gaps>10m (inspect)"
+                        value={fmt(ph.integrity.collector_gaps_over_10min)}
+                        state="warn"
+                      />
+                      <P2Chip
+                        label="supervisor"
+                        value={ph.integrity.supervisor_alive === null ? "—" : ph.integrity.supervisor_alive ? "alive" : "down"}
+                        state={ph.integrity.supervisor_alive ? "good" : "bad"}
+                      />
+                      <P2Chip
+                        label="snapshot pusher"
+                        value={`${fmt(ph.integrity.snapshot_pusher_ok)}/${fmt(ph.integrity.snapshot_pusher_runs)}`}
+                        state={
+                          ph.integrity.snapshot_pusher_ok !== null &&
+                          ph.integrity.snapshot_pusher_ok === ph.integrity.snapshot_pusher_runs
+                            ? "good"
+                            : "warn"
+                        }
+                      />
+                      <P2Chip
+                        label="snapshot resets (sb · gh)"
+                        value={`${fmt(ph.integrity.sandbox_snapshot_resets)} · ${fmt(ph.integrity.gh_snapshot_resets)}`}
+                        state={
+                          (ph.integrity.sandbox_snapshot_resets ?? 1) === 0 &&
+                          (ph.integrity.gh_snapshot_resets ?? 1) === 0
+                            ? "good"
+                            : "bad"
+                        }
+                      />
+                    </div>
+                  )}
+
+                  {ph.totals && (
+                    <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+                        decision support — the analyzer&rsquo;s own totals, rendered verbatim (interim
+                        = information, not verdict)
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-3 font-mono text-sm sm:grid-cols-3 lg:grid-cols-6">
+                        <div>
+                          <div className="text-[10px] uppercase text-zinc-600">wins / closed</div>
+                          <div className="tabular-nums text-zinc-200">
+                            {fmt(ph.totals.wins)} / {fmt(ph.totals.closed)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase text-zinc-600">net PnL</div>
+                          <div
+                            className={`tabular-nums ${ph.totals.net < 0 ? "text-rose-400" : "text-emerald-400"}`}
+                          >
+                            {usd(ph.totals.net)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase text-zinc-600">price</div>
+                          <div className="tabular-nums text-zinc-300">{usd(ph.totals.price)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase text-zinc-600">fees</div>
+                          <div className="tabular-nums text-rose-400">{usd(ph.totals.fees)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase text-zinc-600">funding</div>
+                          <div className="tabular-nums text-emerald-400">{usd(ph.totals.funding)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase text-zinc-600">avg retention</div>
+                          <div className="tabular-nums text-zinc-300">
+                            {pct(ph.totals.retention_avg_pct, 1)}
+                          </div>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
+                        locked decision framework (phase2_report.py §9, quoted verbatim):{" "}
+                        <span className="font-semibold text-zinc-300">A</span> — net PnL &gt; 0 across
+                        enough lifecycles → minimal live ·{" "}
+                        <span className="font-semibold text-zinc-300">B</span> — signal present but
+                        eaten by execution friction → execution-layer changes only ·{" "}
+                        <span className="font-semibold text-zinc-300">C</span> — no executable edge →
+                        close strategy, stop feature development
+                      </p>
+                      <p className="mt-1 text-[11px] text-zinc-600">
+                        The tower never recomputes decision inputs — it renders report-latest.json
+                        exactly as the locked analyzer wrote it. The verdict is rendered only after
+                        Day 7; interim reads are information.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : ph ? (
+                <div className="text-sm text-zinc-500">
+                  Phase-2 report unavailable — {ph.reason}
+                </div>
+              ) : (
+                <div className="text-sm text-zinc-500">
+                  Phase-2 discipline card waiting for the status API…
+                </div>
+              )}
+            </Card>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Backtest verdict */}

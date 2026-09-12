@@ -3,7 +3,8 @@
 Live operations dashboard with **two views on one page**: the **live monitor** for the
 [funding-arb](https://github.com/markec12345678/funding-arb) paper-validation pipeline
 (backtest verdict, paper-trading funnel, runner health, delivery pipeline, phase-3 safety
-certification — 10 s refresh) and the **quant engine view** — a read-only monitor of the
+certification, the **Phase-2 A/B/C window & discipline card** — 10 s refresh) and the
+**quant engine view** — a read-only monitor of the
 parallel [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) research
 repo (multi-seed machinery validation, ALL-IN EDGE waterfall, NO-GO discipline).
 
@@ -45,6 +46,7 @@ data planes, chosen automatically:
 |---|---|---|
 | funnel · positions | read directly from the `/home/z/funding-arb` checkout (sandbox runner) | **live collector cycles + positions** from `paper-data/github-actions/*` (updated every ~5 min) |
 | backtest · runner log | local files | hourly lifecycle snapshot at the `paper-data` branch root |
+| **phase-2 discipline** | `scripts/data/phase2/report-latest.json` — the read-only analyzer's stable artifact, read verbatim | `paper-data/phase2-report-latest.json` — shipped hourly by the tower-owned snapshot pusher |
 | runner liveness | `pgrep` + pidfile + log mtime | freshness of the collector's newest cycle on the branch |
 | repo commits | local `git log` | GitHub REST API |
 | latency | ~50 ms | cold ~1–6 s, then cached (60 s raw / 300 s API TTL, ETag revalidation) |
@@ -69,9 +71,11 @@ sandbox paper runner (5-min cycles)
    └─ journal.jsonl / positions.json ── hourly snapshot push ──► paper-data/ (branch root)
 github-actions collector (repository_dispatch heartbeat, every 5 min)
    └─ live cycles + positions ─────────────────────────────► paper-data/github-actions/*
+daily verify-only check (phase2_report.py, read-only analyzer)
+   └─ report-latest.json ──────────── hourly snapshot push ──► paper-data/phase2-report-latest.json
 funding-arb-tower (deployed)
    └─ funnel + ledger from the collector files (live),
-      backtest + log from the hourly snapshot
+      backtest + log + phase-2 discipline from the hourly snapshot
 ```
 
 ### Staleness gate (why green means the data is live)
@@ -110,7 +114,8 @@ elsewhere:
   at GitHub at most every 5 min so the stateless github-actions collector
   runs on GitHub's own runners (sandbox only).
 - `src/server/paper-snapshot.ts` — hourly durability push of the lifecycle
-  dataset (journal, positions, config, logs) to the `paper-data` branch via
+  dataset (journal, positions, config, logs, **and the phase-2 analyzer's
+  report-latest.json**) to the `paper-data` branch via
   git plumbing — the funding-arb working tree is never touched (sandbox only).
 - `src/app/api/status/route.ts` — the status API (both modes, see above).
 - `src/app/api/engine/overview/route.ts` — the quant-arb-engine monitor API (read-only;
@@ -306,6 +311,41 @@ funding-direction label or crosses zero). The exit-classification card now
 renders **both readings** (instrument mirror + signed corrected) with a
 per-exit signed column; the final A/B/C report carries the signed reading
 as the corrected spread-PnL view.
+
+## Phase-2 A/B/C — window, discipline & decision support
+
+The monitor view's Phase-2 card makes the 7-day decision process itself visible
+and verifiable from the command center. It consumes **one artifact** —
+`report-latest.json`, overwritten by every daily verify-only run of the locked
+read-only analyzer (`funding-arb scripts/analysis/phase2_report.py`) — and
+renders it **verbatim**: the tower never recomputes a decision input, so the
+numbers the A/B/C verdict reads are the analyzer's by construction (the same
+consume-don't-recompute pattern as `run-latest.json` / `sweep-latest.json` /
+`rfq-status.json` in the engine view).
+
+What the card shows:
+
+- **Window state** — day X.XX of 7 (progress bar), stage `INTERIM` /
+  `FINAL-WINDOW`, baseline start, and the two fixed milestones: the Day-3
+  interim read and the Day-7 A/B/C decision (with countdowns).
+- **Daily-check discipline, enforced by visibility** — the report's age is
+  always shown; older than 26 h → an amber **DAILY CHECK OVERDUE** chip. A
+  skipped day is visible, not silent.
+- **Integrity chips** — the analyzer's own continuity audit (parse errors,
+  duplicate timestamps, ts back-jumps, journal gaps > 15 min, duplicate
+  position ids, opens↔last-cycle consistency, GH-collector coverage,
+  supervisor, snapshot pusher, snapshot-stream resets) with green/amber/red
+  state per the analyzer's own verdict language.
+- **Decision support** — the analyzer's totals (wins/closed, net, price ·
+  fees · funding decomposition, avg retention) plus the **locked A/B/C
+  framework quoted verbatim** (A net PnL > 0 → minimal live · B signal eaten
+  by execution friction → execution-layer changes only · C no executable edge
+  → close strategy). Interim numbers are labeled *information, not verdict* —
+  the verdict is rendered only after Day 7.
+
+Both data planes serve the same card (see the mode table above); until the
+hourly pusher has shipped the artifact at least once, remote mode shows an
+honest "not yet on the paper-data branch" state instead of an empty card.
 
 ## Economic decomposition — R7 invariant test (diagnostic)
 
