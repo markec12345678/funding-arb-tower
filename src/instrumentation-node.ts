@@ -17,10 +17,18 @@
  *
  * Idempotent across dev-server reloads via globalThis guards; the pgrep
  * check prevents double-spawning a still-alive runner.
+ *
+ * DEV-SERVER WATCHDOG (the mutual-protection pair's other half): this module
+ * also ENSURES scripts/dev-server-watchdog.sh is running at every server
+ * boot (spawns it detached if absent) — that watchdog, orphaned to PID 1
+ * OUTSIDE this process, respawns `bun run dev` when the server itself dies
+ * (the OOM-incident failure mode, Task 55). The runner-supervisor pattern
+ * applies in both directions: detached + unref'd children survive their
+ * parent's death, so each half re-arms the other.
  */
 
 import { spawn, execSync } from "child_process";
-import { openSync, writeFileSync, readFileSync, existsSync } from "fs";
+import { openSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import "@/server/gh-heartbeat";
 import "@/server/paper-snapshot";
 import "@/server/phase2-daily";
@@ -113,4 +121,49 @@ if (!g.__fundingArbPaperSupervisor && existsSync("/home/z/funding-arb")) {
   // first check immediately, then every 20 s
   tick();
   setInterval(tick, 20_000);
+}
+
+// ───────────────── dev-server watchdog ensure (sandbox-only) ─────────────────
+// The watchdog respawns the dev server when IT dies; this block respawns the
+// watchdog at every dev-server boot. Neither can protect a simultaneous
+// death of both (any manual dev-server start re-arms the pair — that is the
+// Task-55 recovery recipe, now the documented bootstrap too).
+if (
+  !g.__devServerWatchdogEnsure &&
+  existsSync("/home/z/funding-arb") &&
+  existsSync("/home/z/my-project/scripts/dev-server-watchdog.sh")
+) {
+  g.__devServerWatchdogEnsure = true;
+
+  const watchdogAlive = (): boolean => {
+    try {
+      // [.] trick — same footgun guard as the runner pgrep above.
+      const out = execSync("pgrep -f 'dev-server-watchdog[.]sh' || true", {
+        encoding: "utf-8",
+        timeout: 5000,
+      });
+      return out.trim().length > 0;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!watchdogAlive()) {
+    try {
+      mkdirSync("/home/z/my-project/data", { recursive: true });
+      // explicit spawn evidence: the watchdog itself is stdout-silent, so
+      // record the bootstrap here — ops sees WHO started WHICH pid, when.
+      const out = openSync("/home/z/my-project/data/watchdog_spawn.log", "a");
+      spawn("bash", [
+        "-c",
+        `echo "[instrumentation $(date -u +%Y-%m-%dT%H:%M:%SZ)] spawning dev-server watchdog" >&2; exec bash /home/z/my-project/scripts/dev-server-watchdog.sh`,
+      ], {
+        cwd: "/home/z/my-project",
+        detached: true,
+        stdio: ["ignore", out, out],
+      }).unref();
+    } catch {
+      /* non-fatal: the watchdog is protection, not a dependency */
+    }
+  }
 }

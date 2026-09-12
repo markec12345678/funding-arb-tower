@@ -184,6 +184,39 @@ if [ -n "$api_json" ] && printf '%s' "$api_json" | jq empty 2>/dev/null; then
     [.supervisors | to_entries[] | select(.key != "reason") | .value.healthy] | all' \
     >/dev/null 2>&1 || degrade "a supervisor lane is unhealthy/absent"
 
+  hr "DEV-SERVER WATCHDOG"
+  # Reads LOCAL state (pgrep + meta file), NOT the API: the watchdog guards
+  # the API's own host, so this section still reports during a dev-server
+  # outage — exactly when the watchdog is the thing actively fixing it.
+  # (scripts/dev-server-watchdog.sh + the instrumentation ensure-block form
+  # the mutual-protection pair; see the script header.)
+  WD_META="$TOWER/data/dev_server_watchdog.meta.json"
+  wd_running=false
+  pgrep -f 'dev-server-watchdog[.]sh' >/dev/null 2>&1 && wd_running=true
+  if [ -f "$WD_META" ]; then
+    wd_check=$(jq -r '.last_check // 0' "$WD_META" 2>/dev/null || echo 0)
+    wd_age=$(( now_epoch - wd_check )); [ "$wd_age" -lt 0 ] && wd_age=0
+    jq -r --argjson age "$wd_age" --arg running "$wd_running" \
+      '"  watchdog: \($running)  respawns=\(.respawns // "?")  consecutive_failures=\(.consecutive_failures // "?")  check_age=\($age)s\n  last_result: \(.last_result // "?")  probe every \(.interval_s // "?")s"' \
+      "$WD_META" 2>/dev/null \
+      || { echo "  ERROR: watchdog meta unreadable"; degrade "watchdog meta unreadable"; }
+  else
+    echo "  (no $WD_META — watchdog never started)"
+  fi
+  if [ "$wd_running" = true ]; then
+    [ -f "$WD_META" ] || degrade "watchdog running but meta absent"
+    # loop-hang detector: a running watchdog must refresh its meta each cycle
+    if [ -f "$WD_META" ] && [ "${wd_age:-999999}" -gt 120 ]; then
+      degrade "watchdog loop stale (check_age=${wd_age}s)"
+    fi
+  else
+    echo "  watchdog process: NOT RUNNING (auto-restart protection off)"
+    degrade "dev-server watchdog not running"
+  fi
+  wd_cf=$(jq -r '.consecutive_failures // 0' "$WD_META" 2>/dev/null || echo 0)
+  [ "${wd_cf:-0}" -ge 3 ] 2>/dev/null && \
+    degrade "watchdog repeated respawn failures (consecutive_failures=$wd_cf)"
+
   hr "PHASE-2 EXPERIMENT"
   printf '%s' "$api_json" | jq -r '
     "  day \(.phase2.day)  stage \(.phase2.stage)  report_age \(.phase2.age_s|floor)s  overdue_check=\(.phase2.check_overdue)"' || true

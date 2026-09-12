@@ -225,6 +225,30 @@ elsewhere:
   pre-baseline-scoped gap lists) — footnoted at the trend, never silently
   normalized. Writes nothing; funding-arb stays LOCKED @ 0373f5d, 0-dirty.
   Exit `0` = read produced · `1` = no readable report yet.
+- `scripts/dev-server-watchdog.sh` — **dev-server watchdog**: the outer ring
+  of the mutual-protection pair. Everything autonomous in this sandbox (the
+  paper-runner supervisor, gh-heartbeat, snapshot pusher, phase2-daily lane)
+  lives INSIDE the dev server — which nothing supervised until the OOM
+  incident (Task 55) proved that gap real. The watchdog, orphaned to PID 1
+  OUTSIDE next-server, probes port 3000 every 15 s and respawns `bun run dev`
+  with the subshell-orphan recipe when it dies (measured end-to-end: ~75 s
+  from SIGKILL to HTTP 200, unattended). The other half of the pair: the
+  instrumentation ensure-block (`src/instrumentation-node.ts`) spawns the
+  watchdog at every dev-server boot if absent — proven to fire 1 s after
+  boot and to produce a watchdog that SURVIVES its parent server's death
+  (detached children reparent to init, same as the runner during the OOM).
+  Semantics: single-instance via `flock` (kernel-level — a pgrep-based guard
+  false-positived on the invoking shell's own argv on the first start);
+  3-miss death detection; a 90 s boot grace so a slow-but-healthy boot is
+  never killed mid-bind; first failure respawns immediately, repeated quick
+  failures back off (120 s, then 600 s at ≥5); re-probe after backoff so an
+  operator's manual recovery is never superseded. State in
+  `data/dev_server_watchdog.meta.json` + `data/watchdog.log`, surfaced by
+  recon's DEV-SERVER WATCHDOG section (which reads local files ON PURPOSE —
+  it still reports during the outage the watchdog is fixing). Honest scope:
+  a simultaneous death of BOTH pair members needs the manual recipe below
+  (one command — and the fresh boot re-arms the pair); a hung-but-alive
+  server and a full sandbox reboot stay manual/out of scope.
 
 ## Quickstart
 
@@ -259,12 +283,20 @@ Decision-grade experiment read (any time, read-only):
 scripts/interim.sh        # the Day-3/Day-7 read: trend + decision support
 ```
 
-### Dev-server recovery (sandbox only)
+### Dev-server recovery & the watchdog pair (sandbox only)
 
-The dev server is started by the sandbox bootstrap (init-owned) and normally
-lives forever. If it ever dies (e.g. an OOM kill — the box has ~4 GB RAM, no
-swap, and the kernel picks the biggest RSS), restart it from a tool call
-with the **subshell-orphan pattern**:
+The dev server is normally self-healing: `scripts/dev-server-watchdog.sh`
+(kept alive by the instrumentation ensure-block at every server boot) probes
+port 3000 every 15 s and respawns the server within ~75 s of its death —
+verified end-to-end by three controlled tests (server kill → auto-respawn;
+both killed → manual boot re-spawns the watchdog; watchdog surviving its
+parent server's death and recovering it again). `scripts/recon.sh`'s
+DEV-SERVER WATCHDOG section shows its state; `data/watchdog.log` is its
+action log.
+
+The manual recipe below is for the ONE case the pair cannot cover: both
+members dead at once (or a fresh sandbox bootstrap). It is the subshell-
+orphan pattern — and the boot it produces re-arms the pair automatically:
 
 ```bash
 cd /home/z/my-project && ( setsid nohup bun run dev >> dev.log 2>&1 < /dev/null & )
@@ -277,6 +309,14 @@ descendant walk misses it. Verify with `curl localhost:3000` in the NEXT
 tool call, then `scripts/recon.sh` (the supervisor lanes re-arm from their
 file-based metas; the runner is a separate process and keeps cycling
 throughout).
+
+Two footguns encoded in the watchdog (both learned by test, not theory):
+manual restarts during a watchdog backoff window may be superseded (the
+watchdog re-probes before killing, so a bound server is left alone — stop
+the watchdog first if you need full manual control), and never start a
+second watchdog instance by hand — `flock` makes the duplicate exit
+immediately, but the surviving instance's start time is then not what you
+expect.
 
 Copy `.env.example` to `.env` if you want the (unused-by-this-app) Prisma
 datasource wired up.

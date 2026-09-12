@@ -58,3 +58,5 @@ server.log
 # sandbox runtime pid
 .zscripts/*.pid
 .scratch/
+# sandbox runtime watchdog state (scripts/dev-server-watchdog.sh)
+/data/
