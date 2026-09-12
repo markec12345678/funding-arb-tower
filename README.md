@@ -209,6 +209,22 @@ elsewhere:
   writes `screenshots/e2e-{mode}-{viewport}.png` as round evidence. Bodies
   are staged to `/tmp/e2e-body-*.txt` for post-hoc diagnosis of any text
   assertion failure.
+- `scripts/interim.sh` — **the decision-grade experiment readout**: the
+  third sibling (recon = system health, e2e = delivered UI, interim =
+  what the experiment SAYS). One read-only command for the Day-3 interim
+  read and the Day-7 A/B/C decision: experiment day + decision countdowns,
+  report/lane freshness (next fire mirrors `phase2-daily.ts`'s own logic),
+  **the trend across every archived analyzer report** (day · closed · W/L ·
+  net · retention · funding · fees — the trajectory no single report can
+  show), the current decision-support block in the analyzer's own locked
+  framework, the ledger in BOTH coverages labeled (report-day closes vs
+  live whole-ledger — Task-52 discipline), and integrity (latest verdicts
+  + an all-archive scan + totals-vs-Σpnl self-consistency). The archive's
+  own archaeology is stated, not smoothed over: the two earliest reports
+  predate the locked analyzer's semantics (pre-standardization fields,
+  pre-baseline-scoped gap lists) — footnoted at the trend, never silently
+  normalized. Writes nothing; funding-arb stays LOCKED @ 0373f5d, 0-dirty.
+  Exit `0` = read produced · `1` = no readable report yet.
 
 ## Quickstart
 
@@ -235,6 +251,12 @@ Browser-level golden path (dev server up, ~10 s):
 ```bash
 scripts/e2e.sh            # exit 0 = golden path green in both data modes
 scripts/e2e.sh --shots    # … plus screenshots/e2e-*.png as round evidence
+```
+
+Decision-grade experiment read (any time, read-only):
+
+```bash
+scripts/interim.sh        # the Day-3/Day-7 read: trend + decision support
 ```
 
 ### Dev-server recovery (sandbox only)
