@@ -2242,3 +2242,22 @@ Work Log:
 Stage Summary:
 - The round-start ritual is now a tool, not a memory test: one read-only command renders the complete system state (repos + lock + runner + lanes + freshness + supervisors + phase-2 + paper), self-verifies on three paths, and names its failures. Every future session — context-reset or not — starts identically: scripts/recon.sh.
 - Shipped state: funding-arb-tower @ 6cf9d94 (pushed, CI green — the script's own gate) · quant-arb-engine @ fe49627 (untouched) · funding-arb @ 0373f5d (locked, untouched, 0-dirty, runner alive 1d18h20m). Next owned events: phase2-daily lane first autonomous fire 2026-09-13T04:12:31Z (verify with scripts/recon.sh — lane meta runs=1/ok=1) · Day-3 interim read 14:36Z · A/B/C ~Sep 17 14:36Z. Still user-owned: cron-job.org gh-pages lane decision (stale ~31h), real feed connection, W1 sealing.
+
+---
+Task ID: 50
+Agent: main (Z.ai Code)
+Date: 2026-09-12 09:18–09:26 UTC (session 8, continuation 13)
+Task: User: "odlicno nadaljuj" — autonomous continuation. Round opened with the first production use of scripts/recon.sh (Task 49): ALL GREEN exit 0, no mechanical item due (lane fire in 18h54m). The recon itself surfaced the round's candidate: paper opens DECREASED 131→121 in ~21 minutes — totals that go down are either windowed-by-design or a funnel bug, and for a reads-only tower the semantics of its numbers must be right.
+
+Work Log:
+- Root cause found in source (route.ts line 110): parseJournalRaw slices the last 120 journal LINES — all paper KPI/funnel totals are a sliding ~10h window. NOT a funnel bug. But the honesty gap was real: phase-2 economics on the same page are experiment-lifetime (locked analyzer), the paper KPIs were unlabeled, and "paper cycles 120" next to "day 1.672" reads as the whole experiment (~512 cycles actually elapsed). The funnel card had a hardcoded "(last 10h)" — a duration claim a cadence change would silently invalidate, and already slightly wrong (live window = 9.9h).
+- Suspicion checked and cleared en route: `lastCycle = p?.cycles?.[0]` feared to show the OLDEST cycle — verified the payload reverses (newest-first, line 1020), so "last scan" is correct. No bug there.
+- API: JOURNAL_WINDOW_LINES=120 extracted from the magic number; parseJournalRaw now returns window {lines, from, to} where from/to = FIRST/LAST COUNTED cycle (after the scan_total≥50 dev-noise filter) — exactly what totals cover, never more; all three fallback shapes (localJournal ×2, remotePaper ×1) carry the empty window; paperBlock type + payload paper.window added; local AND remote modes share the one truth since the metadata lives in the parser itself.
+- UI: paper type gains optional window; windowH computed from from→to (1-decimal hours); all three windowed KPI subs gain "· {H}h window"; funnel title "paper funnel — live ({H}h window)" with honest "windowed" fallback when no data.
+- README API example gains the window line (Task-47 example-vs-live consistency discipline maintained).
+- Verification: lint clean · tsc strict EXIT 0 · live API from=2026-09-11T23:26:41Z to=2026-09-12T09:21:39Z = 9.9h over exactly 120 counted cycles · agent-browser: all three KPI subs + funnel card render "9.9h window", desktop 1920 + mobile 390 both clean, ZERO console errors · screenshots window-labels-desktop.png / window-labels-mobile.png saved. Browser lesson re-learned: `wait --text "paper funnel"` times out because CSS-uppercases the heading (accessibility tree shows "PAPER FUNNEL") — Task-36's CSS-transform blind spot, not a defect; snapshot text search works.
+- Commit 3569454 pushed → tower CI completed/success at 09:24:17Z. dev.log clean this round. funding-arb untouched (0-dirty, LOCK INTACT per recon), engine untouched.
+
+Stage Summary:
+- The tower's numbers now declare their own coverage: windowed KPIs say "9.9h window" (data-derived, self-correcting if cadence ever changes), lifetime economics stay lifetime — the two time semantics on one page can no longer silently blend. Found by the Task-49 recon tool on its first production use — the tool paying for itself within one round.
+- Shipped state: funding-arb-tower @ 3569454 (pushed, CI green) · quant-arb-engine @ fe49627 (untouched) · funding-arb @ 0373f5d (locked, untouched, runner alive 1d19h). Next owned events: phase2-daily lane first autonomous fire 2026-09-13T04:12:31Z (verify via scripts/recon.sh — expect lane meta runs=1/ok=1) · Day-3 interim read 14:36Z · A/B/C ~Sep 17 14:36Z. Still user-owned: cron-job.org gh-pages lane decision (stale ~32h), real feed connection, W1 sealing.
