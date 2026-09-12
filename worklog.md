@@ -2678,3 +2678,18 @@ Work Log:
 Stage Summary:
 - A quiet verification round: three small unknowns (boundary arithmetic, e2e time-bombs, memory trend) each closed by measurement; nothing shipped except the record. The box enters its first unattended night with the plateau conclusively demonstrated (RSS fell, not rose) and the golden path provably immune to every state transition tonight or at any boundary through Day-7.
 - Shipped state: funding-arb-tower worklog commit (this entry) · quant-arb-engine @ fe49627 · funding-arb @ 0373f5d (LOCK INTACT, runner ~2d6h). Next owned events: FIRST AUTONOMOUS FIRE 2026-09-13T04:12:31Z (morning recon: runs=1/ok=1 + freshness invariant in one command) → Day-3 boundary read 14:36Z Sep 13 (manual analyzer run then interim.sh; compare day-2.04: net −49.61 / 59 closes / W/L 13/46 / fees −66.9) → Day-7 final read 14:36Z Sep 17 → A/B/C (user decision). Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 71
+Agent: main (Z.ai Code)
+Date: 2026-09-12 20:41–20:50 UTC (session 8, continuation 34)
+Task: User: "odlicno nadaljuj" — autonomous continuation. Calibrated (20:41Z, tower 5f9009a = Task 70, clean; lane fire ~7.5h, Day-3 ~17.9h — nothing mechanical due). Gap assessment by the discipline "every production change carries its seal": Task 69 changed src/instrumentation-node.ts — the ONLY TypeScript change since the last browser-level e2e (Task 63, 69 ✓ ×3). Lint and live API were green, but the golden path had never run against the post-Task-69 tree. Round closed that open line in the evidence chain.
+
+Work Log:
+- Ran scripts/e2e.sh FULL (both modes) on the post-Task-69 tree: GOLDEN PATH GREEN — the assertion tally is EXACTLY 69 ✓ (identical to Task 63's tally: nothing missing, nothing added; the local-mode section shows the full label family including the anti-misread chips, W0 cards, live pill "runner live · data fresh", coverage labels, watchdog supervisor row, and the sticky-footer + zero-console-error contracts in both modes at both widths).
+- Post-e2e hygiene (the Task-55 OOM discipline): zero stray Chromium sessions (pgrep count 0), MemAvailable 2397 MB — the sandbox is in IDENTICAL or better shape than before the run (GC even freed ~55 MB); watchdog alive (1), runner 2d6h06m.
+- Note on scope honesty: the Task-69 change itself is boot-path-only (the restore line runs at supervisor boot — the RUNNING instance predates the edit, so today's e2e exercises the unchanged live path); the seal's value is the full-tree guarantee: the post-change source compiles, loads, serves, and renders the entire labeled surface with zero JS errors. The new restore line activates at the next supervisor boot (e.g. after a watchdog respawn), where its effect is the persisted-timestamp carry already verified by the isolated jq tests in Task 69.
+
+Stage Summary:
+- The evidence chain is sealed end-to-end for the night: every production change since the last fire-window is now browser-verified (Task 63's UI surface + Task 69's instrumentation tree), the morning chain is machine-checked (Task 68), the boundaries are procedural (66/67), the environment is measured (64/70), and the pair is live.
+- Shipped state: funding-arb-tower worklog commit (this entry) · quant-arb-engine @ fe49627 · funding-arb @ 0373f5d (LOCK INTACT, runner ~2d6h). Next owned events: FIRST AUTONOMOUS FIRE 2026-09-13T04:12:31Z → Day-3 boundary read 14:36Z Sep 13 → Day-7 final read 14:36Z Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
