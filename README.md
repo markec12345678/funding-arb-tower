@@ -186,6 +186,22 @@ elsewhere:
   tick gate — update both in one commit if the gate changes). Exit `0` = all
   green, `1` = degraded with named reasons; failure paths (dead API, lock
   drift) verified by test, not assumption.
+- `scripts/e2e.sh` — **browser-level golden path**: recon's sibling for the
+  delivered UI. One command drives a real headless browser through what every
+  round used to verify by hand — open the page, click past the default engine
+  view, wait for live data, assert the monitor cards render in BOTH data
+  modes (local live-files vs `?source=remote` snapshot plane), the Task
+  52/53/54 coverage/evidence labels are present (and ABSENT in local — mode
+  purity), zero console/page errors, no horizontal overflow at 1440 and 390,
+  and the sticky-footer contract. Preflight refuses to run under thin memory
+  or with stray browser sessions (both learned from a real OOM that killed
+  the dev server mid-verification — see `scripts/e2e.sh`'s header for the
+  three shell-level traps the ordering/greps encode: hydration-gated click,
+  case-sensitive text matching, and the `pipefail` + `grep -q` SIGPIPE race).
+  Exit `0` = golden path green, `1` = needs eyes. `--shots` additionally
+  writes `screenshots/e2e-{mode}-{viewport}.png` as round evidence. Bodies
+  are staged to `/tmp/e2e-body-*.txt` for post-hoc diagnosis of any text
+  assertion failure.
 
 ## Quickstart
 
@@ -206,6 +222,32 @@ Operator state check (any time, read-only):
 ```bash
 scripts/recon.sh   # exit 0 = all green · exit 1 = degraded (reasons listed)
 ```
+
+Browser-level golden path (dev server up, ~10 s):
+
+```bash
+scripts/e2e.sh            # exit 0 = golden path green in both data modes
+scripts/e2e.sh --shots    # … plus screenshots/e2e-*.png as round evidence
+```
+
+### Dev-server recovery (sandbox only)
+
+The dev server is started by the sandbox bootstrap (init-owned) and normally
+lives forever. If it ever dies (e.g. an OOM kill — the box has ~4 GB RAM, no
+swap, and the kernel picks the biggest RSS), restart it from a tool call
+with the **subshell-orphan pattern**:
+
+```bash
+cd /home/z/my-project && ( setsid nohup bun run dev >> dev.log 2>&1 < /dev/null & )
+```
+
+The parens matter: processes spawned inside a tool call are reaped when the
+call ends, and plain `setsid … &` loses that race — the subshell exits
+immediately, bun is orphaned to PID 1 *during* the call, and the reaper's
+descendant walk misses it. Verify with `curl localhost:3000` in the NEXT
+tool call, then `scripts/recon.sh` (the supervisor lanes re-arm from their
+file-based metas; the runner is a separate process and keeps cycling
+throughout).
 
 Copy `.env.example` to `.env` if you want the (unused-by-this-app) Prisma
 datasource wired up.
