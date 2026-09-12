@@ -54,6 +54,13 @@ if (!g.__fundingArbPaperSupervisor && existsSync("/home/z/funding-arb")) {
     if (existsSync(META)) {
       const prev = JSON.parse(readFileSync(META, "utf-8"));
       state.respawns = prev.respawns ?? 0;
+      // last_spawn is a runner-lifetime fact like respawns — carry it too.
+      // Without this line every supervisor boot resets it to 0 and the
+      // first tick's read-modify-write (Object.assign(meta, state))
+      // clobbers the persisted timestamp: observed as respawns=4 with
+      // last_spawn=0 after several dev-server restarts (the counter and
+      // its own timestamp disagreeing on the same line of recon).
+      state.last_spawn = prev.last_spawn ?? 0;
     }
   } catch {
     /* fresh start */

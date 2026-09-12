@@ -119,7 +119,13 @@ else
   echo "  ERROR: no runner process (supervisor should respawn within 20 s while the tower lives)"; degrade "paper runner dead"
 fi
 if [ -f "$RUNNER_META" ]; then
-  jq -r '"  supervisor meta: respawns=\(.respawns)  last_check_age=\(((now*1000)-.last_check)/1000|floor)s  last_spawn=\(.last_spawn*0.001|todate)"' \
+  # last_spawn=0 renders as "none recorded" — epoch zero as 1970-01-01
+  # next to a nonzero respawn counter is an internally inconsistent line
+  # (the pre-carry-fix supervisor reset the timestamp on every boot; the
+  # runner's own uptime above still dates the current process honestly).
+  # last_check=0 (the sub-second boot gap before the first tick) guards
+  # the same way instead of printing a ~1.79e9 s age.
+  jq -r '"  supervisor meta: respawns=\(.respawns)  last_check_age=\(if .last_check > 0 then (((now*1000)-.last_check)/1000|floor) else 0 end)s  last_spawn=\(if .last_spawn > 0 then (.last_spawn*0.001|todate) else "none recorded" end)"' \
     "$RUNNER_META" 2>/dev/null || { echo "  ERROR: runner meta unreadable"; degrade "runner meta unreadable"; }
 else
   echo "  (no $RUNNER_META yet — supervisor has not run since boot)"; degrade "runner meta absent"

@@ -201,7 +201,12 @@ elsewhere:
   `report-latest.generated_at ≥ lane.last_run` — catching "analyzer
   exited 0 but the report was not rewritten" the same morning instead
   of waiting out the 26 h `check_overdue` grace (seeded state is exempt
-  by construction). Exit `0` = all
+  by construction). The PAPER RUNNER meta line is equally honest about
+  missing records: `last_spawn=0` renders as `none recorded` (never
+  epoch-zero 1970 next to a nonzero respawn counter — the supervisor
+  now carries the spawn timestamp across boots like its counter; the
+  pre-fix resets lost the pre-Sep-12 record, and the runner's own
+  printed uptime still dates the current process). Exit `0` = all
   green, `1` = degraded with named reasons; failure paths (dead API, lock
   drift) verified by test, not assumption.
 - `scripts/e2e.sh` — **browser-level golden path**: recon's sibling for the
