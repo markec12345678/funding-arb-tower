@@ -23,6 +23,7 @@ import { spawn, execSync } from "child_process";
 import { openSync, writeFileSync, readFileSync, existsSync } from "fs";
 import "@/server/gh-heartbeat";
 import "@/server/paper-snapshot";
+import "@/server/phase2-daily";
 
 const g = globalThis as any;
 // Deployed environments (e.g. Vercel) have no /home/z/funding-arb checkout:

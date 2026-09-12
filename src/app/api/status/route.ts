@@ -13,6 +13,7 @@ import path from "path";
 // clean no-ops.
 import "@/server/gh-heartbeat";
 import "@/server/paper-snapshot";
+import "@/server/phase2-daily";
 import { classifyExits, type ExitClassification } from "@/server/exit-classification";
 import { decomposeEconomics, type EconomicInvariants } from "@/server/economic-invariants";
 
@@ -35,6 +36,10 @@ const SUPERVISOR_META = path.join(REPO, "data/paper_runner.meta.json");
 // reboot. The snapshot lane's meta is a separate file by design — immune.
 const HEARTBEAT_LOG = path.join(REPO, "data/gh_heartbeat.log");
 const SNAPSHOT_META = path.join(REPO, "data/paper_snapshot.meta.json");
+// Daily Phase-2 verify-only check lane (see supervisorLanes below): its state
+// file is data/phase2_check.meta.json, written by src/server/phase2-daily.ts
+// (own file — same anti-clobber discipline as the snapshot lane's meta).
+const PHASE2_CHECK_META = path.join(REPO, "data/phase2_check.meta.json");
 
 // ---- Remote data plane (used when the sandbox checkout is absent, e.g. on
 // Vercel, or when ?source=remote forces it for verification) ----
@@ -353,7 +358,7 @@ function paperPositions() {
 
 // ---------------------------------------------------------------------------
 // Tower supervisor lanes — the background lanes that keep the REMOTE data
-// planes alive (sandbox-local surface).
+// planes alive and the Phase-2 discipline honest (sandbox-local surface).
 //
 //   heartbeat : 5-min repository_dispatch "paper-cycle" → paper-collector
 //               workflow on GitHub's runners → 5-min cycles on the paper-data
@@ -362,12 +367,20 @@ function paperPositions() {
 //   snapshot  : hourly paper-data lifecycle push (durability). State source:
 //               data/paper_snapshot.meta.json — a SEPARATE file by design,
 //               immune to the paper_runner.meta.json writer.
+//   phase2    : DAILY verify-only analyzer run (the Phase-2 discipline check
+//               — previously manual, session-dependent; automated by
+//               src/server/phase2-daily.ts). State source: its own
+//               data/phase2_check.meta.json. The analyzer itself is read-only
+//               and writes only gitignored outputs, so the funding-arb lock
+//               is untouched.
 //
-// Why this surface exists: an expired or revoked PAT kills BOTH lanes
-// silently — every dispatch returns http 401, every push fails — while the
-// local funnel keeps cycling and every other card stays green (the analyzer's
-// snapshot_pusher_* counts only refresh at the next DAILY check). Reading the
-// raw state per request makes token expiry visible in minutes.
+// Why this surface exists: an expired or revoked PAT kills the first two
+// lanes silently — every dispatch returns http 401, every push fails — while
+// the local funnel keeps cycling and every other card stays green (the
+// analyzer's snapshot_pusher_* counts only refresh at the next DAILY check).
+// Reading the raw state per request makes token expiry visible in minutes;
+// the phase2 row makes the discipline's own automation health visible the
+// same way.
 //
 // Remote mode returns lanes = null with a reason: the meta/log files are
 // deliberately not pushed to the branch (lifecycle data only), and the remote
@@ -390,12 +403,14 @@ type SupervisorLane = {
 function supervisorLanes(remote: boolean): {
   heartbeat: SupervisorLane | null;
   snapshot: SupervisorLane | null;
+  phase2: SupervisorLane | null;
   reason: string | null;
 } {
   if (remote) {
     return {
       heartbeat: null,
       snapshot: null,
+      phase2: null,
       reason:
         "sandbox-only surface (log/meta files stay in the sandbox) — the remote plane tracks these lanes end-to-end via branch & lifecycle ages",
     };
@@ -454,7 +469,38 @@ function supervisorLanes(remote: boolean): {
       fails: runs !== null && ok !== null ? runs - ok : null,
     };
   }, null);
-  return { heartbeat, snapshot, reason: null };
+  const phase2 = safe<SupervisorLane | null>(() => {
+    if (!existsSync(PHASE2_CHECK_META)) return null;
+    const meta = JSON.parse(readFileSync(PHASE2_CHECK_META, "utf-8"));
+    const lastOk = typeof meta.last_ok === "number" ? meta.last_ok : NaN;
+    const lastRun = typeof meta.last_run === "number" ? meta.last_run : NaN;
+    const activityMs = Number.isNaN(lastOk) ? lastRun : lastOk;
+    const agoS = Number.isNaN(activityMs)
+      ? null
+      : Math.max(0, (Date.now() - activityMs) / 1000);
+    const lastResult = typeof meta.last_result === "string" ? meta.last_result : null;
+    const runs = typeof meta.runs === "number" ? meta.runs : null;
+    const ok = typeof meta.ok === "number" ? meta.ok : null;
+    // healthy = last result ok/seeded AND the last success is within the
+    // 26 h daily grace (the same convention as the phase2 overdue flag); a
+    // failed last run is DOWN even while the report is still fresh — the
+    // lane's failure must be visible immediately, the artifact age is
+    // surfaced separately by the phase-2 card itself.
+    const resultHealthy = lastResult === "ok" || (lastResult ?? "").startsWith("seeded");
+    const healthy = resultHealthy && agoS !== null && agoS <= 26 * 3600;
+    return {
+      role: "phase-2 verify-only analyzer (daily discipline check)",
+      expected_s: 86400,
+      stale_after_s: 26 * 3600,
+      last_activity_ago_s: agoS === null ? null : Math.round(agoS),
+      last_result: lastResult,
+      healthy,
+      total: runs,
+      ok,
+      fails: runs !== null && ok !== null ? runs - ok : null,
+    };
+  }, null);
+  return { heartbeat, snapshot, phase2, reason: null };
 }
 
 // ---------------------------------------------------------------------------

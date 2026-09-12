@@ -115,6 +115,7 @@ type Status = {
   supervisors?: {
     heartbeat: SupervisorLane | null;
     snapshot: SupervisorLane | null;
+    phase2: SupervisorLane | null;
     reason: string | null;
   } | null;
   phase2?: Phase2 | null;
@@ -533,6 +534,7 @@ export default function Home() {
   const sup = data?.supervisors;
   const supH = sup?.heartbeat ?? null;
   const supS = sup?.snapshot ?? null;
+  const supP = sup?.phase2 ?? null;
   const ph = data?.phase2 ?? null;
   const snap = data?.pipeline?.snapshot ?? null;
   const totals = p?.totals ?? {};
@@ -1137,8 +1139,30 @@ export default function Home() {
                             : ""}
                         </span>
                       </div>
+                      {/* phase-2 daily discipline check lane */}
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="w-16 shrink-0 font-sans text-[10px] uppercase tracking-wider text-zinc-500">
+                          phase-2
+                        </span>
+                        {supP?.healthy === null || supP === null ? (
+                          <span className="text-zinc-500">—</span>
+                        ) : supP.healthy ? (
+                          <span className="font-semibold text-emerald-400">LIVE</span>
+                        ) : (supP.last_result === "ok" || (supP.last_result ?? "").startsWith("seeded")) ? (
+                          <span className="font-semibold text-amber-400">LATE</span>
+                        ) : (
+                          <span className="font-semibold text-rose-400">DOWN</span>
+                        )}
+                        <span className="text-zinc-500">
+                          · {supP?.last_result ?? "no check meta"} · {age(supP?.last_activity_ago_s)} ago ·
+                          every 24 h{" "}
+                          {supP?.ok !== null && supP?.total !== null && supP !== null
+                            ? `· ${supP.ok}/${supP.total} ok${(supP.fails ?? 0) > 0 ? ` · ${supP.fails} fail` : ""}`
+                            : ""}
+                        </span>
+                      </div>
                       <div className="mt-1 font-sans text-[10px] text-zinc-600">
-                        the lanes that keep the remote planes alive — token death shows here in minutes, not at the next daily check
+                        the lanes that keep the remote planes alive + the daily discipline check — failures surface here in minutes, not at the next artifact
                       </div>
                     </>
                   )}

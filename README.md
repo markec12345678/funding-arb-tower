@@ -101,16 +101,21 @@ process state alone:
   schedule.
 - `supervisors` (local) — the tower's own background lanes surfaced live in
   the paper card: the **5-min paper-collector dispatch** (heartbeat state read
-  from the append-only `gh_heartbeat.log`) and the **hourly paper-data
-  lifecycle push** (its own meta file), each with its verbatim last result,
-  age and cadence. Why: an expired PAT kills both lanes with every dispatch
-  returning 401 and every push failing — while the local funnel keeps cycling
-  and every other card stays green. The dispatch lane degrades to `DOWN`, a
-  result-ok-but-old lane to `LATE`, token death becomes visible in minutes
-  (verified by induction: a mocked 401 result renders the exact red state).
-  Remote mode shows an honest sandbox-only note instead — the meta/log files
-  are deliberately not pushed to the branch, and the remote plane already
-  tracks the same lanes end-to-end via the branch & lifecycle ages.
+  from the append-only `gh_heartbeat.log`), the **hourly paper-data
+  lifecycle push** (its own meta file) and the **daily phase-2 verify-only
+  analyzer run** (automated by the `phase2-daily` lane — previously the daily
+  check ran only when an operator session happened to be active, a discipline
+  single-point-of-failure; the lane seeds from the existing report on first
+  activation, runs at most once per 24 h, retries after 1 h on failure), each
+  with its verbatim last result, age and cadence. Why: an expired PAT kills
+  the remote lanes with every dispatch returning 401 and every push failing —
+  while the local funnel keeps cycling and every other card stays green. The
+  dispatch lane degrades to `DOWN`, a result-ok-but-old lane to `LATE`, token
+  death becomes visible in minutes (verified by induction: a mocked 401
+  result renders the exact red state). Remote mode shows an honest
+  sandbox-only note instead — the meta/log files are deliberately not pushed
+  to the branch, and the remote plane already tracks the same lanes
+  end-to-end via the branch & lifecycle ages.
 
 Verified both ways: lowering the thresholds makes a live-runner dashboard go
 red immediately; restoring them returns it to green.
@@ -236,12 +241,13 @@ src/
   server/
     gh-heartbeat.ts           # 5-min repository_dispatch heartbeat (sandbox-only)
     paper-snapshot.ts         # hourly paper-data push (sandbox-only)
-                              # both lanes' health is surfaced live by the
+    phase2-daily.ts           # daily phase-2 verify-only analyzer run (sandbox-only)
+                              # the three lanes' health is surfaced live by the
                               # status API's `supervisors` block (heartbeat via
                               # the append-only gh_heartbeat.log — NOT the runner
                               # meta, which the RUNNING patrol still clobbers
-                              # until the next server reboot; snapshot via its
-                              # own meta file)
+                              # until the next server reboot; snapshot + phase2
+                              # via their own meta files)
   instrumentation-node.ts     # paper-runner supervisor (sandbox-only, guarded)
 scripts/
   push-paper-snapshot.sh      # git-plumbing snapshot pusher
@@ -362,7 +368,12 @@ What the card shows:
   interim read and the Day-7 A/B/C decision (with countdowns).
 - **Daily-check discipline, enforced by visibility** — the report's age is
   always shown; older than 26 h → an amber **DAILY CHECK OVERDUE** chip. A
-  skipped day is visible, not silent.
+  skipped day is visible, not silent. The check itself is **automated**: the
+  tower's `phase2-daily` supervisor lane runs the read-only analyzer once
+  per 24 h (own meta file, 1 h retry on failure; lane health visible in the
+  paper card's supervisor rows) — the discipline no longer depends on an
+  operator session being active. The analyzer writes only gitignored
+  outputs, so the funding-arb lock is untouched.
 - **Integrity chips** — the analyzer's own continuity audit (parse errors,
   duplicate timestamps, ts back-jumps, journal gaps > 15 min, duplicate
   position ids, opens↔last-cycle consistency, GH-collector coverage,
