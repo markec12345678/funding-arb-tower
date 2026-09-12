@@ -592,12 +592,16 @@ async function remotePaper() {
 // ---------------------------------------------------------------------------
 
 async function pipeline(repoCommitsLocal: { sha: string; message: string }[], remoteMode: boolean) {
-  const [farbRepo, farbCommits, p3Commits, health, snapRaw] = await Promise.all([
+  const [farbRepo, farbCommits, p3Commits, health, snapRaw, towerCiRuns] = await Promise.all([
     ghJson(`/repos/${GH_OWNER}/funding-arb`),
     remoteMode ? ghJson(`/repos/${GH_OWNER}/funding-arb/commits?per_page=6`) : Promise.resolve(null),
     ghJson(`/repos/${GH_OWNER}/phase3-lab/commits?per_page=1`),
     vercelHealth(),
     rawText(GH_PAGES_SNAPSHOT),
+    // The tower's OWN verification gate (ci.yml): latest run on main. The
+    // command center shows every sibling repo's gate state — discipline by
+    // visibility applies to itself, too.
+    ghJson(`/repos/${GH_OWNER}/funding-arb-tower/actions/workflows/ci.yml/runs?per_page=1&branch=main`),
   ]);
 
   const commits: { sha: string; message: string }[] = remoteMode
@@ -610,6 +614,9 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
     : repoCommitsLocal;
 
   const p3 = Array.isArray(p3Commits) ? p3Commits[0] : null;
+
+  // Latest tower CI run on main (the repo this dashboard deploys from).
+  const towerRun = Array.isArray(towerCiRuns?.workflow_runs) ? towerCiRuns.workflow_runs[0] : null;
 
   // gh-pages scanner snapshot freshness (Vercel demo data source).
   const snapMeta = safe(() => (JSON.parse(snapRaw ?? "null") || {}).meta, null as any);
@@ -628,6 +635,19 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
       pushed_at: farbRepo?.pushed_at ?? null,
       branches: ["main", "p0-hardening", "gh-pages", "paper-data", "feat/risk-engine-wiring", "upgrade/risk-profit-engine"],
       ci: "539 tests, matrix ubuntu+windows, dispatched green; nightly 03:07 UTC",
+    },
+    tower_ci: {
+      repo: `${GH_OWNER}/funding-arb-tower`,
+      url: towerRun?.html_url ?? `https://github.com/${GH_OWNER}/funding-arb-tower/actions`,
+      latest: towerRun
+        ? {
+            sha: String(towerRun.head_sha ?? "").slice(0, 7),
+            status: String(towerRun.status ?? "unknown"), // completed | in_progress | queued
+            conclusion: towerRun.conclusion ?? null, // success | failure | null while running
+            completed_at: towerRun.updated_at ?? null,
+          }
+        : null,
+      summary: "bun install → prisma generate → typecheck (strict, zero errors) → lint",
     },
     phase3: {
       repo: `${GH_OWNER}/phase3-lab`,

@@ -233,6 +233,17 @@ type Status = {
   backtest: any;
   pipeline: {
     github: any;
+    tower_ci: {
+      repo: string;
+      url: string;
+      latest: {
+        sha: string;
+        status: string;
+        conclusion: string | null;
+        completed_at: string | null;
+      } | null;
+      summary: string;
+    } | null;
     phase3: {
       repo: string;
       url: string;
@@ -1095,7 +1106,7 @@ export default function Home() {
               {/* Pipeline + plan */}
               <div className="space-y-6">
                 <Card title="delivery pipeline" icon={<ShieldCheck className="h-4 w-4" />}>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                     <div className="space-y-2">
                       <div className="flex items-center gap-2 text-zinc-400">
                         <Github className="h-3.5 w-3.5" /> {data.pipeline.github.repo}
@@ -1113,6 +1124,51 @@ export default function Home() {
                           </div>
                         ))}
                       </div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-zinc-400">
+                        <ShieldCheck className="h-3.5 w-3.5" /> tower CI — this repo
+                      </div>
+                      {data.pipeline.tower_ci ? (
+                        <>
+                          <a
+                            href={data.pipeline.tower_ci.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-emerald-400 hover:underline"
+                          >
+                            {data.pipeline.tower_ci.repo} <ExternalLink className="h-3 w-3" />
+                          </a>
+                          {data.pipeline.tower_ci.latest ? (
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span
+                                className={
+                                  data.pipeline.tower_ci.latest.status === "completed" &&
+                                  data.pipeline.tower_ci.latest.conclusion === "success"
+                                    ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-px text-[10px] font-medium text-emerald-400"
+                                    : data.pipeline.tower_ci.latest.status === "completed"
+                                      ? "rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 py-px text-[10px] font-medium text-rose-400"
+                                      : "rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-400"
+                                }
+                              >
+                                {data.pipeline.tower_ci.latest.status === "completed"
+                                  ? (data.pipeline.tower_ci.latest.conclusion ?? "unknown")
+                                  : (data.pipeline.tower_ci.latest.status ?? "unknown")}
+                              </span>
+                              <span className="font-mono text-emerald-500/80">{data.pipeline.tower_ci.latest.sha}</span>
+                              {data.pipeline.tower_ci.latest.completed_at && (
+                                <span className="text-zinc-500">{timeAgo(data.pipeline.tower_ci.latest.completed_at)} ago</span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="text-zinc-600">no CI runs on main yet</div>
+                          )}
+                          <div className="text-zinc-500">{data.pipeline.tower_ci.summary}</div>
+                          <div className="text-zinc-600">on every push/PR to main</div>
+                        </>
+                      ) : (
+                        <div className="text-zinc-600">unavailable</div>
+                      )}
                     </div>
                     <div className="space-y-2">
                       <div className="flex items-center gap-2 text-zinc-400">

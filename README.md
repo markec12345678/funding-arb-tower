@@ -27,7 +27,7 @@ This dashboard is one of four coordinated repositories:
 | [`funding-arb`](https://github.com/markec12345678/funding-arb) | the trading system — scanner, strategy, executor, gates | **locked** at `0373f5d` during Phase-2 A/B/C paper validation (539 tests, CI green) |
 | [`phase3-lab`](https://github.com/markec12345678/phase3-lab) | execution-safety laboratory — 4-layer separation, formal safety gate | **certified**: 106/106 tests (foundation 80 · reconciliation 19 · risk guardian 23 · cross-layer 13), golden contract v1.1.0, PORT CANDIDATE — port blocked by Phase-2 verdict |
 | [`quant-arb-engine`](https://github.com/markec12345678/quant-arb-engine) | next-gen research engine — invariant-first market-data model, ALL-IN EDGE waterfall, TWO carry families (forward lock + perp float) ranked every quote day on a deterministic mock RFQ world, PLUS the W0 real-RFQ ingestion lane (immutable hash-chained raw journal + adapters) and the W1-INFRA journal replay adapter + coverage census | **v0.6.5 · paper/research only** — W0: real RFQ ingestion shipped (15-field schema, R-1…R-13 fail-closed invariants, source wall real\|synthetic, file/webhook adapters with `--dry-run` first-contact validation that writes nothing, deterministic ALL-IN EDGE accounting — descriptive only; webhook receiver hardened v0.6.4: every accepted record refreshes `rfq-status.json` so this tower stays live on the always-on path, honest stale/500 response surfaces); W1-INFRA: the journal replay adapter (W0 records → typed quotes with provenance; funding/settlement surfaces honestly refused — no estimator smuggled through infrastructure) + the coverage census (one command answers what the journal supports — families, eligibility breakdown, day/tenor coverage; the inclusion criteria the future W1 sealed record will cite); the first-feed day is rehearsed end-to-end on stand-in data (engine runbook + executable dress rehearsal, zero repo writes); invariant-checked by 103 tracked checks reproducible from the repo via `verify_w0_invariants.py`; 0 real records until a feed is connected; on top of v0.5.0 (adverse-side horizon σ, holdout ladder, quadruple panels, P1..P5 all SUPPORTED); monitored read-only from this tower's engine view |
-| **funding-arb-tower** (this repo) | command center — reads both pipelines, never trades | runs sandbox-local and/or deployed · **CI on every push** (typecheck strict zero-errors + lint — the same discipline as the sibling repos' gates) |
+| **funding-arb-tower** (this repo) | command center — reads both pipelines, never trades | runs sandbox-local and/or deployed · **CI on every push** (typecheck strict zero-errors + lint — the same discipline as the sibling repos' gates) · its own gate state is watched in the delivery-pipeline card · render failures degrade to an honest retry boundary, never a white screen |
 
 The validation ladder the dashboard reflects:
 
@@ -124,6 +124,10 @@ elsewhere:
   local sandbox checkout → GitHub raw fallback, 60 s remote cache).
 - `src/app/page.tsx` — the dashboard (client component, 10 s polling) with the
   monitor/engine view switcher.
+- `src/app/error.tsx` + `src/app/global-error.tsx` — error boundaries: a
+  render failure in any view degrades honestly ("the measured systems are
+  unaffected — the tower is read-only") with a retry, instead of a
+  white-screen; verified by inducing a real render error and recovering.
 - `src/components/quant-engine/EngineView.tsx` — the engine view (60 s polling).
 - `src/lib/engine-types.ts` — the engine artifact contract (shared by API + view).
 - `scripts/push-paper-snapshot.sh` — the plumbing-based snapshot pusher.
