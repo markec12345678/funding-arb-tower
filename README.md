@@ -422,6 +422,19 @@ institutional memory, not one operator's head.
   `load_pure_futures_positions()` reads `scripts/data/pure-futures/positions.json`
   at boot, so a restarted runner inherits every open/closed paper position.
 
+**Drill-verified (2026-09-12):** the restore step above was rehearsed
+end-to-end into `/tmp` against the live branch — every artifact restored via
+`git show origin/paper-data:paper-data/<file>` and parsed cleanly (ledger,
+journal, report, config, runner log). The measured loss window at drill time:
+10 journal lines (~50 min of cycles) and 1 position opened 34 min after the
+last hourly push — matching the ≈ 1 h worst case. The GitHub-side collector's
+parallel stream does **not** backfill it (its snapshot also predates the
+open; its `positions.json` is its own funnel view, not the runner's ledger).
+One consequence worth knowing in advance: after a recovery, the analyzer's
+integrity audit will flag the journal gap (its >15-min gap check) — that is
+the audit working as designed: the discontinuity stays visible in the A/B/C
+decision data instead of being silently patched over.
+
 **Recovery procedure (operator-executed, in order):**
 
 1. Rebuild the sandbox — clone the three repos at `main`, create the Python
