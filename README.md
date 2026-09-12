@@ -230,6 +230,7 @@ carries live runtime numbers.
     "cycles":  [ { "ts": "…", "scan_total": 2419, "candidates": 5, "opens": 1, "open_simulated": 0, "open_aborted": 1, "open_positions": 6 } ],
     "aborts":  [ { "reason": "order-book depth gate", "count": 12 } ],
     "totals":  { "cycles": 42, "scan_total": 101530, "…": "…" },
+    "window":  { "lines": 120, "from": "…first counted cycle…", "to": "…last counted cycle…" },  // what totals cover — KPI labels derive from this, not an assumed duration
     "positions": [ { "id": "…", "base": "RVN", "long_venue": "binance", "short_venue": "bybit", "status": "open" } ]
   },
   "backtest": { "fee_gate": { "best_spread_pct": 0.0218, "…": "…" } },

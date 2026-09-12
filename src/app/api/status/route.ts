@@ -62,6 +62,13 @@ const EXPECTED_CYCLE_S = 300; // paper cycles: every 5 min
 const STALE_AFTER_S = 900; // >3 missed cycles = stale
 const SNAPSHOT_EXPECTED_S = 3600; // gh-pages snapshot: hourly
 const SNAPSHOT_STALE_AFTER_S = 7200;
+// Paper-journal window: funnel/KPI totals cover the last N journal LINES
+// (~10 h at the current 5-min cadence — but lines, not hours, is the real
+// unit). The actual covered span is exposed in the payload as
+// paper.window (from/to = first/last COUNTED cycle) so the UI labels the
+// window from data instead of assuming a duration that cadence changes
+// would silently invalidate.
+const JOURNAL_WINDOW_LINES = 120;
 const GH_PAGES_SNAPSHOT = `https://raw.githubusercontent.com/${GH_OWNER}/funding-arb/gh-pages/scanner-latest.json`;
 
 type JournalCycle = {
@@ -100,14 +107,22 @@ function classifyAbort(logs: string[] | undefined): string {
   return "other";
 }
 
+type JournalWindow = { lines: number; from: string | null; to: string | null };
+
 function parseJournalRaw(raw: string): {
   cycles: JournalCycle[];
   aborts: AbortReason[];
   totals: Record<string, number>;
+  window: JournalWindow;
 } {
-  const empty = { cycles: [], aborts: [], totals: {} };
+  const empty = {
+    cycles: [],
+    aborts: [],
+    totals: {},
+    window: { lines: JOURNAL_WINDOW_LINES, from: null, to: null } as JournalWindow,
+  };
   if (!raw) return empty;
-  const lines = raw.trim().split("\n").slice(-120); // last ~10h at 5-min cycles
+  const lines = raw.trim().split("\n").slice(-JOURNAL_WINDOW_LINES);
   const cycles: JournalCycle[] = [];
   const abortCounts = new Map<string, number>();
   const totals = {
@@ -169,7 +184,15 @@ function parseJournalRaw(raw: string): {
   const aborts = [...abortCounts.entries()]
     .map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count);
-  return { cycles, aborts, totals };
+  // The counted window: from/to are the first/last cycles that ACTUALLY
+  // fed the totals (after the scan_total>=50 test/dev filter) — exactly
+  // what the numbers cover, never more.
+  const window: JournalWindow = {
+    lines: JOURNAL_WINDOW_LINES,
+    from: cycles.length ? cycles[0].ts : null,
+    to: cycles.length ? cycles[cycles.length - 1].ts : null,
+  };
+  return { cycles, aborts, totals, window };
 }
 
 function mapPositions(rows: any): any[] {
@@ -290,11 +313,18 @@ async function vercelHealth(): Promise<{ healthy: boolean; checked_at: string | 
 // ---------------------------------------------------------------------------
 
 function localJournal() {
-  if (!existsSync(JOURNAL)) return { cycles: [], aborts: [], totals: {} };
+  if (!existsSync(JOURNAL))
+    return {
+      cycles: [],
+      aborts: [],
+      totals: {},
+      window: { lines: JOURNAL_WINDOW_LINES, from: null, to: null } as JournalWindow,
+    };
   return safe(() => parseJournalRaw(readFileSync(JOURNAL, "utf-8")), {
     cycles: [],
     aborts: [],
     totals: {},
+    window: { lines: JOURNAL_WINDOW_LINES, from: null, to: null } as JournalWindow,
   });
 }
 
@@ -708,7 +738,12 @@ async function remotePaper() {
 
   const journal = collectorJournalRaw
     ? parseJournalRaw(collectorJournalRaw)
-    : { cycles: [], aborts: [], totals: {} };
+    : {
+        cycles: [] as JournalCycle[],
+        aborts: [] as AbortReason[],
+        totals: {} as Record<string, number>,
+        window: { lines: JOURNAL_WINDOW_LINES, from: null, to: null } as JournalWindow,
+      };
   const positions = safe(
     () => mapPositions(JSON.parse(collectorPositionsRaw ?? "[]")),
     [] as any[]
@@ -920,7 +955,12 @@ export async function GET(req: NextRequest) {
   const remoteMode = forceRemote || !localAvailable;
 
   let paperBlock: {
-    journal: { cycles: JournalCycle[]; aborts: AbortReason[]; totals: Record<string, number> };
+    journal: {
+      cycles: JournalCycle[];
+      aborts: AbortReason[];
+      totals: Record<string, number>;
+      window: JournalWindow;
+    };
     positions: any[];
     analysis: any;
     runner: any;
@@ -1020,6 +1060,8 @@ export async function GET(req: NextRequest) {
       cycles: paperBlock.journal.cycles.slice(-24).reverse(),
       aborts: paperBlock.journal.aborts,
       totals: paperBlock.journal.totals,
+      // what the totals actually cover — the UI labels its KPIs from this
+      window: paperBlock.journal.window,
       positions: paperBlock.positions,
       exits: paperBlock.exits,
       economics: paperBlock.economics,

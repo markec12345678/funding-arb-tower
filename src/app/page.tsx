@@ -136,6 +136,9 @@ type Status = {
     }[];
     aborts: { reason: string; count: number }[];
     totals: Record<string, number>;
+    // what the totals actually cover: last N journal lines, from/to =
+    // first/last counted cycle — KPI labels derive from this, not assumptions
+    window?: { lines: number; from: string | null; to: string | null } | null;
     positions: any[];
     exits: {
       generated_at: string;
@@ -563,6 +566,16 @@ export default function Home() {
   const totals = p?.totals ?? {};
   const lastCycle = p?.cycles?.[0];
   const funnelMax = Math.max(1, totals.scan_total || 0, totals.candidates || 0, totals.opens || 0, totals.open_simulated || 0);
+  // The paper KPI/funnel totals are WINDOWED (last N journal lines), while
+  // phase-2 economics on the same page are experiment-lifetime — the window
+  // label below keeps the two time semantics from silently blending.
+  const winFromMs = p?.window?.from ? new Date(p.window.from).getTime() : null;
+  const winToMs = p?.window?.to ? new Date(p.window.to).getTime() : null;
+  const windowH =
+    winFromMs !== null && winToMs !== null && winToMs > winFromMs
+      ? Math.round(((winToMs - winFromMs) / 3_600_000) * 10) / 10
+      : null;
+  const windowSuffix = windowH !== null ? ` · ${windowH}h window` : "";
 
   // The observability rule: green requires LIVE DATA, not just a live
   // process. A stale/unknown data plane is RED even while the runner pid
@@ -727,16 +740,20 @@ export default function Home() {
                 sub="fee gate > best spread 5×"
                 tone="warn"
               />
-              <Kpi label="paper cycles" value={fmt(totals.cycles)} sub={`last scan ${fmt(lastCycle?.scan_total)} rows`} />
+              <Kpi
+                label="paper cycles"
+                value={fmt(totals.cycles)}
+                sub={`last scan ${fmt(lastCycle?.scan_total)} rows${windowSuffix}`}
+              />
               <Kpi
                 label="signals → candidates"
                 value={`${fmt(totals.candidates)}`}
-                sub={`of ${fmt(totals.scan_total)} rows scanned`}
+                sub={`of ${fmt(totals.scan_total)} rows scanned${windowSuffix}`}
               />
               <Kpi
                 label="paper positions"
                 value={fmt(p?.positions?.filter((x: any) => x.status === "open").length ?? 0)}
-                sub={`${fmt(totals.open_simulated)} simulated opens · ${fmt(totals.open_aborted)} gate rejects`}
+                sub={`${fmt(totals.open_simulated)} simulated opens · ${fmt(totals.open_aborted)} gate rejects${windowSuffix}`}
                 tone={(totals.open_simulated ?? 0) > 0 ? "good" : "default"}
               />
             </div>
@@ -999,7 +1016,14 @@ export default function Home() {
               </Card>
 
               {/* Paper funnel */}
-              <Card title="paper funnel — live (last 10h)" icon={<Activity className="h-4 w-4" />}>
+              <Card
+                title={
+                  windowH !== null
+                    ? `paper funnel — live (${windowH}h window)`
+                    : "paper funnel — live (windowed)"
+                }
+                icon={<Activity className="h-4 w-4" />}
+              >
                 <div className="space-y-3">
                   <FunnelBar label="scanner rows" value={totals.scan_total ?? 0} max={funnelMax} tone="bg-zinc-600" />
                   <FunnelBar label="entry candidates (spread+fee gate)" value={totals.candidates ?? 0} max={funnelMax} tone="bg-amber-500" />
