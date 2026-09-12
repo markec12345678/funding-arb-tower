@@ -571,6 +571,22 @@ What the card shows:
   24 h anchor is the lane's own clock; verify with `scripts/recon.sh` —
   unchanged next-fire — and `scripts/interim.sh` — the trend gains the row).
   Rehearse after any change to the analyzer or the lane's invocation.
+  **Day-7 final read** (end-of-experiment semantics, audited 2026-09-12):
+  the lane fires at ~04:12Z daily while the Day-7 boundary is
+  `BASELINE_START + 7d` = **2026-09-17 14:36Z** (a hard constant in the
+  analyzer) — so at the decision moment the freshest lane report says
+  day 6.57 / INTERIM, and the first lane-produced FINAL-WINDOW report
+  would only land Sep 18 04:12Z, **13.6 h after the decision point**.
+  The clean procedure: at 14:36Z Sep 17 run the analyzer manually (the
+  exact rehearsal command above — proven <30 s, lane meta untouched, the
+  lane keeps its own 24 h clock and archives its next report
+  independently), then `scripts/interim.sh` renders stage FINAL-WINDOW
+  ("the A/B/C decision is due") with a true day-7.0x trend row.
+  Nothing stops automatically at Day-7 — the runner has no end
+  parameter, the lane no stop condition, the analyzer only flips the
+  stage label; the stop is part of executing the user's A/B/C decision
+  (operator recipe / W1 sealing / continue), and the timestamped day-7.0
+  read cannot be retroactively polluted by post-decision cycles.
 - **Integrity chips** — the analyzer's own continuity audit (parse errors,
   duplicate timestamps, ts back-jumps, journal gaps > 15 min, duplicate
   position ids, opens↔last-cycle consistency, GH-collector coverage,
