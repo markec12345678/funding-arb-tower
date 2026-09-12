@@ -136,6 +136,11 @@ elsewhere:
   dataset (journal, positions, config, logs, **and the phase-2 analyzer's
   report-latest.json**) to the `paper-data` branch via
   git plumbing — the funding-arb working tree is never touched (sandbox only).
+- `src/server/phase2-daily.ts` — the daily Phase-2 verify-only check lane
+  (sandbox only): runs the locked read-only analyzer at most once per 24 h,
+  retries after 1 h on failure, and seeds from an existing report so a fresh
+  activation does not double-run the same day (lane health surfaces in the
+  paper card's supervisor rows).
 - `src/app/api/status/route.ts` — the status API (both modes, see above).
 - `src/app/api/engine/overview/route.ts` — the quant-arb-engine monitor API (read-only;
   local sandbox checkout → GitHub raw fallback, 60 s remote cache).
@@ -443,20 +448,31 @@ decision data instead of being silently patched over.
    `positions.json` and `journal.jsonl` → `scripts/data/pure-futures/`;
    `paper_runner.log` → `data/`. (A fresh checkout of the branch at
    `git ls-tree -r origin/paper-data` shows the full mapping.)
-3. Restart the paper runner with its exact invocation (captured from the
-   live process):
+3. The runner needs no manual start: the tower's supervisor
+   (`src/instrumentation-node.ts`) checks every 20 s and (re)spawns the
+   runner detached from the dev-server process — starting the tower in step 4
+   starts the runner within one tick. Empirically: the live runner (PID 12976)
+   is itself supervisor-spawned at server boot (`last_spawn` ≡ `started_at` in
+   the supervisor meta), with 4 historical respawns on the counter. The manual
+   equivalent, if ever needed as an override before the tower is up:
    `nohup /home/z/.venv/bin/python scripts/execution/run_pure_futures_spread.py --config templates/config.pure_futures.spread.json --watch 5 --verbose &`
-   — run from `/home/z/funding-arb`. **No supervisor restarts it
-   automatically, by design**: this tower reads, never trades, so it never
-   starts the runner either; a dead runner surfaces within minutes via the
-   freshness gate and the runner-alive row instead of being silently
-   respawned. An operator makes the restart decision.
-4. Restart the tower (`bun run dev`, port 3000). The three supervisor lanes
-   re-arm themselves: heartbeat + snapshot resume on their first tick,
-   `phase2-daily` seeds from the report's mtime so it does not double-run
-   today's check. (En-route bonus on any rebuild: the dev server boots the
-   current source, activating the patrol's read-modify-write fix for the
-   heartbeat meta — see the code comment in `api/status/route.ts`.)
+   — run from `/home/z/funding-arb`; the supervisor's pgrep guard adopts a
+   running runner, it never double-spawns. (Corrected 2026-09-12: an earlier
+   draft of this runbook claimed no supervisor restarts the runner “by
+   design” — wrong, contradicted by both the module source and the live
+   process state; the charter statement is scoped precisely: the tower never
+   places trades — managing the dry-run paper MEASUREMENT process is
+   supervisor duty, not trading.) What the freshness gate actually catches:
+   the both-dead case (sandbox death) or a crash-looping runner — while the
+   tower lives, an individual runner death is closed over within 20 s.
+4. Restart the tower (`bun run dev`, port 3000). The paper-runner
+   supervisor starts the runner at its first 20 s tick if it is not already
+   running, and the three supervisor lanes re-arm themselves: heartbeat +
+   snapshot resume on their first tick, `phase2-daily` seeds from the
+   report's mtime so it does not double-run today's check. (En-route bonus on
+   any rebuild: the dev server boots the current source, activating the
+   patrol's read-modify-write fix for the heartbeat meta — see the code
+   comment in `api/status/route.ts`.)
 5. Verify against `/api/status`: freshness `fresh`, runner alive, all three
    supervisor lanes LIVE, `phase2.day` unchanged versus the pre-death
    reading (the anchored clock), and the paper-data branch advancing again.
