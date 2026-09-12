@@ -754,21 +754,29 @@ async function remotePaper() {
 // ---------------------------------------------------------------------------
 
 async function pipeline(repoCommitsLocal: { sha: string; message: string }[], remoteMode: boolean) {
-  const [farbRepo, farbCommits, p3Commits, health, snapRaw, towerCiRuns, engineCiRuns] = await Promise.all([
-    ghJson(`/repos/${GH_OWNER}/funding-arb`),
-    remoteMode ? ghJson(`/repos/${GH_OWNER}/funding-arb/commits?per_page=6`) : Promise.resolve(null),
-    ghJson(`/repos/${GH_OWNER}/phase3-lab/commits?per_page=1`),
-    vercelHealth(),
-    rawText(GH_PAGES_SNAPSHOT),
-    // The tower's OWN verification gate (ci.yml): latest run on main. The
-    // command center shows every sibling repo's gate state — discipline by
-    // visibility applies to itself, too.
-    ghJson(`/repos/${GH_OWNER}/funding-arb-tower/actions/workflows/ci.yml/runs?per_page=1&branch=main`),
-    // The engine's verification gate (ci.yml): latest run on main — the
-    // research repo's 103-check invariant harness, remotely. With this the
-    // card carries all four repos' gates: family discipline parity.
-    ghJson(`/repos/${GH_OWNER}/quant-arb-engine/actions/workflows/ci.yml/runs?per_page=1&branch=main`),
-  ]);
+  const [farbRepo, farbCommits, p3Commits, health, snapRaw, towerCiRuns, engineCiRuns, fundingCiRuns] =
+    await Promise.all([
+      ghJson(`/repos/${GH_OWNER}/funding-arb`),
+      remoteMode ? ghJson(`/repos/${GH_OWNER}/funding-arb/commits?per_page=6`) : Promise.resolve(null),
+      ghJson(`/repos/${GH_OWNER}/phase3-lab/commits?per_page=1`),
+      vercelHealth(),
+      rawText(GH_PAGES_SNAPSHOT),
+      // The tower's OWN verification gate (ci.yml): latest run on main. The
+      // command center shows every sibling repo's gate state — discipline by
+      // visibility applies to itself, too.
+      ghJson(`/repos/${GH_OWNER}/funding-arb-tower/actions/workflows/ci.yml/runs?per_page=1&branch=main`),
+      // The engine's verification gate (ci.yml): latest run on main — the
+      // research repo's 103-check invariant harness, remotely.
+      ghJson(`/repos/${GH_OWNER}/quant-arb-engine/actions/workflows/ci.yml/runs?per_page=1&branch=main`),
+      // The LOCKED repo's verification gate (ci.yml): latest run on main.
+      // funding-arb is code-frozen @ 0373f5d until A/B/C, but its gate is
+      // alive — nightly 03:07 UTC re-runs the 539-test matrix on both OSes,
+      // which is exactly the re-validation that the lock's integrity claim
+      // rests on (Task 40 reason #2: independent verification gates). A red
+      // nightly must be SEEN, not discovered weeks later — so this lane is
+      // a live query like its siblings, not the static string it replaces.
+      ghJson(`/repos/${GH_OWNER}/funding-arb/actions/workflows/ci.yml/runs?per_page=1&branch=main`),
+    ]);
 
   const commits: { sha: string; message: string }[] = remoteMode
     ? (Array.isArray(farbCommits)
@@ -787,6 +795,9 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
   // Latest engine CI run on main (the research repo).
   const engineRun = Array.isArray(engineCiRuns?.workflow_runs) ? engineCiRuns.workflow_runs[0] : null;
 
+  // Latest funding-arb CI run on main (the locked repo — nightly-revalidated).
+  const fundingRun = Array.isArray(fundingCiRuns?.workflow_runs) ? fundingCiRuns.workflow_runs[0] : null;
+
   // gh-pages scanner snapshot freshness (Vercel demo data source).
   const snapMeta = safe(() => (JSON.parse(snapRaw ?? "null") || {}).meta, null as any);
   const snapGeneratedAt: string | null =
@@ -803,7 +814,25 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
       default_branch: farbRepo?.default_branch ?? "main",
       pushed_at: farbRepo?.pushed_at ?? null,
       branches: ["main", "p0-hardening", "gh-pages", "paper-data", "feat/risk-engine-wiring", "upgrade/risk-profit-engine"],
-      ci: "539 tests, matrix ubuntu+windows, dispatched green; nightly 03:07 UTC",
+    },
+    // The locked repo's gate, live: latest ci.yml run on main. The nightly
+    // cadence (03:07 UTC) re-runs the suite even while the repo is frozen —
+    // gate green on the locked sha is the lock's continuing integrity
+    // evidence. (The old static "ci" string here was replaced by this lane
+    // so the card has exactly one fact source for the gate.)
+    funding_ci: {
+      repo: `${GH_OWNER}/funding-arb`,
+      url: fundingRun?.html_url ?? `https://github.com/${GH_OWNER}/funding-arb/actions`,
+      latest: fundingRun
+        ? {
+            sha: String(fundingRun.head_sha ?? "").slice(0, 7),
+            status: String(fundingRun.status ?? "unknown"), // completed | in_progress | queued
+            conclusion: fundingRun.conclusion ?? null, // success | failure | null while running
+            completed_at: fundingRun.updated_at ?? null,
+          }
+        : null,
+      summary:
+        "pytest 539 (ubuntu+windows matrix) + docs-sync · push hook unreliable on this fork, dispatch/nightly keep it green",
     },
     tower_ci: {
       repo: `${GH_OWNER}/funding-arb-tower`,

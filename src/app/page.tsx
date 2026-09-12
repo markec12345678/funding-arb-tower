@@ -17,6 +17,7 @@ import {
   Grid3x3,
   Layers,
   Loader2,
+  Lock,
   Radio,
   ShieldAlert,
   ShieldCheck,
@@ -251,6 +252,17 @@ type Status = {
   backtest: any;
   pipeline: {
     github: any;
+    funding_ci: {
+      repo: string;
+      url: string;
+      latest: {
+        sha: string;
+        status: string;
+        conclusion: string | null;
+        completed_at: string | null;
+      } | null;
+      summary: string;
+    } | null;
     tower_ci: {
       repo: string;
       url: string;
@@ -1235,7 +1247,6 @@ export default function Home() {
                         <Github className="h-3.5 w-3.5" /> {data.pipeline.github.repo}
                       </div>
                       <div className="text-zinc-500">branch <span className="text-zinc-300 font-mono">{data.repo.branch}</span>{data.repo.dirty && <span className="text-amber-400"> (dirty)</span>}</div>
-                      <div className="text-zinc-500">CI {data.pipeline.github.ci}</div>
                       {data.pipeline.github.pushed_at && (
                         <div className="text-zinc-500">pushed <span className="text-zinc-300">{timeAgo(data.pipeline.github.pushed_at)}</span> ago</div>
                       )}
@@ -1247,6 +1258,51 @@ export default function Home() {
                           </div>
                         ))}
                       </div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-zinc-400">
+                        <Lock className="h-3.5 w-3.5" /> funding-arb CI — locked repo
+                      </div>
+                      {data.pipeline.funding_ci ? (
+                        <>
+                          <a
+                            href={data.pipeline.funding_ci.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-emerald-400 hover:underline"
+                          >
+                            {data.pipeline.funding_ci.repo} <ExternalLink className="h-3 w-3" />
+                          </a>
+                          {data.pipeline.funding_ci.latest ? (
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span
+                                className={
+                                  data.pipeline.funding_ci.latest.status === "completed" &&
+                                  data.pipeline.funding_ci.latest.conclusion === "success"
+                                    ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-px text-[10px] font-medium text-emerald-400"
+                                    : data.pipeline.funding_ci.latest.status === "completed"
+                                      ? "rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 py-px text-[10px] font-medium text-rose-400"
+                                      : "rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-400"
+                                }
+                              >
+                                {data.pipeline.funding_ci.latest.status === "completed"
+                                  ? (data.pipeline.funding_ci.latest.conclusion ?? "unknown")
+                                  : (data.pipeline.funding_ci.latest.status ?? "unknown")}
+                              </span>
+                              <span className="font-mono text-emerald-500/80">{data.pipeline.funding_ci.latest.sha}</span>
+                              {data.pipeline.funding_ci.latest.completed_at && (
+                                <span className="text-zinc-500">{timeAgo(data.pipeline.funding_ci.latest.completed_at)} ago</span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="text-zinc-600">no CI runs on main yet</div>
+                          )}
+                          <div className="text-zinc-500">{data.pipeline.funding_ci.summary}</div>
+                          <div className="text-zinc-600">on push/PR + nightly 03:07 UTC</div>
+                        </>
+                      ) : (
+                        <div className="text-zinc-600">gate state unavailable</div>
+                      )}
                     </div>
                     <div className="space-y-2">
                       <div className="flex items-center gap-2 text-zinc-400">
