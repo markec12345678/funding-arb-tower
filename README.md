@@ -366,6 +366,11 @@ fetch (independent of the scanner gap). Read-only by design:
 `src/server/exit-classification.ts` only reads the journal + positions ledger
 — the runner and the measured system are untouched.
 
+**Coverage:** experiment-lifetime — the classifier walks the FULL journal
+(every cycle since the runner started), unlike the funnel's sliding ~10 h
+window; the card header states the span (`journal_span` from→to), derived
+from the payload, not assumed.
+
 **Reporting contract (final A/B/C report):** the **strategy-attributable**
 result (genuine strategy exits, data-gap held apart) is the **primary**
 number; the **raw** result and the **E-04 contamination** split are always
@@ -541,7 +546,11 @@ cashflow per leg) and writes out the decomposition identity per close:
 Every component is computed from the **actual per-leg notionals** (NEW-17/NEW-18
 applied), funding accrues linearly with a settlement-count variant as the
 stricter bound, and prices are labeled what they are — futures ticker/last
-(NEW-16). On the current sample (12/12 closes A–H complete): spread −0.425 % +
+(NEW-16). **Coverage:** experiment-lifetime — the decomposer walks the full
+journal, so its aggregates cover every close since the runner started (the
+funnel counts only its ~10 h window); the per-close table shows the NEWEST 30
+rows (bounded payload, labeled against the total), newest-row-first. On the
+current sample (12/12 closes A–H complete): spread −0.425 % +
 estimated funding +1.599 % − fees 1.567 % = **economic estimate −0.393 %**
 (−$2.12 + $7.99 − $7.83 = −$1.96), with the identity ✓ built to hold on the
 displayed numbers. The test answers the one question it was built for: the R6

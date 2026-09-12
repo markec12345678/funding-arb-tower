@@ -596,6 +596,23 @@ export default function Home() {
       : null;
   const windowSuffix = windowH !== null ? ` · ${windowH}h window` : "";
 
+  // Exit classification + economic decomposition coverage: both walk the FULL
+  // journal (experiment-lifetime), unlike the windowed funnel totals. Their
+  // span is derived from the payload itself (journal_span from→to) — data,
+  // not assumption. Format matches the phase-2 countdowns (e.g. "1d 4h").
+  const exitFromMs = p?.exits?.journal_span?.from ? new Date(p.exits.journal_span.from).getTime() : null;
+  const exitToMs = p?.exits?.journal_span?.to ? new Date(p.exits.journal_span.to).getTime() : null;
+  const exitSpanH =
+    exitFromMs !== null && exitToMs !== null && exitToMs > exitFromMs
+      ? (exitToMs - exitFromMs) / 3_600_000
+      : null;
+  const exitSpanLabel =
+    exitSpanH === null
+      ? "experiment-lifetime"
+      : exitSpanH >= 24
+        ? `experiment-lifetime · ${Math.floor(exitSpanH / 24)}d ${Math.round(exitSpanH % 24)}h span`
+        : `experiment-lifetime · ${Math.round(exitSpanH)}h span`;
+
   // The observability rule: green requires LIVE DATA, not just a live
   // process. A stale/unknown data plane is RED even while the runner pid
   // still exists — "healthy" must never degrade to "the process didn't die".
@@ -1610,8 +1627,9 @@ export default function Home() {
                     (open/closed) come from paper.ledger, not this slice */}
                 <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
                   <span>
-                    last {fmt(p.positions.length)}
-                    {p?.ledger ? ` of ${fmt(p.ledger.total)}` : ""} ledger rows
+                    {p?.ledger && p.positions.length < p.ledger.total
+                      ? `last ${fmt(p.positions.length)} of ${fmt(p.ledger.total)} ledger rows`
+                      : `all ${fmt(p.positions.length)} ledger rows`}
                   </span>
                   {p?.ledger && (
                     <>
@@ -1676,8 +1694,8 @@ export default function Home() {
               <Card title="exit classification — strategy-attributable vs E-04" icon={<TrendingDown className="h-4 w-4" />}>
                 <div className="space-y-4">
                   <p className="text-[11px] leading-relaxed text-zinc-500">
-                    Passive evidence classification over {p.exits.journal_span.cycles} real cycles —
-                    every close sorted by cause. The runner and the measured system are untouched;
+                    Passive evidence classification over {p.exits.journal_span.cycles} real cycles — {exitSpanLabel}, every
+                    close sorted by cause. The runner and the measured system are untouched;
                     PnL mirrors the watcher's spread-PnL estimate (price-spread convergence ± fees —
                     realized funding cashflow is NOT observed in paper mode). Reporting contract: the
                     strategy-attributable result is primary; raw and E-04 contamination are always
@@ -1998,7 +2016,9 @@ export default function Home() {
               <Card title="economic decomposition — R7 invariant test" icon={<Calculator className="h-4 w-4" />}>
                 <div className="space-y-4">
                   <p className="text-[11px] leading-relaxed text-zinc-500">
-                    Per-close decomposition over {p.economics.closes} closes — every component recomputed from the ACTUAL
+                    Per-close decomposition over {p.economics.closes} closes — experiment-lifetime (the full
+                    journal, every close since the runner started; the funnel above counts only its{" "}
+                    {windowH !== null ? `${windowH}h window` : "windowed tail"}), every component recomputed from the ACTUAL
                     per-leg notionals (NEW-17) and entry-snapshot funding rates (per-leg rate × notional × held/interval).
                     <span className="text-amber-400"> Diagnostic only — NOT a Phase-2 PnL instrument</span> (the verdict
                     stays on paper spread PnL; realized funding cashflow is not observed in paper mode — NEW-08/NEW-15).
@@ -2125,7 +2145,13 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Per-close decomposition table */}
+                  {/* Per-close decomposition table — the payload carries the
+                      NEWEST 30 closes (bounded); aggregates above cover ALL */}
+                  <div className="mb-2 text-[11px] text-zinc-500">
+                    {p.economics.per_close.length < p.economics.closes
+                      ? `last ${fmt(p.economics.per_close.length)} of ${fmt(p.economics.closes)} closes · newest first`
+                      : `all ${fmt(p.economics.closes)} closes · newest first`}
+                  </div>
                   <div className="max-h-72 overflow-y-auto custom-scroll">
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-zinc-900 text-zinc-500">

@@ -484,6 +484,11 @@ export function decomposeEconomics(
     data_gap: dataGap,
     identity_check: identity,
     completeness: { complete, incomplete: perClose.length - complete },
+    // NEWEST 30 closes (bounded payload): perClose is sorted newest-first
+    // (the sort above), so slice(0,30) = the newest 30 — the detail view
+    // stays current as the experiment grows. The aggregates above cover ALL
+    // closes; the UI labels the slice against closes and renders the payload
+    // order as-is (already newest-row-first, same reading as the ledger).
     per_close: perClose.slice(0, 30),
     note:
       "R7 mathematical invariant test — DIAGNOSTIC decomposition only, NOT a Phase-2 PnL instrument (the Day-5/7 verdict stays on strategy-attributable paper SPREAD PnL; realized funding cashflow is not observed in paper mode — NEW-08/NEW-15). Per close: economic estimate = spread PnL + funding leg long + funding leg short − fees, with every component computed from the ACTUAL per-leg notionals (NEW-17: ref_px = max makes one leg ≤ trade_usd; NEW-18: trade_usd stays the requested value) and entry-snapshot funding rates (E — no rate history exists). Funding accrual shown linearly (held_h / interval_h × rate) and as settlement-count (0 until a settlement lands inside the hold). Prices are futures ticker/last throughout (NEW-16: the code's 'mark price' is the ticker price). Aggregates use the primary instrument's unit (Σ per-close pct of trade_usd — directly comparable with the R6 estimate range); the identity Σspread + Σfunding − Σfees = Σeconomic is built to hold on the displayed numbers. R8 (NEW-20): the signed aggregates carry the corrected mark-to-market spread (funding and fees are sign-correct per leg); both readings are shown. Read-only; the measured system stays untouched at 0373f5d.",
