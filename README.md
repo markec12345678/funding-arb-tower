@@ -188,9 +188,14 @@ elsewhere:
   drift) verified by test, not assumption.
 - `scripts/e2e.sh` — **browser-level golden path**: recon's sibling for the
   delivered UI. One command drives a real headless browser through what every
-  round used to verify by hand — open the page, click past the default engine
-  view, wait for live data, assert the monitor cards render in BOTH data
-  modes (local live-files vs `?source=remote` snapshot plane), the Task
+  round used to verify by hand — open the page, **assert the DEFAULT engine
+  landing renders with live data and its own honesty labels** (Task 57: view
+  hint, `sandbox live` mode chip, `all data synthetic` + `paper only` + the
+  binding NO-GO strip, the W0 real-RFQ card with `source wall` + `chain
+  intact`, engine-view layout at 1440/390 — `/api/engine/overview` ignores
+  `?source`, so both runs read the same engine plane), click past to the
+  live monitor, wait for live data, assert the monitor cards render in BOTH
+  data modes (local live-files vs `?source=remote` snapshot plane), the Task
   52/53/54 coverage/evidence labels are present (and ABSENT in local — mode
   purity), the scope-guard labels (Task 56: "Diagnostic only — NOT a
   Phase-2 PnL instrument" on economics, "never a single blended PnL" on

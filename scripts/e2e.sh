@@ -33,6 +33,19 @@
 #       labeled staleness; 3 cards carry it when the economics card renders)
 #     · "economic decomposition" card VISIBLE (pre-Task-54 remote read the
 #       collector's stub ledger, economics hid on closes=0)
+#   the DEFAULT LANDING (Task 57 — asserted in both runs, before the click):
+#     · view hint "engine view · synthetic research data · read-only" (a
+#       fresh load lands on the engine tab — routing regressions caught)
+#     · engine overview loaded (mode chip "sandbox live" — data-gated; NB
+#       /api/engine/overview ignores ?source: mode follows the checkout's
+#       existence, so both runs read the same engine plane)
+#     · engine anti-misread labels: "all data synthetic" · "paper only" ·
+#       the binding NO-GO strip — the engine view's scope-guard family
+#     · W0 real-RFQ card: title · "source wall" · "chain intact" (integrity)
+#     · "machinery validation" card; "github raw" ABSENT (plane guard: its
+#       presence means the sandbox checkout vanished)
+#     · engine-view layout at 1440 AND 390 — the landing view is responsive
+#       too, not just the monitor
 #   both modes: zero console errors, zero page errors, no horizontal
 #     overflow at either width, footer present with content filling the
 #     viewport (the sticky-footer contract — min-h-screen stretch, never a
@@ -47,7 +60,7 @@
 # --session e2e, closed via trap on any exit). Writes NOTHING unless --shots
 # is passed — then screenshots to screenshots/e2e-*.png (tracked files:
 # commit them as round evidence if wanted, or let the next --shots run
-# overwrite them).
+# overwrite them). Engine-view shots: e2e-{mode}-engine-{desktop,mobile}.
 #
 # EXIT CODE: 0 = golden path green · 1 = needs eyes (output says what).
 
@@ -188,6 +201,57 @@ run_mode() {
   ab open "$url" >/dev/null 2>&1
   ab wait --text "command center" --timeout 30000 >/dev/null 2>&1 \
     || fail "$mode: header never rendered (page blank / crashed?)"
+
+  # ── the DEFAULT landing is the ENGINE tab — assert it before clicking past ──
+  # A fresh visitor lands here FIRST; until Task 57 the golden path treated
+  # the engine view as a gotcha to bypass. NB: /api/engine/overview ignores
+  # ?source — its mode follows the sandbox checkout's EXISTENCE — so both
+  # runs read the same engine plane and these assertions are
+  # mode-independent by design.
+  ab wait --text "engine view · synthetic research data · read-only" --timeout 15000 >/dev/null 2>&1 \
+    || fail "$mode: default view is not the engine tab (view hint missing — routing regression?)"
+  # Data-arrival gate: the mode chip renders only when the client-side
+  # engine fetch resolved (data-gated) — a second hydration proof, like the
+  # pill below. "github raw" here would mean the checkout vanished and the
+  # API silently fell back — caught as a plane guard below.
+  if ab wait --text "sandbox live" --timeout 30000 >/dev/null 2>&1; then
+    ok "$mode: engine overview loaded — mode chip rendered (sandbox checkout)"
+  else
+    fail "$mode: engine overview never loaded (mode chip absent — /api/engine/overview failed?)"
+  fi
+
+  BODY=$(body_text)
+  MODE_CUR="$mode"
+  printf '%s' "$BODY" > "/tmp/e2e-engine-body-$mode.txt"
+  printf '  (engine body: %d chars, md5 %s, dump /tmp/e2e-engine-body-%s.txt)\n' "${#BODY}" "$(body_md5)" "$mode"
+
+  # engine-view assertions (the default landing): identity, the anti-misread
+  # labels (the engine view's scope-guard family — same discipline as the
+  # monitor's Task-56 labels: the honesty text must travel with the data),
+  # and the W0 flagship card with its lane intact.
+  assert_has "$mode: engine header identity"            "quant-arb-engine"
+  assert_has "$mode: engine anti-misread — synthetic"   "all data synthetic"
+  assert_has "$mode: engine anti-misread — paper only"  "paper only"
+  assert_has "$mode: engine NO-GO strip (binding)"     "never built (binding)"
+  assert_has "$mode: W0 real-RFQ card"                  "W0 · real RFQ ingestion"
+  assert_has "$mode: W0 source wall"                    "source wall"
+  assert_has "$mode: W0 chain intact"                   "chain intact"
+  assert_has "$mode: machinery-validation card"         "machinery validation"
+  assert_lacks_regex "$mode: engine plane = sandbox checkout (no github-raw fallback)" "github raw"
+
+  # the engine view's own layout contracts (desktop at 1440, then mobile),
+  # BEFORE the click-through — the landing view must be responsive too, not
+  # just the monitor. Back to 1440 for the pill wait + click that follow.
+  layout_eval "$mode engine desktop: no horizontal overflow" \
+    "document.documentElement.scrollWidth <= window.innerWidth"
+  shot "e2e-$mode-engine-desktop"
+  ab set viewport 390 844 >/dev/null 2>&1
+  sleep 1  # let the reflow settle before measuring
+  layout_eval "$mode engine mobile 390: no horizontal overflow" \
+    "document.documentElement.scrollWidth <= window.innerWidth"
+  shot "e2e-$mode-engine-mobile"
+  ab set viewport 1440 900 >/dev/null 2>&1
+  sleep 1
 
   # The strongest single wait: this pill only renders when the status fetch
   # resolved AND the data plane is fresh AND (local) the runner is alive —
