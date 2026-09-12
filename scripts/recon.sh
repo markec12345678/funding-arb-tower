@@ -245,14 +245,22 @@ PYEOF
 
   hr "PAPER SUMMARY"
   printf '%s' "$api_json" | jq -r '
+    .paper.window as $w |
+    (if $w.from != null and $w.to != null then
+       ($w.from | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) as $fs |
+       ($w.to   | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) as $ts |
+       "  window: \($w.from[0:16] | sub("T"; " "))Z → \($w.to[0:16] | sub("T"; " "))Z  (\(($ts-$fs)/3600 * 10 | round / 10)h, sliding — these counts DROP as lines age out)"
+     else
+       "  window: UNKNOWN (journal empty or window null — totals cover undefined span)"
+     end),
     .paper.totals as $t |
-    "  cycles \($t.cycles)  opens \($t.opens) (sim \($t.open_simulated) / abort \($t.open_aborted))  closes \($t.closes)",
+    "  cycles \($t.cycles)  opens \($t.opens) (sim \($t.open_simulated) / abort \($t.open_aborted))  closes \($t.closes)   (journal window: \($w.lines) lines)",
     (if .paper.ledger then
        "  positions: \(.paper.ledger.total) total, \(.paper.ledger.open) open, \(.paper.ledger.closed) closed (whole ledger)"
      else
        (.paper.positions // [] | "  positions: \(length) rows shown, \([.[] | select(.status=="open")] | length) open (slice only)")
      end)' || true
-  printf '%s' "$api_json" | jq -r '.phase2.totals | "  economics: price \(.price) fees \(.fees) funding \(.funding) → net \(.net)"' 2>/dev/null || true
+  printf '%s' "$api_json" | jq -r '.phase2.totals | "  economics: price \(.price) fees \(.fees) funding \(.funding) → net \(.net)   (experiment-lifetime)"' 2>/dev/null || true
 
 fi
 

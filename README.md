@@ -183,7 +183,12 @@ elsewhere:
   locked repo's `data/`. Checks repo states incl. the funding-arb lock sha,
   runner liveness, the three live CI lanes, freshness, supervisor lanes,
   phase-2 day/stage/countdowns (next lane fire mirrors `phase2-daily.ts`'s
-  tick gate — update both in one commit if the gate changes). Exit `0` = all
+  tick gate — update both in one commit if the gate changes), the dev-server
+  watchdog, and the paper summary with EVERY coverage labeled (Task 61:
+  journal-window totals carry the window line — from/to, span in hours, and
+  the sliding warning that these counts DROP as lines age out — positions
+  say `(whole ledger)`, economics says `(experiment-lifetime)`; mixed
+  coverages never share a section unlabeled). Exit `0` = all
   green, `1` = degraded with named reasons; failure paths (dead API, lock
   drift) verified by test, not assumption.
 - `scripts/e2e.sh` — **browser-level golden path**: recon's sibling for the
@@ -197,7 +202,9 @@ elsewhere:
   live monitor, wait for live data, assert the monitor cards render in BOTH
   data modes (local live-files vs `?source=remote` snapshot plane), the Task
   52/53/54 coverage/evidence labels are present (and ABSENT in local — mode
-  purity), the scope-guard labels (Task 56: "Diagnostic only — NOT a
+  purity) — including the funnel's `· Xh window` sliding-journal label
+  (Task 61: windowed counters DROP as journal lines age out; the assertion
+  keeps the label from being dropped), the scope-guard labels (Task 56: "Diagnostic only — NOT a
   Phase-2 PnL instrument" on economics, "never a single blended PnL" on
   exits — machine-checking the R7 scope guard), zero console/page errors, no horizontal overflow at 1440 and 390,
   and the sticky-footer contract. Preflight refuses to run under thin memory

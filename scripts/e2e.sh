@@ -18,7 +18,10 @@
 #     · cards: paper cycles · ledger · exit classification · economics ·
 #       runner log
 #     · coverage labels: "… ledger rows" (Task 52), "experiment-lifetime"
-#       (Task 53), "(all-time)" whole-ledger counts
+#       (Task 53), "(all-time)" whole-ledger counts, and the funnel's
+#       "· Xh window" sliding-journal label (Task 61 — windowed counters
+#       DROP as journal lines age out; without the label they read as
+#       whole-ledger absolutes)
 #     · SCOPE-GUARD LABELS (Task 56 — the anti-misread family): economics
 #       card carries "Diagnostic only — NOT a Phase-2 PnL instrument" and
 #       names the verdict instrument ("the verdict stays on paper spread
@@ -294,6 +297,11 @@ run_mode() {
   assert_has  "$mode: ledger coverage label"   "ledger rows"
   assert_has  "$mode: lifetime coverage label" "experiment-lifetime"
   assert_has  "$mode: whole-ledger counts"     "(all-time)"
+  # funnel window label (Task 61): the sliding-journal coverage of the KPI
+  # numbers — "· Xh window" on the funnel KPI subs + the funnel card title.
+  # Its absence would let windowed counters (which DROP as lines age out)
+  # read as whole-ledger absolutes; assert it so a refactor cannot drop it.
+  assert_has  "$mode: funnel window label"     "h window"
 
   # scope-guard labels (Task 56) — the anti-misread family the README names
   # "Scope guard, enforced in the labels": a regression that drops these
