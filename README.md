@@ -314,6 +314,8 @@ as the corrected spread-PnL view.
 
 ## Phase-2 A/B/C — window, discipline & decision support
 
+![phase-2 card](./screenshots/phase2-card-closeup.png)
+
 The monitor view's Phase-2 card makes the 7-day decision process itself visible
 and verifiable from the command center. It consumes **one artifact** —
 `report-latest.json`, overwritten by every daily verify-only run of the locked
@@ -404,16 +406,20 @@ hash-chained raw journal fed by pluggable adapters — monitored by a dedicated
 card. It renders exactly what the engine's research artifacts carry, with the
 engine's own epistemic note traveling with the data:
 
-- **W0 · real RFQ ingestion lane (v0.6, hardened v0.6.1)** — the real-world data
+- **W0 · real RFQ ingestion lane (v0.6, hardened v0.6.1 → v0.6.4)** — the real-world data
   layer's status: journal lines + chain head (hash-chain verified,
   truncation-bounded), the **source wall** chips (real vs synthetic — never
   pooled), venue/instrument census, the four ingestion paths with their honest
   states (file ingest ready with `--dry-run` first-contact validation that
-  writes nothing, webhook receiver ready, REST poller a documented W1 slot,
-  synthetic test-only), the last journaled records, and the honest amber status
+  writes nothing, webhook receiver hardened **v0.6.4** — every accepted
+  record refreshes `rfq-status.json` so this tower stays live on the
+  always-on path, REST poller a documented W1 slot, synthetic test-only),
+  the last journaled records, and the honest amber status
   line — currently **0 real records** (no desk credentials in this environment;
   the 103 invariant checks are tracked in the engine repo, reproducible via
-  `research/exploration/verify_w0_invariants.py`); descriptive ALL-IN EDGE
+  `research/exploration/verify_w0_invariants.py`; the first-feed day is
+  rehearsed end-to-end on stand-in data — engine v0.6.5's runbook +
+  executable dress rehearsal); descriptive ALL-IN EDGE
   accounting only, uncertainty → ranking → GO/NO-GO on real data is W1 and
   requires its own sealed decision record.
 - **W1-INFRA · journal replay adapter (v0.6.2) + coverage census (v0.6.3)** —
