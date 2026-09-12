@@ -46,7 +46,8 @@ data planes, chosen automatically:
 
 | | `mode: "local"` (sandbox) | `mode: "remote"` (deployed) |
 |---|---|---|
-| funnel · positions | read directly from the `/home/z/funding-arb` checkout (sandbox runner) | **live collector cycles + positions** from `paper-data/github-actions/*` (updated every ~5 min) |
+| funnel (liveness plane) | read directly from the `/home/z/funding-arb` checkout (sandbox runner) | **live collector cycles** from `paper-data/github-actions/journal.jsonl` (updated every ~5 min) |
+| ledger · exits · economics (evidence plane) | the same checkout, read live per request | **hourly sandbox snapshot** at the `paper-data` branch root (journal + ledger — the experiment's truth, up to ~1 h stale, age labeled on the cards as `paper.evidence`) |
 | backtest · runner log | local files | hourly lifecycle snapshot at the `paper-data` branch root |
 | **phase-2 discipline** | `scripts/data/phase2/report-latest.json` — the read-only analyzer's stable artifact, read verbatim | `paper-data/phase2-report-latest.json` — shipped hourly by the tower-owned snapshot pusher |
 | runner liveness | `pgrep` + pidfile + log mtime | freshness of the collector's newest cycle on the branch |
@@ -74,6 +75,16 @@ as the ledger grows. The "paper positions" KPI and the ledger card's coverage
 label read `ledger.open`, never the slice: an open position outside the tail
 is still open, still counted, still labeled.
 
+**Evidence-plane consistency:** the A/B/C evidence cards (ledger · exit
+classification · economic decomposition) always read the **experiment's**
+data — the sandbox runner's journal + ledger. In local mode those are the
+live files; in remote mode the hourly snapshot at the branch root (the
+collector is a parallel stateless funnel, deliberately NOT the evidence
+source — its positions file is its own funnel view, not the runner's
+ledger). `paper.evidence {plane, age_s}` declares which — the cards label
+the snapshot age in remote mode, so a stalled hourly push is visible on
+the evidence itself, not only in a freshness field.
+
 ### How the remote data stays fresh
 
 ```
@@ -84,8 +95,10 @@ github-actions collector (repository_dispatch heartbeat, every 5 min)
 daily verify-only check (phase2_report.py, read-only analyzer)
    └─ report-latest.json ──────────── hourly snapshot push ──► paper-data/phase2-report-latest.json
 funding-arb-tower (deployed)
-   └─ funnel + ledger from the collector files (live),
-      backtest + log + phase-2 discipline from the hourly snapshot
+   └─ funnel from the collector files (live, liveness plane),
+      ledger + exits + economics + backtest + log + phase-2 discipline
+      from the hourly snapshot (evidence plane — same numbers as the
+      sandbox, up to ~1 h stale, age labeled)
 ```
 
 ### Staleness gate (why green means the data is live)
@@ -240,6 +253,7 @@ carries live runtime numbers.
     "totals":  { "cycles": 42, "scan_total": 101530, "…": "…" },
     "window":  { "lines": 120, "from": "…first counted cycle…", "to": "…last counted cycle…" },  // what totals cover — KPI labels derive from this, not an assumed duration
     "ledger":  { "total": 45, "open": 3, "closed": 42 },  // whole-file ledger counts — positions[] is only the last 20 rows
+    "evidence": { "plane": "sandbox-snapshot", "age_s": 1892 },  // remote: evidence cards read the hourly snapshot (age labeled); local: "sandbox-live"
     "positions": [ { "id": "…", "base": "RVN", "long_venue": "binance", "short_venue": "bybit", "status": "open" } ]
   },
   "backtest": { "fee_gate": { "best_spread_pct": 0.0218, "…": "…" } },
@@ -369,7 +383,9 @@ fetch (independent of the scanner gap). Read-only by design:
 **Coverage:** experiment-lifetime — the classifier walks the FULL journal
 (every cycle since the runner started), unlike the funnel's sliding ~10 h
 window; the card header states the span (`journal_span` from→to), derived
-from the payload, not assumed.
+from the payload, not assumed. Plane: the experiment's own journal +
+ledger — live files in local mode, the hourly snapshot in remote mode
+(age labeled on the card).
 
 **Reporting contract (final A/B/C report):** the **strategy-attributable**
 result (genuine strategy exits, data-gap held apart) is the **primary**
@@ -549,7 +565,9 @@ stricter bound, and prices are labeled what they are — futures ticker/last
 (NEW-16). **Coverage:** experiment-lifetime — the decomposer walks the full
 journal, so its aggregates cover every close since the runner started (the
 funnel counts only its ~10 h window); the per-close table shows the NEWEST 30
-rows (bounded payload, labeled against the total), newest-row-first. On the
+rows (bounded payload, labeled against the total), newest-row-first. Plane:
+the experiment's own journal + ledger — live files in local mode, the
+hourly snapshot in remote mode (age labeled on the card). On the
 current sample (12/12 closes A–H complete): spread −0.425 % +
 estimated funding +1.599 % − fees 1.567 % = **economic estimate −0.393 %**
 (−$2.12 + $7.99 − $7.83 = −$1.96), with the identity ✓ built to hold on the

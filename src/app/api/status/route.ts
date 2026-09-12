@@ -825,17 +825,21 @@ async function phase2Trajectory(): Promise<Phase2Trajectory> {
 // ---------------------------------------------------------------------------
 
 async function remotePaper() {
-  // Two datasets live on the paper-data branch:
-  //  - github-actions/* : the stateless collector's own cycles + positions,
-  //    committed every ~5 min — the LIVE data plane (funnel + ledger).
-  //  - root files        : the hourly lifecycle snapshot of the sandbox
-  //    runner (journal history, backtest analysis, runner log) — durable
-  //    backup; its age is tracked separately as lifecycle_age_s.
-  const [collectorJournalRaw, collectorPositionsRaw, sandboxJournalRaw, analysisRaw, logRaw, branch] =
+  // Two datasets live on the paper-data branch — each serves the plane it
+  // is authoritative for (plane consistency for the A/B/C decision):
+  //  - github-actions/journal.jsonl : the stateless collector's own cycles,
+  //    committed every ~5 min — the LIVENESS plane (funnel + freshness).
+  //  - root files (journal.jsonl + positions.json): the hourly lifecycle
+  //    snapshot of the sandbox runner — the EVIDENCE plane (ledger, exit
+  //    classification, economic decomposition: the same numbers the local
+  //    mode reads live, up to ~1 h stale, age labeled as paper.evidence).
+  //    The collector's own positions.json is deliberately NOT rendered:
+  //    it is its own funnel view, not the runner's ledger (DR doc).
+  const [collectorJournalRaw, sandboxJournalRaw, sandboxPositionsRaw, analysisRaw, logRaw, branch] =
     await Promise.all([
       rawText(rawPaper("github-actions/journal.jsonl")),
-      rawText(rawPaper("github-actions/positions.json")),
       rawText(rawPaper("journal.jsonl")),
+      rawText(rawPaper("positions.json")),
       rawText(rawPaper("backtest_analysis.json")),
       rawText(rawPaper("paper_runner.log")),
       ghJson(`/repos/${GH_OWNER}/funding-arb/branches/${PAPER_BRANCH}`),
@@ -849,13 +853,15 @@ async function remotePaper() {
         totals: {} as Record<string, number>,
         window: { lines: JOURNAL_WINDOW_LINES, from: null, to: null } as JournalWindow,
       };
-  // Full collector ledger → sliced rows + whole-file totals (same shape
-  // as the local mode: open positions outside the tail stay counted).
-  const positionsFull = safe(() => {
-    const parsed = JSON.parse(collectorPositionsRaw ?? "[]");
+  // Evidence plane (experiment truth, hourly snapshot): the LEDGER rows +
+  // whole-file totals come from the sandbox runner's positions.json — the
+  // same file the local mode reads live. Open positions outside the tail
+  // stay counted (ledgerTotals on the FULL array).
+  const sandboxPositionsFull = safe(() => {
+    const parsed = JSON.parse(sandboxPositionsRaw ?? "[]");
     return Array.isArray(parsed) ? parsed : [];
   }, [] as any[]);
-  const positions = mapPositions(positionsFull);
+  const positions = mapPositions(sandboxPositionsFull);
   const analysis = safe(() => JSON.parse(analysisRaw ?? "null"), null);
   const logTail = (logRaw ?? "").trim().split("\n").filter(Boolean).slice(-12);
 
@@ -879,9 +885,18 @@ async function remotePaper() {
     journal,
     positions,
     analysis,
-    exits: classifyExits(collectorJournalRaw, collectorPositionsRaw),
-    economics: decomposeEconomics(collectorJournalRaw, collectorPositionsRaw),
-    ledger: ledgerTotals(positionsFull),
+    // Evidence cards read the EXPERIMENT plane (sandbox snapshot), not the
+    // collector: the A/B/C verdict is about the sandbox runner's paper
+    // trading — the collector is a parallel stateless funnel.
+    exits: classifyExits(sandboxJournalRaw, sandboxPositionsRaw),
+    economics: decomposeEconomics(sandboxJournalRaw, sandboxPositionsRaw),
+    ledger: ledgerTotals(sandboxPositionsFull),
+    // Which plane the evidence cards read + how old it is (hourly snapshot
+    // in remote mode; local mode reads the live files per request).
+    evidence: {
+      plane: "sandbox-snapshot" as const,
+      age_s: lifecycleAgeS === null ? null : Math.round(lifecycleAgeS),
+    },
     runner: {
       alive: fresh,
       pid: null,
@@ -1073,6 +1088,10 @@ export async function GET(req: NextRequest) {
     positions: any[];
     // whole-file ledger counts — what the table's slice does NOT show
     ledger: LedgerTotals;
+    // which plane the evidence cards (ledger · exits · economics) read —
+    // local: the live sandbox files per request; remote: the hourly
+    // sandbox snapshot on the paper-data branch (age labeled in the UI)
+    evidence: { plane: string; age_s: number | null };
     analysis: any;
     runner: any;
     lifecycle_age_s?: number | null;
@@ -1097,6 +1116,7 @@ export async function GET(req: NextRequest) {
       journal: localJournal(),
       positions: localPos.rows,
       ledger: localPos.ledger,
+      evidence: { plane: "sandbox-live", age_s: null },
       analysis: safe(() => JSON.parse(readFileSync(ANALYSIS, "utf-8")), null),
       runner: runnerStatus(),
       lifecycle_age_s: null,
@@ -1183,6 +1203,8 @@ export async function GET(req: NextRequest) {
       positions: paperBlock.positions,
       // whole-ledger counts — the positions array above is only the last 20
       ledger: paperBlock.ledger,
+      // plane of the evidence cards (ledger · exits · economics)
+      evidence: paperBlock.evidence,
       exits: paperBlock.exits,
       economics: paperBlock.economics,
     },

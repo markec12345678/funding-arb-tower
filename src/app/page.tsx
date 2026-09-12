@@ -158,6 +158,10 @@ type Status = {
     // whole-ledger counts (the positions array is only the last 20 rows —
     // open positions outside the tail stay counted here)
     ledger?: { total: number; open: number; closed: number } | null;
+    // plane of the evidence cards (ledger · exits · economics): local mode
+    // reads the live sandbox files; remote mode reads the hourly snapshot
+    // on the paper-data branch — the age is labeled on those cards
+    evidence?: { plane: string; age_s: number | null } | null;
     positions: any[];
     exits: {
       generated_at: string;
@@ -612,6 +616,16 @@ export default function Home() {
       : exitSpanH >= 24
         ? `experiment-lifetime · ${Math.floor(exitSpanH / 24)}d ${Math.round(exitSpanH % 24)}h span`
         : `experiment-lifetime · ${Math.round(exitSpanH)}h span`;
+
+  // Evidence-plane staleness: in remote mode the ledger / exits / economics
+  // cards read the hourly sandbox snapshot (not the live files) — the age
+  // is labeled where those numbers appear, so a stalled snapshot push is
+  // visible on the evidence itself, not just in a freshness field.
+  const evidenceAgeS = p?.evidence?.age_s ?? null;
+  const evidenceSuffix =
+    data?.mode === "remote" && evidenceAgeS !== null
+      ? ` · snapshot ${Math.round(evidenceAgeS / 60)}m old`
+      : "";
 
   // The observability rule: green requires LIVE DATA, not just a live
   // process. A stale/unknown data plane is RED even while the runner pid
@@ -1630,6 +1644,7 @@ export default function Home() {
                     {p?.ledger && p.positions.length < p.ledger.total
                       ? `last ${fmt(p.positions.length)} of ${fmt(p.ledger.total)} ledger rows`
                       : `all ${fmt(p.positions.length)} ledger rows`}
+                    {evidenceSuffix}
                   </span>
                   {p?.ledger && (
                     <>
@@ -1694,7 +1709,7 @@ export default function Home() {
               <Card title="exit classification — strategy-attributable vs E-04" icon={<TrendingDown className="h-4 w-4" />}>
                 <div className="space-y-4">
                   <p className="text-[11px] leading-relaxed text-zinc-500">
-                    Passive evidence classification over {p.exits.journal_span.cycles} real cycles — {exitSpanLabel}, every
+                    Passive evidence classification over {p.exits.journal_span.cycles} real cycles — {exitSpanLabel}{evidenceSuffix}, every
                     close sorted by cause. The runner and the measured system are untouched;
                     PnL mirrors the watcher's spread-PnL estimate (price-spread convergence ± fees —
                     realized funding cashflow is NOT observed in paper mode). Reporting contract: the
@@ -2018,7 +2033,7 @@ export default function Home() {
                   <p className="text-[11px] leading-relaxed text-zinc-500">
                     Per-close decomposition over {p.economics.closes} closes — experiment-lifetime (the full
                     journal, every close since the runner started; the funnel above counts only its{" "}
-                    {windowH !== null ? `${windowH}h window` : "windowed tail"}), every component recomputed from the ACTUAL
+                    {windowH !== null ? `${windowH}h window` : "windowed tail"}){evidenceSuffix}, every component recomputed from the ACTUAL
                     per-leg notionals (NEW-17) and entry-snapshot funding rates (per-leg rate × notional × held/interval).
                     <span className="text-amber-400"> Diagnostic only — NOT a Phase-2 PnL instrument</span> (the verdict
                     stays on paper spread PnL; realized funding cashflow is not observed in paper mode — NEW-08/NEW-15).
