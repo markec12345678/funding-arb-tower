@@ -2607,3 +2607,21 @@ Stage Summary:
 - The experiment's end is now a documented, concrete procedure instead of an unexamined cliff: the Day-7 read is the rehearsal command + interim.sh at 14:36Z Sep 17, producing a true day-7.0x FINAL-WINDOW read exactly at the decision point — not a day-6.57 interim and not a 13.6 h late final.
 - The infrastructure's decision-neutrality is recorded as a design property: measurement runs continuously, the stop belongs to the user's decision — the audit confirms no hidden automatic behavior would surprise anyone at Day-7.
 - Shipped state: funding-arb-tower pushed (README + this entry) · quant-arb-engine @ fe49627 (untouched) · funding-arb @ 0373f5d (LOCK INTACT, runner ~2d4h). Next owned events: phase2-daily lane FIRST AUTONOMOUS FIRE 2026-09-13T04:12:31Z (verify: runs=1/ok=1, archive 04:1x row) · Day-3 interim read 2026-09-13 14:36Z (scripts/interim.sh; compare day-2.04: net −49.61 / 59 closes / fees −66.9) · Day-7 final read 2026-09-17 14:36Z (manual analyzer run per the new README procedure, then interim.sh → FINAL-WINDOW verdict; A/B/C = user decision). Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 67
+Agent: main (Z.ai Code)
+Date: 2026-09-12 19:17–19:30 UTC (session 8, continuation 30)
+Task: User: "odlicno nadaljuj" — autonomous continuation. Calibrated (19:17Z, tower 2e39c35 = Task 66, clean; lane fire ~9h, Day-3 ~19.3h — nothing mechanical due). Gap assessment: Task 66 closed the lane-cadence vs decision-boundary mismatch for Day-7; the SAME mismatch applies to the Day-3 interim boundary (Sep 13 14:36Z) — due in ~19h, the next decision-grade read on the calendar. Round closed it.
+
+Work Log:
+- Verified interim.sh's honesty surfaces first (source read): the header prints "stage ... (as of last report — day $REPORT_DAY, $REPORT_TS)" and the REPORT + LANE section prints report age in h/m — so a stale report is VISIBLE, never silently presented as current. The tool needed no change; only the PROCEDURE was missing.
+- THE GAP (arithmetic): the lane's first fire lands Sep 13 04:12:31Z → its report reads day 2.57; the Day-3 boundary is Sep 13 14:36Z (BASELINE + 3d) — so at the boundary the freshest lane row is ~10.4 h old and one boundary-anchored row behind. The README's Day-7 paragraph (Task 66) covered only the final decision.
+- README: the Day-7 final-read paragraph extended with the Day-3 variant — same mismatch, same fix: run the manual analyzer command at 14:36Z (the proven <30 s rehearsal command, lane meta untouched) then `scripts/interim.sh` for a true day-3.00 trend row; stage stays INTERIM ("NO DECISION YET", indicative only). The honest calibration is stated: a read WITHOUT the manual run is not wrong — interim.sh labels the report's own day/age — it is simply one boundary-anchored row behind.
+- Sequencing note for tomorrow (recorded here as the checklist): morning = verify the first autonomous fire (recon: runs=1/ok=1, archive 04:1x row, report-latest mtime, lane last_result "ok"); 14:36Z = the Day-3 boundary read per the new procedure (manual analyzer run → interim.sh; compare the day-2.04 row: net −49.61 / 59 closes / W/L 13/46 / fees −66.9).
+- Verification: documentation-only round — lint clean; funding-arb 0-dirty before/after (LOCK INTACT @ 0373f5d, runner untouched); engine untouched @ fe49627; no code or scripts changed.
+
+Stage Summary:
+- Both decision-grade boundaries now carry the same clean, documented procedure: truth-at-the-boundary via the proven manual analyzer command (lane meta never shifts), then the honest reader (interim.sh) — Day-3 for the indicative interim, Day-7 for the FINAL-WINDOW read the A/B/C decision cites.
+- The honesty statement is calibrated, not absolutist: interim.sh without the manual run is honest-but-stale by one row; the procedure exists to give the boundary read its true day-3.00/day-7.0x anchor.
+- Shipped state: funding-arb-tower pushed (README + this entry) · quant-arb-engine @ fe49627 · funding-arb @ 0373f5d (LOCK INTACT). Next owned events: FIRST AUTONOMOUS FIRE 2026-09-13T04:12:31Z (verify via recon) → Day-3 boundary read 14:36Z Sep 13 (new procedure) → Day-7 final read 14:36Z Sep 17 (Task 66 procedure) → A/B/C (user decision). Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.

@@ -587,6 +587,14 @@ What the card shows:
   stage label; the stop is part of executing the user's A/B/C decision
   (operator recipe / W1 sealing / continue), and the timestamped day-7.0
   read cannot be retroactively polluted by post-decision cycles.
+  **Day-3 interim boundary** (same mismatch, same fix): the lane's Sep 13
+  04:12Z report reads day 2.57, so at the Day-3 boundary (Sep 13 14:36Z)
+  the freshest lane row is ~10.4 h old — for a true day-3.00 trend row,
+  run the same manual analyzer command at 14:36Z first, then
+  `scripts/interim.sh` (stage stays INTERIM — "NO DECISION YET",
+  indicative only). `interim.sh` itself always labels the report's own
+  day and age honestly, so a read WITHOUT the manual run is not wrong —
+  it is simply one boundary-anchored row behind.
 - **Integrity chips** — the analyzer's own continuity audit (parse errors,
   duplicate timestamps, ts back-jumps, journal gaps > 15 min, duplicate
   position ids, opens↔last-cycle consistency, GH-collector coverage,
