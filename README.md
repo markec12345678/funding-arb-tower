@@ -162,7 +162,13 @@ elsewhere:
   retries after 1 h on failure, and seeds from an existing report so a fresh
   activation does not double-run the same day (lane health surfaces in the
   paper card's supervisor rows).
-- `src/app/api/status/route.ts` — the status API (both modes, see above).
+- `src/app/api/status/route.ts` — the status API (both modes, see above);
+  its `supervisors` dict is FOUR lanes — heartbeat, snapshot, phase2, and the
+  dev-server watchdog (Task 63: the watchdog row's healthy predicate mirrors
+  recon's degrade predicates exactly — loop fresh ≤ 120 s, consecutive
+  failures < 3 — so the UI and the operator's recon never disagree; honest
+  blind spot documented in the route: the row renders FROM the server, so
+  during a full outage recon is the surface that still reports).
 - `src/app/api/engine/overview/route.ts` — the quant-arb-engine monitor API (read-only;
   local sandbox checkout → GitHub raw fallback, 60 s remote cache).
 - `src/app/page.tsx` — the dashboard (client component, 10 s polling) with the
@@ -179,8 +185,10 @@ elsewhere:
   spawns, never trades). Encodes the paths operators kept re-deriving from
   memory — the tower repo lives at `/home/z/my-project` (there is no
   `/home/z/funding-arb-tower` directory), the status API key is `supervisors`
-  (a dict of three — `reason` is not a lane), the lane metas live in the
-  locked repo's `data/`. Checks repo states incl. the funding-arb lock sha,
+  (a dict of four — heartbeat/snapshot/phase2/watchdog lanes + `reason`,
+  which is not a lane), the lane metas live in the
+  locked repo's `data/` (the watchdog's meta is tower-local,
+  `my-project/data/`). Checks repo states incl. the funding-arb lock sha,
   runner liveness, the three live CI lanes, freshness, supervisor lanes,
   phase-2 day/stage/countdowns (next lane fire mirrors `phase2-daily.ts`'s
   tick gate — update both in one commit if the gate changes), the dev-server

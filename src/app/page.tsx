@@ -133,6 +133,7 @@ type Status = {
     heartbeat: SupervisorLane | null;
     snapshot: SupervisorLane | null;
     phase2: SupervisorLane | null;
+    watchdog: SupervisorLane | null;
     reason: string | null;
   } | null;
   phase2?: Phase2 | null;
@@ -584,6 +585,7 @@ export default function Home() {
   const supH = sup?.heartbeat ?? null;
   const supS = sup?.snapshot ?? null;
   const supP = sup?.phase2 ?? null;
+  const supW = sup?.watchdog ?? null;
   const ph = data?.phase2 ?? null;
   const snap = data?.pipeline?.snapshot ?? null;
   const totals = p?.totals ?? {};
@@ -1241,12 +1243,15 @@ export default function Home() {
                 )}
                 {/* TOWER SUPERVISORS — the tower's own background lanes that keep
                     the REMOTE planes alive (5-min paper-collector dispatch +
-                    hourly paper-data lifecycle push). Sandbox-local surface:
-                    their log/meta files are not pushed to the branch, so the
-                    remote mode already tracks the same lanes end-to-end via the
+                    hourly paper-data lifecycle push), the daily phase-2
+                    discipline check, and the dev-server watchdog guarding the
+                    very server hosting them all. Sandbox-local surface: their
+                    log/meta files are not pushed to the branch, so the remote
+                    mode already tracks the remote lanes end-to-end via the
                     branch & lifecycle ages above. Why it matters: a dead PAT
-                    turns both lanes red HERE within minutes while every other
-                    local card still looks green. */}
+                    turns the first lanes red HERE within minutes while every
+                    other local card still looks green; a dead watchdog row
+                    means the process-level self-healing itself needs eyes. */}
                 <div className="mt-2 rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2.5 font-mono text-[11px] tabular-nums">
                   <div className="mb-1.5 font-sans text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
                     tower supervisors — background lanes
@@ -1321,8 +1326,38 @@ export default function Home() {
                             : ""}
                         </span>
                       </div>
+                      {/* dev-server watchdog lane — the guardian of the very
+                          server hosting the rows above (mutual-protection
+                          pair, Task 60). Its healthy predicate mirrors recon's
+                          degrade predicates exactly, so this row and the
+                          operator's recon never disagree. Honest blind spot:
+                          this row renders FROM the server — during a full
+                          outage the API is down with it, and recon (local
+                          reads) is the surface that still reports while the
+                          watchdog fixes things. */}
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="w-16 shrink-0 font-sans text-[10px] uppercase tracking-wider text-zinc-500">
+                          watchdog
+                        </span>
+                        {supW?.healthy === null || supW === null ? (
+                          <span className="text-zinc-500">—</span>
+                        ) : supW.healthy ? (
+                          <span className="font-semibold text-emerald-400">LIVE</span>
+                        ) : supW.last_activity_ago_s !== null && supW.last_activity_ago_s <= 120 ? (
+                          <span className="font-semibold text-amber-400">HEALING</span>
+                        ) : (
+                          <span className="font-semibold text-rose-400">DOWN</span>
+                        )}
+                        <span className="text-zinc-500">
+                          · {supW?.last_result ?? "no watchdog meta"} · {age(supW?.last_activity_ago_s)} ago ·
+                          probe every 15 s
+                          {supW?.total !== null && supW !== null
+                            ? ` · ${supW.total} respawn${supW.total === 1 ? "" : "s"}${(supW.fails ?? 0) > 0 ? ` · ${supW.fails} consecutive fail` : ""}`
+                            : ""}
+                        </span>
+                      </div>
                       <div className="mt-1 font-sans text-[10px] text-zinc-600">
-                        the lanes that keep the remote planes alive + the daily discipline check — failures surface here in minutes, not at the next artifact
+                        the lanes that keep the remote planes alive + the daily discipline check + the dev-server watchdog — failures surface here in minutes, not at the next artifact
                       </div>
                     </>
                   )}

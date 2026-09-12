@@ -22,6 +22,9 @@
 #       "· Xh window" sliding-journal label (Task 61 — windowed counters
 #       DROP as journal lines age out; without the label they read as
 #       whole-ledger absolutes)
+#     · supervisor rows are sandbox-local: local renders the watchdog row
+#       (Task 63 — the 4th lane, guardian of the server hosting the other
+#       three); remote renders the honest reason instead (mode-purity pair)
 #     · SCOPE-GUARD LABELS (Task 56 — the anti-misread family): economics
 #       card carries "Diagnostic only — NOT a Phase-2 PnL instrument" and
 #       names the verdict instrument ("the verdict stays on paper spread
@@ -317,6 +320,10 @@ run_mode() {
     # MODE PURITY (Task 54 guard): local reads the live files — an evidence
     # suffix here means the remote snapshot plane leaked into local mode.
     assert_lacks_regex "$mode: no evidence suffix (live plane)" "$EVIDENCE_RE"
+    # Supervisor rows are sandbox-local (Task 63): local must render the
+    # watchdog row — the 4th lane, guardian of the server hosting the other
+    # three. Its absence = the row was dropped from the supervisors surface.
+    assert_has  "$mode: watchdog supervisor row"  "watchdog"
   else
     # Task 54: the evidence cards carry the snapshot age where the numbers
     # appear. 3 cards when the economics card renders; ≥2 tolerates a
@@ -328,6 +335,9 @@ run_mode() {
     else
       fail "$mode: only $n_suffix evidence suffix(es) — snapshot plane unlabeled again?"
     fi
+    # The remote mode's honest reason for the absent supervisor rows —
+    # mode-purity pair with local's watchdog row (Task 63).
+    assert_has  "$mode: supervisor rows honest reason"  "sandbox-only surface"
   fi
 
   # layout contracts, desktop then mobile

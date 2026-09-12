@@ -40,6 +40,11 @@ const SNAPSHOT_META = path.join(REPO, "data/paper_snapshot.meta.json");
 // file is data/phase2_check.meta.json, written by src/server/phase2-daily.ts
 // (own file — same anti-clobber discipline as the snapshot lane's meta).
 const PHASE2_CHECK_META = path.join(REPO, "data/phase2_check.meta.json");
+// Dev-server watchdog lane: state file written by the watchdog itself
+// (scripts/dev-server-watchdog.sh — the outer ring of the mutual-protection
+// pair, see Task 60). TOWER-local file (not funding-arb data/) — the watchdog
+// guards this repo's own dev server.
+const WATCHDOG_META = "/home/z/my-project/data/dev_server_watchdog.meta.json";
 
 // ---- Remote data plane (used when the sandbox checkout is absent, e.g. on
 // Vercel, or when ?source=remote forces it for verification) ----
@@ -425,6 +430,17 @@ function paperPositions() {
 //               data/phase2_check.meta.json. The analyzer itself is read-only
 //               and writes only gitignored outputs, so the funding-arb lock
 //               is untouched.
+//   watchdog  : the dev-server watchdog (scripts/dev-server-watchdog.sh,
+//               Task 60's mutual-protection pair) — process-level self-healing
+//               for the very server hosting these lanes. State source: the
+//               tower-local data/dev_server_watchdog.meta.json it refreshes
+//               every 15 s. healthy mirrors recon's degrade predicates EXACTLY
+//               (loop fresh = last_check ≤ 120 s ago, and consecutive_failures
+//               < 3) so the UI row and the operator's recon never disagree.
+//               NOTE the honest blind spot: this row renders FROM the server —
+//               during a full outage the API is down with it, and recon (local
+//               reads by design) is the surface that still reports while the
+//               watchdog fixes things.
 //
 // Why this surface exists: an expired or revoked PAT kills the first two
 // lanes silently — every dispatch returns http 401, every push fails — while
@@ -456,6 +472,7 @@ function supervisorLanes(remote: boolean): {
   heartbeat: SupervisorLane | null;
   snapshot: SupervisorLane | null;
   phase2: SupervisorLane | null;
+  watchdog: SupervisorLane | null;
   reason: string | null;
 } {
   if (remote) {
@@ -463,6 +480,7 @@ function supervisorLanes(remote: boolean): {
       heartbeat: null,
       snapshot: null,
       phase2: null,
+      watchdog: null,
       reason:
         "sandbox-only surface (log/meta files stay in the sandbox) — the remote plane tracks these lanes end-to-end via branch & lifecycle ages",
     };
@@ -552,7 +570,38 @@ function supervisorLanes(remote: boolean): {
       fails: runs !== null && ok !== null ? runs - ok : null,
     };
   }, null);
-  return { heartbeat, snapshot, phase2, reason: null };
+  const watchdog = safe<SupervisorLane | null>(() => {
+    if (!existsSync(WATCHDOG_META)) return null;
+    const meta = JSON.parse(readFileSync(WATCHDOG_META, "utf-8"));
+    // NB: the watchdog meta stores SECONDS (bash date +%s), unlike the
+    // phase2/snapshot metas (JS Date.now() ms) — normalize to ms here. A live
+    // API probe caught the unit mismatch before any assertion was written
+    // against it (ago_s rendered as ~1.79e9).
+    const lastCheckMs =
+      typeof meta.last_check === "number" ? meta.last_check * 1000 : NaN;
+    const agoS = Number.isNaN(lastCheckMs)
+      ? null
+      : Math.max(0, (Date.now() - lastCheckMs) / 1000);
+    const cf = typeof meta.consecutive_failures === "number" ? meta.consecutive_failures : 0;
+    const lastResult = typeof meta.last_result === "string" ? meta.last_result : null;
+    // healthy mirrors scripts/recon.sh's degrade predicates: loop fresh
+    // (≤ 120 s = 8 missed 15 s probes) AND not stuck in repeated respawn
+    // failures (cf < 3). A single mid-recovery respawn (cf 1-2, fresh loop)
+    // is the watchdog DOING its job — healthy, with the event in the text.
+    const healthy = agoS !== null && agoS <= 120 && cf < 3;
+    return {
+      role: "dev-server watchdog (process-level self-healing, mutual-protection pair)",
+      expected_s: 15,
+      stale_after_s: 120,
+      last_activity_ago_s: agoS === null ? null : Math.round(agoS),
+      last_result: lastResult,
+      healthy,
+      total: typeof meta.respawns === "number" ? meta.respawns : null,
+      ok: null,
+      fails: cf > 0 ? cf : null,
+    };
+  }, null);
+  return { heartbeat, snapshot, phase2, watchdog, reason: null };
 }
 
 // ---------------------------------------------------------------------------

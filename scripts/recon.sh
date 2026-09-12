@@ -5,8 +5,10 @@
 # recon commands from memory — and context-reset sessions hit the predictable
 # traps: the tower repo lives at /home/z/my-project (there is NO
 # /home/z/funding-arb-tower directory), the status API key is `supervisors`
-# (a dict of three, not `supervisor`), the lane metas live inside the
-# funding-arb repo's data/ (written by tower code, read by everyone). This
+# (a dict of four — heartbeat/snapshot/phase2/watchdog lanes + `reason`,
+# which is not a lane), the lane metas live inside the
+# funding-arb repo's data/ (written by tower code, read by everyone; the
+# watchdog's meta is tower-local, /home/z/my-project/data/). This
 # script encodes the paths and the parsing ONCE, so every round starts
 # identical, and a fresh session never guesses again.
 #
