@@ -25,6 +25,16 @@ const PIDFILE = path.join(REPO, "data/paper_runner.pid");
 const ANALYSIS = path.join(REPO, "data/backtest_analysis.json");
 const RUNNER_LOG = path.join(REPO, "data/paper_runner.log");
 const SUPERVISOR_META = path.join(REPO, "data/paper_runner.meta.json");
+// Tower supervisor lanes (see supervisorLanes below): the heartbeat state is
+// read from the append-only dispatch log, NOT from paper_runner.meta.json —
+// the RUNNING patrol process predates the read-modify-write fix in its source
+// and still clobbers the gh_* fields within one 20 s tick of every heartbeat
+// persist (observed and sampled empirically 2026-09-12: 176-byte meta with
+// gh_* collapses back to 95 bytes < 80 s after each 5-min dispatch). The log
+// is the durable truth; the source fix activates at the next natural server
+// reboot. The snapshot lane's meta is a separate file by design — immune.
+const HEARTBEAT_LOG = path.join(REPO, "data/gh_heartbeat.log");
+const SNAPSHOT_META = path.join(REPO, "data/paper_snapshot.meta.json");
 
 // ---- Remote data plane (used when the sandbox checkout is absent, e.g. on
 // Vercel, or when ?source=remote forces it for verification) ----
@@ -339,6 +349,112 @@ function paperPositions() {
     if (!existsSync(POSITIONS)) return [];
     return mapPositions(JSON.parse(readFileSync(POSITIONS, "utf-8")));
   }, [] as any[]);
+}
+
+// ---------------------------------------------------------------------------
+// Tower supervisor lanes — the background lanes that keep the REMOTE data
+// planes alive (sandbox-local surface).
+//
+//   heartbeat : 5-min repository_dispatch "paper-cycle" → paper-collector
+//               workflow on GitHub's runners → 5-min cycles on the paper-data
+//               branch. State source: the append-only data/gh_heartbeat.log
+//               (one line per dispatch, never clobbered).
+//   snapshot  : hourly paper-data lifecycle push (durability). State source:
+//               data/paper_snapshot.meta.json — a SEPARATE file by design,
+//               immune to the paper_runner.meta.json writer.
+//
+// Why this surface exists: an expired or revoked PAT kills BOTH lanes
+// silently — every dispatch returns http 401, every push fails — while the
+// local funnel keeps cycling and every other card stays green (the analyzer's
+// snapshot_pusher_* counts only refresh at the next DAILY check). Reading the
+// raw state per request makes token expiry visible in minutes.
+//
+// Remote mode returns lanes = null with a reason: the meta/log files are
+// deliberately not pushed to the branch (lifecycle data only), and the remote
+// plane already tracks the same lanes end-to-end via freshness.branch_age_s
+// (5-min cycles) and freshness.lifecycle_age_s (hourly snapshot).
+// ---------------------------------------------------------------------------
+
+type SupervisorLane = {
+  role: string;
+  expected_s: number;
+  stale_after_s: number;
+  last_activity_ago_s: number | null;
+  last_result: string | null;
+  healthy: boolean | null;
+  total: number | null;
+  ok: number | null;
+  fails: number | null;
+};
+
+function supervisorLanes(remote: boolean): {
+  heartbeat: SupervisorLane | null;
+  snapshot: SupervisorLane | null;
+  reason: string | null;
+} {
+  if (remote) {
+    return {
+      heartbeat: null,
+      snapshot: null,
+      reason:
+        "sandbox-only surface (log/meta files stay in the sandbox) — the remote plane tracks these lanes end-to-end via branch & lifecycle ages",
+    };
+  }
+  const heartbeat = safe<SupervisorLane | null>(() => {
+    const lines = readFileSync(HEARTBEAT_LOG, "utf-8").trim().split("\n").filter(Boolean);
+    if (!lines.length) return null;
+    const last = lines[lines.length - 1];
+    const m = last.match(/^(\S+)\s+(.*)$/);
+    if (!m) return null;
+    const tsMs = new Date(m[1]).getTime();
+    const result = m[2].trim();
+    const agoS = Number.isNaN(tsMs) ? null : Math.max(0, (Date.now() - tsMs) / 1000);
+    // healthy = last dispatch succeeded (http 2xx) AND is recent enough
+    // (>3 missed 5-min intervals = the same convention as the funnel gate).
+    const healthy =
+      agoS !== null && /http 2\d\d/.test(result) && agoS <= 900 ? true : false;
+    return {
+      role: "paper-collector dispatch (repository_dispatch paper-cycle)",
+      expected_s: 300,
+      stale_after_s: 900,
+      last_activity_ago_s: agoS === null ? null : Math.round(agoS),
+      last_result: result,
+      healthy,
+      total: lines.length,
+      ok: null,
+      fails: null,
+    };
+  }, null);
+  const snapshot = safe<SupervisorLane | null>(() => {
+    if (!existsSync(SNAPSHOT_META)) return null;
+    const meta = JSON.parse(readFileSync(SNAPSHOT_META, "utf-8"));
+    const lastOk = typeof meta.last_ok === "number" ? meta.last_ok : NaN;
+    const lastRun = typeof meta.last_run === "number" ? meta.last_run : NaN;
+    // activity age = the last SUCCESSFUL push (the durability fact); falls
+    // back to the last attempt when nothing has ever succeeded.
+    const activityMs = Number.isNaN(lastOk) ? lastRun : lastOk;
+    const agoS = Number.isNaN(activityMs)
+      ? null
+      : Math.max(0, (Date.now() - activityMs) / 1000);
+    const lastResult = typeof meta.last_result === "string" ? meta.last_result : null;
+    const runs = typeof meta.runs === "number" ? meta.runs : null;
+    const ok = typeof meta.ok === "number" ? meta.ok : null;
+    // healthy = last attempt reported "pushed" AND the last success is within
+    // 2× the hourly interval (the SNAPSHOT_STALE_AFTER_S convention).
+    const healthy = lastResult === "pushed" && agoS !== null && agoS <= 7200;
+    return {
+      role: "paper-data lifecycle push (hourly durability snapshot)",
+      expected_s: 3600,
+      stale_after_s: 7200,
+      last_activity_ago_s: agoS === null ? null : Math.round(agoS),
+      last_result: lastResult,
+      healthy,
+      total: runs,
+      ok,
+      fails: runs !== null && ok !== null ? runs - ok : null,
+    };
+  }, null);
+  return { heartbeat, snapshot, reason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +918,7 @@ export async function GET(req: NextRequest) {
           detail: "reading the funding-arb checkout directly · 10 s refresh",
         },
     freshness,
+    supervisors: supervisorLanes(remoteMode),
     repo,
     paper: {
       runner: paperBlock.runner,

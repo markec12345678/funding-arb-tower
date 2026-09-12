@@ -99,6 +99,18 @@ process state alone:
   feeds the Vercel demo (hourly, external cron). Stale → a red
   `SNAPSHOT STALE` badge — this is the detector for a dead cron-job.org
   schedule.
+- `supervisors` (local) — the tower's own background lanes surfaced live in
+  the paper card: the **5-min paper-collector dispatch** (heartbeat state read
+  from the append-only `gh_heartbeat.log`) and the **hourly paper-data
+  lifecycle push** (its own meta file), each with its verbatim last result,
+  age and cadence. Why: an expired PAT kills both lanes with every dispatch
+  returning 401 and every push failing — while the local funnel keeps cycling
+  and every other card stays green. The dispatch lane degrades to `DOWN`, a
+  result-ok-but-old lane to `LATE`, token death becomes visible in minutes
+  (verified by induction: a mocked 401 result renders the exact red state).
+  Remote mode shows an honest sandbox-only note instead — the meta/log files
+  are deliberately not pushed to the branch, and the remote plane already
+  tracks the same lanes end-to-end via the branch & lifecycle ages.
 
 Verified both ways: lowering the thresholds makes a live-runner dashboard go
 red immediately; restoring them returns it to green.
@@ -224,6 +236,12 @@ src/
   server/
     gh-heartbeat.ts           # 5-min repository_dispatch heartbeat (sandbox-only)
     paper-snapshot.ts         # hourly paper-data push (sandbox-only)
+                              # both lanes' health is surfaced live by the
+                              # status API's `supervisors` block (heartbeat via
+                              # the append-only gh_heartbeat.log — NOT the runner
+                              # meta, which the RUNNING patrol still clobbers
+                              # until the next server reboot; snapshot via its
+                              # own meta file)
   instrumentation-node.ts     # paper-runner supervisor (sandbox-only, guarded)
 scripts/
   push-paper-snapshot.sh      # git-plumbing snapshot pusher

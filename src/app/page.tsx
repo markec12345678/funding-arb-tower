@@ -95,11 +95,28 @@ type Phase2 = {
   } | null;
 };
 
+type SupervisorLane = {
+  role: string;
+  expected_s: number;
+  stale_after_s: number;
+  last_activity_ago_s: number | null;
+  last_result: string | null;
+  healthy: boolean | null;
+  total: number | null;
+  ok: number | null;
+  fails: number | null;
+};
+
 type Status = {
   now: string;
   mode: "local" | "remote";
   source: { kind: string; detail: string };
   freshness: Freshness;
+  supervisors?: {
+    heartbeat: SupervisorLane | null;
+    snapshot: SupervisorLane | null;
+    reason: string | null;
+  } | null;
   phase2?: Phase2 | null;
   repo: { branch: string; commits: { sha: string; message: string }[]; dirty: boolean };
   paper: {
@@ -511,6 +528,11 @@ export default function Home() {
   const bt = data?.backtest;
   const p = data?.paper;
   const fr = data?.freshness;
+  // Tower supervisor lanes (5-min dispatch + hourly lifecycle push) — local
+  // mode only; remote mode returns null lanes with an honest reason.
+  const sup = data?.supervisors;
+  const supH = sup?.heartbeat ?? null;
+  const supS = sup?.snapshot ?? null;
   const ph = data?.phase2 ?? null;
   const snap = data?.pipeline?.snapshot ?? null;
   const totals = p?.totals ?? {};
@@ -1055,6 +1077,72 @@ export default function Home() {
                     </div>
                   </div>
                 )}
+                {/* TOWER SUPERVISORS — the tower's own background lanes that keep
+                    the REMOTE planes alive (5-min paper-collector dispatch +
+                    hourly paper-data lifecycle push). Sandbox-local surface:
+                    their log/meta files are not pushed to the branch, so the
+                    remote mode already tracks the same lanes end-to-end via the
+                    branch & lifecycle ages above. Why it matters: a dead PAT
+                    turns both lanes red HERE within minutes while every other
+                    local card still looks green. */}
+                <div className="mt-2 rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-2.5 font-mono text-[11px] tabular-nums">
+                  <div className="mb-1.5 font-sans text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                    tower supervisors — background lanes
+                  </div>
+                  {data.mode === "remote" ? (
+                    <div className="text-zinc-500">
+                      {sup?.reason ??
+                        "sandbox-only surface — remote mode tracks these lanes via branch & lifecycle ages above"}
+                    </div>
+                  ) : (
+                    <>
+                      {/* heartbeat / dispatch lane */}
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="w-16 shrink-0 font-sans text-[10px] uppercase tracking-wider text-zinc-500">
+                          dispatch
+                        </span>
+                        {supH?.healthy === null || supH === null ? (
+                          <span className="text-zinc-500">—</span>
+                        ) : supH.healthy ? (
+                          <span className="font-semibold text-emerald-400">LIVE</span>
+                        ) : supH.last_result && /http 2\d\d/.test(supH.last_result) ? (
+                          <span className="font-semibold text-amber-400">LATE</span>
+                        ) : (
+                          <span className="font-semibold text-rose-400">DOWN</span>
+                        )}
+                        <span className="text-zinc-500">
+                          · {supH?.last_result ?? "no dispatch log"} · {age(supH?.last_activity_ago_s)} ago ·
+                          every 5 min · {supH?.total ?? "—"} total
+                        </span>
+                      </div>
+                      {/* lifecycle / hourly snapshot push lane */}
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="w-16 shrink-0 font-sans text-[10px] uppercase tracking-wider text-zinc-500">
+                          lifecycle
+                        </span>
+                        {supS?.healthy === null || supS === null ? (
+                          <span className="text-zinc-500">—</span>
+                        ) : supS.healthy ? (
+                          <span className="font-semibold text-emerald-400">LIVE</span>
+                        ) : supS.last_result === "pushed" ? (
+                          <span className="font-semibold text-amber-400">LATE</span>
+                        ) : (
+                          <span className="font-semibold text-rose-400">DOWN</span>
+                        )}
+                        <span className="text-zinc-500">
+                          · {supS?.last_result ?? "no snapshot meta"} · {age(supS?.last_activity_ago_s)} ago ·
+                          every 1 h{" "}
+                          {supS?.ok !== null && supS?.total !== null && supS !== null
+                            ? `· ${supS.ok}/${supS.total} ok${(supS.fails ?? 0) > 0 ? ` · ${supS.fails} fail` : ""}`
+                            : ""}
+                        </span>
+                      </div>
+                      <div className="mt-1 font-sans text-[10px] text-zinc-600">
+                        the lanes that keep the remote planes alive — token death shows here in minutes, not at the next daily check
+                      </div>
+                    </>
+                  )}
+                </div>
                 <div className="mt-1 text-[11px] text-zinc-500">
                   gates in paper mode: depth ✓ recheck ✓ margin (live-only)
                 </div>
