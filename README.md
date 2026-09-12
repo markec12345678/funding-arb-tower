@@ -552,7 +552,17 @@ What the card shows:
   per 24 h (own meta file, 1 h retry on failure; lane health visible in the
   paper card's supervisor rows) — the discipline no longer depends on an
   operator session being active. The analyzer writes only gitignored
-  outputs, so the funding-arb lock is untouched.
+  outputs, so the funding-arb lock is untouched. **Lane-fire rehearsal**
+  (de-risking procedure, verified 2026-09-12 ahead of the lane's first
+  autonomous fire): the lane invokes the analyzer as
+  `/home/z/.venv/bin/python scripts/analysis/phase2_report.py` with
+  `cwd=/home/z/funding-arb` — that exact command can be rehearsed manually
+  at any time (`cd /home/z/funding-arb && setsid nohup
+  /home/z/.venv/bin/python scripts/analysis/phase2_report.py > /tmp/phase2-rehearsal.log 2>&1 &`
+  — runs in ~30 s), and a manual run NEVER touches the lane's meta (the
+  24 h anchor is the lane's own clock; verify with `scripts/recon.sh` —
+  unchanged next-fire — and `scripts/interim.sh` — the trend gains the row).
+  Rehearse after any change to the analyzer or the lane's invocation.
 - **Integrity chips** — the analyzer's own continuity audit (parse errors,
   duplicate timestamps, ts back-jumps, journal gaps > 15 min, duplicate
   position ids, opens↔last-cycle consistency, GH-collector coverage,
