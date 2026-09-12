@@ -19,6 +19,12 @@
 #       runner log
 #     · coverage labels: "… ledger rows" (Task 52), "experiment-lifetime"
 #       (Task 53), "(all-time)" whole-ledger counts
+#     · SCOPE-GUARD LABELS (Task 56 — the anti-misread family): economics
+#       card carries "Diagnostic only — NOT a Phase-2 PnL instrument" and
+#       names the verdict instrument ("the verdict stays on paper spread
+#       PnL"); exits card carries its reporting contract ("never a single
+#       blended PnL") and the primary-instrument chip — the README's "scope
+#       guard, enforced in the labels" is machine-checked, both modes
 #     · MODE PURITY: zero "· snapshot Nm old" evidence suffixes (local reads
 #       the live files — a suffix here means the mode leaked)
 #   remote (?source=remote): the same cards on the snapshot plane —
@@ -224,6 +230,16 @@ run_mode() {
   assert_has  "$mode: ledger coverage label"   "ledger rows"
   assert_has  "$mode: lifetime coverage label" "experiment-lifetime"
   assert_has  "$mode: whole-ledger counts"     "(all-time)"
+
+  # scope-guard labels (Task 56) — the anti-misread family the README names
+  # "Scope guard, enforced in the labels": a regression that drops these
+  # makes the diagnostic decomposition read as a PnL verdict. Static card
+  # text → mode-independent → asserted in both modes.
+  assert_has  "$mode: econ scope guard (header)"             "Diagnostic only — NOT a Phase-2 PnL instrument"
+  assert_has  "$mode: econ scope guard (verdict instrument)" "the verdict stays on paper spread PnL"
+  assert_has  "$mode: econ scope guard (badge)"              "diagnostic · not a pnl instrument"
+  assert_has  "$mode: exits reporting contract"             "never a single blended PnL"
+  assert_has  "$mode: exits primary chip"                    "strategy-attributable · paper spread pnl"
 
   if [ "$mode" = "local" ]; then
     # MODE PURITY (Task 54 guard): local reads the live files — an evidence

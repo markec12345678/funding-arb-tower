@@ -192,7 +192,9 @@ elsewhere:
   view, wait for live data, assert the monitor cards render in BOTH data
   modes (local live-files vs `?source=remote` snapshot plane), the Task
   52/53/54 coverage/evidence labels are present (and ABSENT in local — mode
-  purity), zero console/page errors, no horizontal overflow at 1440 and 390,
+  purity), the scope-guard labels (Task 56: "Diagnostic only — NOT a
+  Phase-2 PnL instrument" on economics, "never a single blended PnL" on
+  exits — machine-checking the R7 scope guard), zero console/page errors, no horizontal overflow at 1440 and 390,
   and the sticky-footer contract. Preflight refuses to run under thin memory
   or with stray browser sessions (both learned from a real OOM that killed
   the dev server mid-verification — see `scripts/e2e.sh`'s header for the
@@ -618,7 +620,9 @@ two-point materiality estimate was of the right magnitude — the per-leg
 computation lands on its upper bound. **Scope guard, enforced in the labels:
 diagnostic only, never a Phase-2 PnL instrument** — execution measurement
 (spread PnL) and funding economics (estimated, not realized) remain separate
-reported components of the final A/B/C report.
+reported components of the final A/B/C report. The guard is machine-checked:
+`scripts/e2e.sh` asserts the labels on both data planes, so a refactor that
+drops them fails the golden path instead of silently unguarding the verdict.
 
 ## Failure matrix (R4)
 
