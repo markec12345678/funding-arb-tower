@@ -153,6 +153,18 @@ elsewhere:
 - `src/components/quant-engine/EngineView.tsx` — the engine view (60 s polling).
 - `src/lib/engine-types.ts` — the engine artifact contract (shared by API + view).
 - `scripts/push-paper-snapshot.sh` — the plumbing-based snapshot pusher.
+- `scripts/recon.sh` — **operator recon**: the canonical round-start state check
+  (read-only: localhost API + file reads + `git -C`; never writes, never
+  spawns, never trades). Encodes the paths operators kept re-deriving from
+  memory — the tower repo lives at `/home/z/my-project` (there is no
+  `/home/z/funding-arb-tower` directory), the status API key is `supervisors`
+  (a dict of three — `reason` is not a lane), the lane metas live in the
+  locked repo's `data/`. Checks repo states incl. the funding-arb lock sha,
+  runner liveness, the three live CI lanes, freshness, supervisor lanes,
+  phase-2 day/stage/countdowns (next lane fire mirrors `phase2-daily.ts`'s
+  tick gate — update both in one commit if the gate changes). Exit `0` = all
+  green, `1` = degraded with named reasons; failure paths (dead API, lock
+  drift) verified by test, not assumption.
 
 ## Quickstart
 
@@ -167,6 +179,12 @@ CI (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 `bun install --frozen-lockfile → prisma generate → typecheck → lint`.
 The typecheck covers exactly what deploys — `examples/` and `skills/` are
 scaffold reference code the Next build never touches and are excluded.
+
+Operator state check (any time, read-only):
+
+```bash
+scripts/recon.sh   # exit 0 = all green · exit 1 = degraded (reasons listed)
+```
 
 Copy `.env.example` to `.env` if you want the (unused-by-this-app) Prisma
 datasource wired up.
