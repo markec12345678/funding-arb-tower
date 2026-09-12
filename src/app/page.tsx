@@ -1154,11 +1154,17 @@ export default function Home() {
                       </a>
                       <div className="text-zinc-500 leading-snug">{data.pipeline.vercel.status}</div>
                       <div className="text-zinc-500 pt-1">snapshot source</div>
-                      <div className="font-mono text-[10px] text-zinc-400 break-all">
-                        {data.pipeline.snapshot.source}
-                      </div>
-                      <div className="text-zinc-500">{data.pipeline.snapshot.refreshed_by}</div>
-                      <div className="text-zinc-600 pt-1">lifecycle: {data.pipeline.snapshot.lifecycle}</div>
+                      {snap ? (
+                        <>
+                          <div className="font-mono text-[10px] text-zinc-400 break-all">
+                            {snap.source}
+                          </div>
+                          <div className="text-zinc-500">{snap.refreshed_by}</div>
+                          <div className="text-zinc-600 pt-1">lifecycle: {snap.lifecycle}</div>
+                        </>
+                      ) : (
+                        <div className="text-zinc-600">unavailable</div>
+                      )}
                       {snap && (
                         <div className="flex flex-wrap items-center gap-1.5 pt-1">
                           {snap.status === "stale" && (
@@ -1260,7 +1266,7 @@ export default function Home() {
             )}
 
             {/* Exit classification — passive E-04 contamination split (read-only) */}
-            {p.exits && (
+            {p?.exits && (
               <Card title="exit classification — strategy-attributable vs E-04" icon={<TrendingDown className="h-4 w-4" />}>
                 <div className="space-y-4">
                   <p className="text-[11px] leading-relaxed text-zinc-500">
@@ -1582,7 +1588,7 @@ export default function Home() {
             )}
 
             {/* R7 economic invariants — per-close mathematical decomposition (diagnostic) */}
-            {p.economics && p.economics.closes > 0 && (
+            {p?.economics && p.economics.closes > 0 && (
               <Card title="economic decomposition — R7 invariant test" icon={<Calculator className="h-4 w-4" />}>
                 <div className="space-y-4">
                   <p className="text-[11px] leading-relaxed text-zinc-500">

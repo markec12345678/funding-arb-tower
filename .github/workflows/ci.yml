@@ -1,0 +1,39 @@
+# CI — the tower's own verification gate.
+#
+# The tower is the command center other repos point at, and it is deployable
+# to Vercel straight from main — a type error or lint break landing on main
+# would break the deployed dashboard silently. funding-arb has its 539-test
+# CI, phase3-lab its 106-test suite, quant-arb-engine its 103-check verify
+# harness; this workflow gives the tower the same discipline:
+#   install → prisma generate (client types for src/lib/db.ts) → typecheck → lint.
+# Deliberately NOT a build: the deterministic gates that catch drift are the
+# compiler and the linter; a full Next build belongs to the deploy pipeline.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Generate Prisma client (types for src/lib/db.ts)
+        run: bun run db:generate
+
+      - name: Typecheck (strict, zero errors)
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint

@@ -1731,7 +1731,7 @@ export default function EngineView() {
                             <br />
                             desk implied APR {aprPct(opp.metadata.forward_implied_apr)}
                             <br />
-                            gap {sgn(opp.metadata.gap_apr * 100, 2, " pts")} → z_level{" "}
+                            gap {sgn(opp.metadata.gap_apr != null ? opp.metadata.gap_apr * 100 : null, 2, " pts")} → z_level{" "}
                             {opp.signal_z?.toFixed(2)} (diagnostic — gate retired, C4)
                           </>
                         )}
