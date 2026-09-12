@@ -2407,3 +2407,20 @@ Stage Summary:
 - The golden path now covers the delivered UI END TO END: default engine landing (identity, data arrival, honesty labels, W0 integrity, responsive layout) → monitor view (cards, coverage labels, scope guards, evidence planes, layout) — both data modes. "Does the user actually SEE the healthy system?" is now true for the page a visitor lands on, not just the page the operator clicks through to.
 - The engine view's anti-misread labels ("all data synthetic", "paper only", NO-GO strip) are machine-checked exactly like the monitor's Task-56 family — the engine repo's own CI guards its artifacts; the tower's e2e now guards that the honesty text survives the RENDERING into the tower.
 - Shipped state: funding-arb-tower @ b4b020a (pushed, CI completed/success at 12:48:07Z) · quant-arb-engine @ fe49627 (untouched) · funding-arb @ 0373f5d (locked, untouched). Next owned events: phase2-daily lane first autonomous fire 2026-09-13T04:12:31Z (verify via scripts/recon.sh — expect runs=1/ok=1) · Day-3 interim read ~14:36Z Sep 13 · A/B/C ~Sep 17 14:36Z. Still user-owned: cron-job.org gh-pages lane decision, real feed connection, W1 sealing.
+
+---
+Task ID: 57-b
+Agent: main (Z.ai Code)
+Date: 2026-09-12 12:53–13:00 UTC (session 8, continuation 20, addendum to Task 57)
+Task: Addendum fix found by Task 57's own verification loop: the post-push recon reported DEGRADED ("CI lane tower_ci not green") while the just-pushed CI run was merely RUNNING.
+
+Work Log:
+- Root cause: recon's PRINT layer correctly distinguished RUNNING (in_progress/queued → "RUNNING <sha>") from RED (completed+failure), but the VERDICT predicate accepted only completed+success — every recon within the ~3-min CI window after any push false-degraded. The honesty tool itself had a severity bug.
+- Fix in scripts/recon.sh: the degrade predicate now accepts completed+success, in_progress, and queued; failure/timed_out/unknown/null/missing-latest still degrade. Comment documents why RUNNING is not red (a CI run started moments after a push is a normal transient; the print shows the true state either way).
+- Isolation-tested the jq predicate against a synthetic matrix BEFORE relying on the live system: in_progress→ACCEPT · queued→ACCEPT · completed/failure→DEGRADE · completed/success→ACCEPT · timed_out/weird→DEGRADE · latest:null→DEGRADE. The FIRST test run had its own bug (shell-expanded $c produced invalid JSON for the string cases, making completed/success look like DEGRADE) — caught and re-run with correct JSON construction: re-confirming the standing lesson (Tasks 53/55): verify the TEST itself before concluding about the target.
+- Verified live across all three states this round: RUNNING accepted (post-fix recon ALL GREEN while CI ran) · stale-cache snapshot served honestly ("RUNNING b4b020a" ~4 min after completion — the documented 300 s cache, labeled in the recon header; refreshed to GREEN on TTL expiry) · fresh GREEN rendered ("tower_ci: GREEN 1663786").
+- Commit 0194760 pushed.
+
+Stage Summary:
+- recon's verdict severity is now truthful in the post-push window: RUNNING is visible in the output but no longer degrades. The round demonstrated the verification loop catching a defect in the verification tooling itself — the same discipline the project applies to the measured system.
+- Shipped state: funding-arb-tower @ 0194760 (pushed; CI will be RUNNING at write time by construction — the very case the fix now tolerates). Next owned events: phase2-daily lane first autonomous fire 2026-09-13T04:12:31Z (verify via scripts/recon.sh — expect runs=1/ok=1) · Day-3 interim read ~14:36Z Sep 13 · A/B/C ~Sep 17 14:36Z. Still user-owned: cron-job.org gh-pages lane decision, real feed connection, W1 sealing.
