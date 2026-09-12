@@ -715,6 +715,89 @@ async function phase2Remote(): Promise<Phase2Block> {
   return phase2FromReport(rep, "paper-data-branch");
 }
 
+// ---- Phase-2 daily trajectory (A/B/C decision support: the TREND) ----
+// report-latest.json is OVERWRITTEN by each daily run — the latest report
+// alone cannot show the day-by-day direction the Day-7 decision needs. The
+// durable paper-data branch preserves every distinct version: the hourly
+// snapshot pusher commits content CHANGES only, so one commit ≈ one analyzer
+// output (GitHub's path filter returns exactly those). This walks that
+// history and renders the analyzer's own numbers verbatim — the tower still
+// recomputes nothing, it just reads more of what the analyzer wrote.
+type TrajPoint = {
+  sha: string;
+  committed_at: string | null;
+  day: number | null;
+  stage: string | null;
+  generated_at: string | null;
+  net: number | null;
+  wins: number | null;
+  closed: number | null;
+  retention: number | null;
+};
+type Phase2Trajectory = {
+  available: boolean;
+  reason?: string;
+  source?: string;
+  points: TrajPoint[]; // oldest → newest; the UI renders newest-first
+};
+const rawPaperAt = (sha: string, file: string) =>
+  `https://raw.githubusercontent.com/${GH_OWNER}/funding-arb/${sha}/paper-data/${file}`;
+
+let trajCache: { at: number; value: Phase2Trajectory } | null = null;
+const TRAJ_TTL_MS = 60 * 60_000; // slow-moving history: hourly refresh is plenty
+
+async function phase2Trajectory(): Promise<Phase2Trajectory> {
+  const now = Date.now();
+  if (trajCache && now - trajCache.at < TRAJ_TTL_MS) return trajCache.value;
+  let value: Phase2Trajectory;
+  try {
+    const commits = await ghJson(
+      `/repos/${GH_OWNER}/funding-arb/commits?sha=${PAPER_BRANCH}&path=paper-data/phase2-report-latest.json&per_page=100`
+    );
+    const list = Array.isArray(commits) ? commits : [];
+    const points: TrajPoint[] = [];
+    // GitHub returns newest-first; walk oldest → newest so a broken fetch
+    // in the middle still leaves the older, verified points intact.
+    for (const c of [...list].reverse()) {
+      const sha = String(c.sha ?? "");
+      if (!sha) continue;
+      const committed_at = c.commit?.committer?.date ?? c.commit?.author?.date ?? null;
+      const raw = await rawText(rawPaperAt(sha, "phase2-report-latest.json"));
+      const rep = safe(() => JSON.parse(raw ?? "null"), null);
+      if (!rep) continue; // an unreadable historical version is skipped, not faked
+      points.push({
+        sha: sha.slice(0, 7),
+        committed_at,
+        day: typeof rep.day === "number" ? rep.day : null,
+        stage: typeof rep.stage === "string" ? rep.stage : null,
+        generated_at:
+          typeof rep.generated_at === "string"
+            ? rep.generated_at
+            : typeof rep.as_of === "string"
+              ? rep.as_of
+              : null,
+        net: typeof rep.totals?.net === "number" ? rep.totals.net : null,
+        wins: typeof rep.totals?.wins === "number" ? rep.totals.wins : null,
+        closed: typeof rep.totals?.closed === "number" ? rep.totals.closed : null,
+        retention: typeof rep.totals?.retention_avg_pct === "number" ? rep.totals.retention_avg_pct : null,
+      });
+    }
+    value = {
+      available: true,
+      source: "paper-data branch — every distinct report version (hourly push commits content changes only)",
+      points,
+    };
+  } catch (e: any) {
+    value = {
+      available: false,
+      reason: `trajectory unavailable: ${String(e?.message ?? e).slice(0, 120)}`,
+      points: [],
+    };
+  }
+  trajCache = { at: now, value };
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Remote (paper-data branch) readers — the deployed mode
 // ---------------------------------------------------------------------------
@@ -1004,6 +1087,10 @@ export async function GET(req: NextRequest) {
 
   // Phase-2 discipline: read-only consumption of the analyzer's artifact.
   const phase2 = remoteMode ? await phase2Remote() : phase2Local();
+  // The daily trajectory (every preserved report version on the durable
+  // branch) — mode-independent: it reads GitHub, so local and remote both
+  // get the same history. Attached to the phase2 block the UI already owns.
+  const trajectory = await phase2Trajectory();
 
   // ---- Freshness gate: the age of the NEWEST data point, not process state.
   // cycles are chronological here (newest last) — the slice/reverse happens
@@ -1067,7 +1154,7 @@ export async function GET(req: NextRequest) {
       economics: paperBlock.economics,
     },
     backtest: paperBlock.analysis,
-    phase2,
+    phase2: { ...phase2, trajectory },
     pipeline: pipelineClean,
     plan: PLAN,
   };

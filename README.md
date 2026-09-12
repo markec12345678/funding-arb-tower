@@ -234,6 +234,10 @@ carries live runtime numbers.
     "positions": [ { "id": "…", "base": "RVN", "long_venue": "binance", "short_venue": "bybit", "status": "open" } ]
   },
   "backtest": { "fee_gate": { "best_spread_pct": 0.0218, "…": "…" } },
+  "phase2": { "day": 1.67, "stage": "INTERIM", "…": "…",
+              "trajectory": { "available": true,
+                               "source": "paper-data branch — every distinct report version",
+                               "points": [ { "sha": "…", "day": 1.567, "stage": "INTERIM", "net": -28.15, "wins": 6, "closed": 31, "retention": -135.9, "generated_at": "…" } ] } },
   "pipeline": {
     "github":  { "repo": "markec12345678/funding-arb", "pushed_at": "…" },
     "funding_ci": { "repo": "markec12345678/funding-arb", "latest": { "sha": "0373f5d", "status": "completed", "conclusion": "success", "completed_at": "…" }, "summary": "pytest 539 (ubuntu+windows matrix) + docs-sync · …" },
@@ -412,6 +416,16 @@ What the card shows:
   by execution friction → execution-layer changes only · C no executable edge
   → close strategy). Interim numbers are labeled *information, not verdict* —
   the verdict is rendered only after Day 7.
+- **Daily trajectory** — `report-latest.json` is overwritten by every daily
+  run, so the latest report alone cannot show the day-by-day *direction* the
+  Day-7 decision needs. The durable `paper-data` branch preserves every
+  distinct version (the hourly pusher commits content changes only — one
+  commit ≈ one analyzer output), and the card renders that history
+  newest-first: day · stage · net · wins/closed · retention per preserved
+  version, each row fetched from the branch at the commit that preserved it.
+  Analyzer numbers verbatim, zero recomputation — the same charter applied to
+  the history instead of the latest snapshot; available in both modes
+  (GitHub-sourced).
 
 Both data planes serve the same card (see the mode table above); until the
 hourly pusher has shipped the artifact at least once, remote mode shows an

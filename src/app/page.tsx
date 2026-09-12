@@ -94,6 +94,22 @@ type Phase2 = {
     sandbox_snapshot_resets: number | null;
     gh_snapshot_resets: number | null;
   } | null;
+  trajectory?: {
+    available: boolean;
+    reason?: string;
+    source?: string;
+    points: {
+      sha: string;
+      committed_at: string | null;
+      day: number | null;
+      stage: string | null;
+      generated_at: string | null;
+      net: number | null;
+      wins: number | null;
+      closed: number | null;
+      retention: number | null;
+    }[];
+  } | null;
 };
 
 type SupervisorLane = {
@@ -958,6 +974,62 @@ export default function Home() {
                         exactly as the locked analyzer wrote it. The verdict is rendered only after
                         Day 7; interim reads are information.
                       </p>
+                    </div>
+                  )}
+
+                  {/* Daily trajectory — the TREND the Day-7 decision actually
+                      needs. report-latest.json is overwritten daily; the
+                      durable paper-data branch preserves every distinct
+                      version (the hourly pusher commits content changes
+                      only). Rendered newest-first, analyzer numbers verbatim,
+                      zero recomputation — the same charter, applied to the
+                      history instead of the latest snapshot. */}
+                  {ph.trajectory && ph.trajectory.available && ph.trajectory.points.length > 0 && (
+                    <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+                        daily trajectory — every preserved report version ({ph.trajectory.points.length}
+                        {ph.trajectory.points.length >= 100 ? "+" : ""} on the durable branch)
+                      </div>
+                      <div className="mt-2 space-y-1 font-mono text-xs">
+                        {[...ph.trajectory.points].reverse().map((pt, i) => (
+                          <div
+                            key={`${pt.sha}-${i}`}
+                            className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-zinc-800/40 pb-1 last:border-0 last:pb-0"
+                          >
+                            <span className="w-20 tabular-nums text-zinc-200">
+                              day {pt.day !== null ? pt.day.toFixed(3) : "—"}
+                            </span>
+                            <span className="text-zinc-500">{pt.stage ?? "—"}</span>
+                            <span
+                              className={`tabular-nums ${
+                                pt.net === null
+                                  ? "text-zinc-600"
+                                  : pt.net < 0
+                                    ? "text-rose-400"
+                                    : "text-emerald-400"
+                              }`}
+                            >
+                              net {pt.net !== null ? usd(pt.net) : "—"}
+                            </span>
+                            <span className="tabular-nums text-zinc-400">
+                              {pt.wins !== null && pt.closed !== null ? `${fmt(pt.wins)}/${fmt(pt.closed)}` : "—"}{" "}
+                              wins
+                            </span>
+                            <span className="tabular-nums text-zinc-400">
+                              ret {pt.retention !== null ? pct(pt.retention, 1) : "—"}
+                            </span>
+                            <span className="ml-auto text-[10px] text-zinc-600">
+                              {pt.generated_at ?? pt.committed_at ?? ""} · {pt.sha}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      {ph.trajectory.source && (
+                        <p className="mt-2 text-[10px] leading-relaxed text-zinc-600">
+                          {ph.trajectory.source} — each row is the analyzer&rsquo;s own output at that
+                          moment, fetched from the branch at the commit that preserved it.
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>
