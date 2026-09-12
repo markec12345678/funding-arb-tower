@@ -143,11 +143,17 @@ if [ -n "$api_json" ] && printf '%s' "$api_json" | jq empty 2>/dev/null; then
        then "  \($lane): RUNNING  \($l.latest.sha)"
        else "  \($lane): RED  \($l.latest.sha)  status=\($l.latest.status) concl=\($l.latest.conclusion)"
        end)' || { echo "  $lane: ERROR parsing"; degrade "$lane parse error"; }
-    # mark red as degraded
+    # mark red as degraded. NB: RUNNING (in_progress/queued) is NOT red —
+    # a CI run that started moments after a push is a normal transient, not
+    # degradation; the print above already shows "RUNNING <sha>" so the
+    # operator sees the true state either way. Before this distinction the
+    # verdict said DEGRADED on every recon within ~3 min of a push.
     printf '%s' "$api_json" | jq -e --arg lane "$lane" '
       .pipeline[$lane].latest != null and
-      .pipeline[$lane].latest.status == "completed" and
-      .pipeline[$lane].latest.conclusion == "success"' >/dev/null 2>&1 \
+      ( (.pipeline[$lane].latest.status == "completed" and
+         .pipeline[$lane].latest.conclusion == "success")
+        or .pipeline[$lane].latest.status == "in_progress"
+        or .pipeline[$lane].latest.status == "queued" )' >/dev/null 2>&1 \
       || degrade "CI lane $lane not green"
   done
   printf '%s' "$api_json" | jq -r '
