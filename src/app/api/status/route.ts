@@ -754,7 +754,7 @@ async function remotePaper() {
 // ---------------------------------------------------------------------------
 
 async function pipeline(repoCommitsLocal: { sha: string; message: string }[], remoteMode: boolean) {
-  const [farbRepo, farbCommits, p3Commits, health, snapRaw, towerCiRuns] = await Promise.all([
+  const [farbRepo, farbCommits, p3Commits, health, snapRaw, towerCiRuns, engineCiRuns] = await Promise.all([
     ghJson(`/repos/${GH_OWNER}/funding-arb`),
     remoteMode ? ghJson(`/repos/${GH_OWNER}/funding-arb/commits?per_page=6`) : Promise.resolve(null),
     ghJson(`/repos/${GH_OWNER}/phase3-lab/commits?per_page=1`),
@@ -764,6 +764,10 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
     // command center shows every sibling repo's gate state — discipline by
     // visibility applies to itself, too.
     ghJson(`/repos/${GH_OWNER}/funding-arb-tower/actions/workflows/ci.yml/runs?per_page=1&branch=main`),
+    // The engine's verification gate (ci.yml): latest run on main — the
+    // research repo's 103-check invariant harness, remotely. With this the
+    // card carries all four repos' gates: family discipline parity.
+    ghJson(`/repos/${GH_OWNER}/quant-arb-engine/actions/workflows/ci.yml/runs?per_page=1&branch=main`),
   ]);
 
   const commits: { sha: string; message: string }[] = remoteMode
@@ -779,6 +783,9 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
 
   // Latest tower CI run on main (the repo this dashboard deploys from).
   const towerRun = Array.isArray(towerCiRuns?.workflow_runs) ? towerCiRuns.workflow_runs[0] : null;
+
+  // Latest engine CI run on main (the research repo).
+  const engineRun = Array.isArray(engineCiRuns?.workflow_runs) ? engineCiRuns.workflow_runs[0] : null;
 
   // gh-pages scanner snapshot freshness (Vercel demo data source).
   const snapMeta = safe(() => (JSON.parse(snapRaw ?? "null") || {}).meta, null as any);
@@ -810,6 +817,19 @@ async function pipeline(repoCommitsLocal: { sha: string; message: string }[], re
           }
         : null,
       summary: "bun install → prisma generate → typecheck (strict, zero errors) → lint",
+    },
+    engine_ci: {
+      repo: `${GH_OWNER}/quant-arb-engine`,
+      url: engineRun?.html_url ?? `https://github.com/${GH_OWNER}/quant-arb-engine/actions`,
+      latest: engineRun
+        ? {
+            sha: String(engineRun.head_sha ?? "").slice(0, 7),
+            status: String(engineRun.status ?? "unknown"), // completed | in_progress | queued
+            conclusion: engineRun.conclusion ?? null, // success | failure | null while running
+            completed_at: engineRun.updated_at ?? null,
+          }
+        : null,
+      summary: "compileall (whole tree) → 103-check invariant harness (exit = failures)",
     },
     phase3: {
       repo: `${GH_OWNER}/phase3-lab`,

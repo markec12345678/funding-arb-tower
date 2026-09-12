@@ -262,6 +262,17 @@ type Status = {
       } | null;
       summary: string;
     } | null;
+    engine_ci: {
+      repo: string;
+      url: string;
+      latest: {
+        sha: string;
+        status: string;
+        conclusion: string | null;
+        completed_at: string | null;
+      } | null;
+      summary: string;
+    } | null;
     phase3: {
       repo: string;
       url: string;
@@ -1305,6 +1316,51 @@ export default function Home() {
                           <div className="text-zinc-500">{data.pipeline.phase3.tests}</div>
                           <div className="text-amber-400/90 leading-snug">{data.pipeline.phase3.status}</div>
                           <div className="text-zinc-600">{data.pipeline.phase3.summary}</div>
+                        </>
+                      ) : (
+                        <div className="text-zinc-600">unavailable</div>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-zinc-400">
+                        <FlaskConical className="h-3.5 w-3.5" /> engine CI — research repo
+                      </div>
+                      {data.pipeline.engine_ci ? (
+                        <>
+                          <a
+                            href={data.pipeline.engine_ci.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-emerald-400 hover:underline"
+                          >
+                            {data.pipeline.engine_ci.repo} <ExternalLink className="h-3 w-3" />
+                          </a>
+                          {data.pipeline.engine_ci.latest ? (
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span
+                                className={
+                                  data.pipeline.engine_ci.latest.status === "completed" &&
+                                  data.pipeline.engine_ci.latest.conclusion === "success"
+                                    ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-px text-[10px] font-medium text-emerald-400"
+                                    : data.pipeline.engine_ci.latest.status === "completed"
+                                      ? "rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 py-px text-[10px] font-medium text-rose-400"
+                                      : "rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-400"
+                                }
+                              >
+                                {data.pipeline.engine_ci.latest.status === "completed"
+                                  ? (data.pipeline.engine_ci.latest.conclusion ?? "unknown")
+                                  : (data.pipeline.engine_ci.latest.status ?? "unknown")}
+                              </span>
+                              <span className="font-mono text-emerald-500/80">{data.pipeline.engine_ci.latest.sha}</span>
+                              {data.pipeline.engine_ci.latest.completed_at && (
+                                <span className="text-zinc-500">{timeAgo(data.pipeline.engine_ci.latest.completed_at)} ago</span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="text-zinc-600">no CI runs on main yet</div>
+                          )}
+                          <div className="text-zinc-500">{data.pipeline.engine_ci.summary}</div>
+                          <div className="text-zinc-600">on every push/PR to main</div>
                         </>
                       ) : (
                         <div className="text-zinc-600">unavailable</div>
