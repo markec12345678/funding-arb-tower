@@ -155,6 +155,9 @@ type Status = {
     // what the totals actually cover: last N journal lines, from/to =
     // first/last counted cycle — KPI labels derive from this, not assumptions
     window?: { lines: number; from: string | null; to: string | null } | null;
+    // whole-ledger counts (the positions array is only the last 20 rows —
+    // open positions outside the tail stay counted here)
+    ledger?: { total: number; open: number; closed: number } | null;
     positions: any[];
     exits: {
       generated_at: string;
@@ -768,7 +771,14 @@ export default function Home() {
               />
               <Kpi
                 label="paper positions"
-                value={fmt(p?.positions?.filter((x: any) => x.status === "open").length ?? 0)}
+                // whole-file count (ledger.open) — the slice can hide open
+                // rows once the ledger grows past 20; fallback keeps older
+                // payloads rendering
+                value={fmt(
+                  p?.ledger?.open ??
+                    p?.positions?.filter((x: any) => x.status === "open").length ??
+                    0
+                )}
                 sub={`${fmt(totals.open_simulated)} simulated opens · ${fmt(totals.open_aborted)} gate rejects${windowSuffix}`}
                 tone={(totals.open_simulated ?? 0) > 0 ? "good" : "default"}
               />
@@ -1595,6 +1605,26 @@ export default function Home() {
             {/* Paper positions */}
             {p?.positions && p.positions.length > 0 && (
               <Card title="paper positions ledger" icon={<Terminal className="h-4 w-4" />}>
+                {/* coverage label: the table shows the LAST 20 ledger rows —
+                    the ledger itself is larger, and the whole-file counts
+                    (open/closed) come from paper.ledger, not this slice */}
+                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
+                  <span>
+                    last {fmt(p.positions.length)}
+                    {p?.ledger ? ` of ${fmt(p.ledger.total)}` : ""} ledger rows
+                  </span>
+                  {p?.ledger && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        <span className="text-emerald-400">{fmt(p.ledger.open)} open</span>
+                        {" · "}
+                        <span className="text-zinc-400">{fmt(p.ledger.closed)} closed</span>
+                        <span className="text-zinc-600"> (all-time)</span>
+                      </span>
+                    </>
+                  )}
+                </div>
                 <div className="max-h-72 overflow-auto custom-scroll">
                   <table className="w-full text-xs">
                     <thead className="sticky top-0 bg-zinc-900 text-zinc-500">

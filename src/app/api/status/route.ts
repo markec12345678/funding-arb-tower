@@ -195,6 +195,25 @@ function parseJournalRaw(raw: string): {
   return { cycles, aborts, totals, window };
 }
 
+// The table payload is the last 20 ledger rows (bounded payload for a
+// 10 s-poll dashboard), but the COUNTS must describe the whole file: the
+// runner appends rows in open order and updates status in place, so an
+// OPEN position's row slides out of the tail as the ledger grows — the
+// open-count KPI reading the slice would silently undercount. Totals are
+// computed on the FULL array before the slice; the card labels its rows
+// from them ("last 20 of 45"), so the ledger declares its coverage.
+type LedgerTotals = { total: number; open: number; closed: number };
+
+function ledgerTotals(rows: any[]): LedgerTotals {
+  let open = 0;
+  let closed = 0;
+  for (const p of rows) {
+    if (p?.status === "open") open++;
+    else if (p?.status === "closed") closed++;
+  }
+  return { total: rows.length, open, closed };
+}
+
 function mapPositions(rows: any): any[] {
   return (Array.isArray(rows) ? rows : []).slice(-20).map((p: any) => ({
     id: p.id,
@@ -379,11 +398,14 @@ function repoStatus() {
   return { branch, commits, dirty };
 }
 
+// Reads the FULL ledger file: returns the sliced table rows AND the
+// whole-file totals (open positions outside the tail stay counted).
 function paperPositions() {
   return safe(() => {
-    if (!existsSync(POSITIONS)) return [];
-    return mapPositions(JSON.parse(readFileSync(POSITIONS, "utf-8")));
-  }, [] as any[]);
+    if (!existsSync(POSITIONS)) return { rows: [] as any[], ledger: { total: 0, open: 0, closed: 0 } };
+    const full: any[] = JSON.parse(readFileSync(POSITIONS, "utf-8"));
+    return { rows: mapPositions(full), ledger: ledgerTotals(full) };
+  }, { rows: [] as any[], ledger: { total: 0, open: 0, closed: 0 } });
 }
 
 // ---------------------------------------------------------------------------
@@ -827,10 +849,13 @@ async function remotePaper() {
         totals: {} as Record<string, number>,
         window: { lines: JOURNAL_WINDOW_LINES, from: null, to: null } as JournalWindow,
       };
-  const positions = safe(
-    () => mapPositions(JSON.parse(collectorPositionsRaw ?? "[]")),
-    [] as any[]
-  );
+  // Full collector ledger → sliced rows + whole-file totals (same shape
+  // as the local mode: open positions outside the tail stay counted).
+  const positionsFull = safe(() => {
+    const parsed = JSON.parse(collectorPositionsRaw ?? "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  }, [] as any[]);
+  const positions = mapPositions(positionsFull);
   const analysis = safe(() => JSON.parse(analysisRaw ?? "null"), null);
   const logTail = (logRaw ?? "").trim().split("\n").filter(Boolean).slice(-12);
 
@@ -856,6 +881,7 @@ async function remotePaper() {
     analysis,
     exits: classifyExits(collectorJournalRaw, collectorPositionsRaw),
     economics: decomposeEconomics(collectorJournalRaw, collectorPositionsRaw),
+    ledger: ledgerTotals(positionsFull),
     runner: {
       alive: fresh,
       pid: null,
@@ -1045,6 +1071,8 @@ export async function GET(req: NextRequest) {
       window: JournalWindow;
     };
     positions: any[];
+    // whole-file ledger counts — what the table's slice does NOT show
+    ledger: LedgerTotals;
     analysis: any;
     runner: any;
     lifecycle_age_s?: number | null;
@@ -1063,9 +1091,12 @@ export async function GET(req: NextRequest) {
       dirty: false,
     };
   } else {
+    // one read of the ledger file: rows (sliced) + totals (whole file)
+    const localPos = paperPositions();
     paperBlock = {
       journal: localJournal(),
-      positions: paperPositions(),
+      positions: localPos.rows,
+      ledger: localPos.ledger,
       analysis: safe(() => JSON.parse(readFileSync(ANALYSIS, "utf-8")), null),
       runner: runnerStatus(),
       lifecycle_age_s: null,
@@ -1150,6 +1181,8 @@ export async function GET(req: NextRequest) {
       // what the totals actually cover — the UI labels its KPIs from this
       window: paperBlock.journal.window,
       positions: paperBlock.positions,
+      // whole-ledger counts — the positions array above is only the last 20
+      ledger: paperBlock.ledger,
       exits: paperBlock.exits,
       economics: paperBlock.economics,
     },

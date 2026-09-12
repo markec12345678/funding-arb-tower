@@ -66,6 +66,14 @@ against the rate limit — and optionally picks up a PAT from the funding-arb
 git remote at runtime (sandbox only). Deployed, it runs fully unauthenticated
 against public data: **no environment variables, no secrets in this repo.**
 
+**Ledger coverage:** the positions table payload is the **last 20 ledger
+rows** (bounded payload for the 10 s poll), but the whole-file counts live in
+`paper.ledger {total, open, closed}` — the runner appends rows in open order
+and updates status in place, so an open position's row slides out of the tail
+as the ledger grows. The "paper positions" KPI and the ledger card's coverage
+label read `ledger.open`, never the slice: an open position outside the tail
+is still open, still counted, still labeled.
+
 ### How the remote data stays fresh
 
 ```
@@ -231,6 +239,7 @@ carries live runtime numbers.
     "aborts":  [ { "reason": "order-book depth gate", "count": 12 } ],
     "totals":  { "cycles": 42, "scan_total": 101530, "…": "…" },
     "window":  { "lines": 120, "from": "…first counted cycle…", "to": "…last counted cycle…" },  // what totals cover — KPI labels derive from this, not an assumed duration
+    "ledger":  { "total": 45, "open": 3, "closed": 42 },  // whole-file ledger counts — positions[] is only the last 20 rows
     "positions": [ { "id": "…", "base": "RVN", "long_venue": "binance", "short_venue": "bybit", "status": "open" } ]
   },
   "backtest": { "fee_gate": { "best_spread_pct": 0.0218, "…": "…" } },

@@ -208,7 +208,11 @@ PYEOF
   printf '%s' "$api_json" | jq -r '
     .paper.totals as $t |
     "  cycles \($t.cycles)  opens \($t.opens) (sim \($t.open_simulated) / abort \($t.open_aborted))  closes \($t.closes)",
-    (.paper.positions // [] | "  positions: \(length) total, \([.[] | select(.status=="open")] | length) open")' || true
+    (if .paper.ledger then
+       "  positions: \(.paper.ledger.total) total, \(.paper.ledger.open) open, \(.paper.ledger.closed) closed (whole ledger)"
+     else
+       (.paper.positions // [] | "  positions: \(length) rows shown, \([.[] | select(.status=="open")] | length) open (slice only)")
+     end)' || true
   printf '%s' "$api_json" | jq -r '.phase2.totals | "  economics: price \(.price) fees \(.fees) funding \(.funding) → net \(.net)"' 2>/dev/null || true
 
 fi
