@@ -393,6 +393,68 @@ Both data planes serve the same card (see the mode table above); until the
 hourly pusher has shipped the artifact at least once, remote mode shows an
 honest "not yet on the paper-data branch" state instead of an empty card.
 
+## Disaster recovery — if the sandbox dies mid-Phase-2
+
+The Phase-2 window spans days; the sandbox it runs on is ephemeral cloud
+infrastructure. Every recovery fact below was **verified empirically**
+(2026-09-12), not assumed — this section exists so the recovery path is
+institutional memory, not one operator's head.
+
+**What is already durable (nothing to do):**
+
+- All three repos live on GitHub (`main` branches, gates green). The tower's
+  `worklog.md` — the shared task journal — is committed to this repo.
+- The `paper-data` branch carries the full recovery set (verified file list,
+  14 files): the runner ledger `positions.json`, the runner's `journal.jsonl`
+  and `paper_runner.log`, `strategy_config.json`, `phase2-report-latest.json`,
+  plus the GitHub-side collector's parallel stream under `github-actions/`.
+  The runner's own files refresh hourly (snapshot lane) — the worst-case
+  loss window for the runner's journal/ledger is therefore ≈ 1 h; the
+  collector's parallel journal cycles at 5-min granularity, but it is a
+  separate measurement stream (the analyzer audits its continuity
+  independently), and it stops with the sandbox anyway — its dispatch source
+  is the tower's heartbeat lane.
+- **The Phase-2 clock never resets on restart**: `BASELINE_START` is
+  hardcoded in the *locked* analyzer (`scripts/analysis/phase2_report.py`,
+  `2026-09-10 14:36 UTC`) — day X.XX counts from the calendar anchor, not
+  from any process's lifetime. A rebuilt sandbox resumes the same day count.
+- **The ledger resumes by construction**: the executor is file-backed —
+  `load_pure_futures_positions()` reads `scripts/data/pure-futures/positions.json`
+  at boot, so a restarted runner inherits every open/closed paper position.
+
+**Recovery procedure (operator-executed, in order):**
+
+1. Rebuild the sandbox — clone the three repos at `main`, create the Python
+   venv, `bun install` in the tower.
+2. Restore the data files from the `paper-data` branch:
+   `positions.json` and `journal.jsonl` → `scripts/data/pure-futures/`;
+   `paper_runner.log` → `data/`. (A fresh checkout of the branch at
+   `git ls-tree -r origin/paper-data` shows the full mapping.)
+3. Restart the paper runner with its exact invocation (captured from the
+   live process):
+   `nohup /home/z/.venv/bin/python scripts/execution/run_pure_futures_spread.py --config templates/config.pure_futures.spread.json --watch 5 --verbose &`
+   — run from `/home/z/funding-arb`. **No supervisor restarts it
+   automatically, by design**: this tower reads, never trades, so it never
+   starts the runner either; a dead runner surfaces within minutes via the
+   freshness gate and the runner-alive row instead of being silently
+   respawned. An operator makes the restart decision.
+4. Restart the tower (`bun run dev`, port 3000). The three supervisor lanes
+   re-arm themselves: heartbeat + snapshot resume on their first tick,
+   `phase2-daily` seeds from the report's mtime so it does not double-run
+   today's check. (En-route bonus on any rebuild: the dev server boots the
+   current source, activating the patrol's read-modify-write fix for the
+   heartbeat meta — see the code comment in `api/status/route.ts`.)
+5. Verify against `/api/status`: freshness `fresh`, runner alive, all three
+   supervisor lanes LIVE, `phase2.day` unchanged versus the pre-death
+   reading (the anchored clock), and the paper-data branch advancing again.
+
+**What this runbook does not cover (honest limits):** the tower's own death
+is observable only from the outside — the 5-min dispatch lane stops in
+funding-arb's Actions history (the tower cannot watch itself while down);
+there is no external notifier since the cron-job.org Telegram lane is a
+user-owned decision. The Vercel plane is the separate funding-arb demo
+(vite/web), not this tower.
+
 ## Economic decomposition — R7 invariant test (diagnostic)
 
 The "economic decomposition" card is the read-only mathematical invariant test
