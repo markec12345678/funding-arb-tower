@@ -50,6 +50,8 @@ data planes, chosen automatically:
 | ledger · exits · economics (evidence plane) | the same checkout, read live per request | **hourly sandbox snapshot** at the `paper-data` branch root (journal + ledger — the experiment's truth, up to ~1 h stale, age labeled on the cards as `paper.evidence`) |
 | backtest · runner log | local files | hourly lifecycle snapshot at the `paper-data` branch root |
 | **phase-2 discipline** | `scripts/data/phase2/report-latest.json` — the read-only analyzer's stable artifact, read verbatim | `paper-data/phase2-report-latest.json` — shipped hourly by the tower-owned snapshot pusher |
+| **phase-2 report archive** (the trend's source data) | `scripts/data/phase2/report-2*.{json,md}` — every timestamped report, read by `interim.sh`'s trend | `paper-data/phase2-archive/*` — **durability mirror, hourly** (Task 76: recovery-only — nothing remote enumerates it; without it the per-day trajectory the Day-7 A/B/C read weighs existed only on the host) |
+| **op-meta** (lane/runner state) | `funding-arb/data/*.meta.json` + snapshot/heartbeat logs — the automation's evidence (run counters, timestamps, spawn history) | `paper-data/op-meta/*` — durability mirror, hourly |
 | runner liveness | `pgrep` + pidfile + log mtime | freshness of the collector's newest cycle on the branch |
 | repo commits | local `git log` | GitHub REST API |
 | latency | ~50 ms | cold ~1–6 s, then cached (60 s raw / 300 s API TTL, ETag revalidation) |
@@ -94,6 +96,8 @@ github-actions collector (repository_dispatch heartbeat, every 5 min)
    └─ live cycles + positions ─────────────────────────────► paper-data/github-actions/*
 daily verify-only check (phase2_report.py, read-only analyzer)
    └─ report-latest.json ──────────── hourly snapshot push ──► paper-data/phase2-report-latest.json
+   └─ report-YYYYMMDD-HHMM.{json,md} ─ hourly snapshot push ──► paper-data/phase2-archive/*  (trend mirror)
+   └─ data/*.meta.json + snapshot/heartbeat logs ────────────► paper-data/op-meta/*  (automation evidence mirror)
 funding-arb-tower (deployed)
    └─ funnel from the collector files (live, liveness plane),
       ledger + exits + economics + backtest + log + phase-2 discipline
@@ -180,6 +184,15 @@ elsewhere:
 - `src/components/quant-engine/EngineView.tsx` — the engine view (60 s polling).
 - `src/lib/engine-types.ts` — the engine artifact contract (shared by API + view).
 - `scripts/push-paper-snapshot.sh` — the plumbing-based snapshot pusher.
+  Branch root = the data-plane contract the status route's remote mode
+  reads (journal · positions · configs · logs · phase2-report-latest);
+  `paper-data/phase2-archive/*` mirrors every timestamped report — the
+  trend's source data, globbed so future rows ride automatically (Task 76
+  durability close: the per-day trajectory the Day-7 A/B/C read weighs
+  existed only on the host before this); `paper-data/op-meta/*` mirrors
+  the lane/runner metas + the pusher's own and the heartbeat's logs (the
+  automation's evidence). Nothing remote enumerates the mirrors — they
+  are recovery assets; `interim.sh` keeps reading the local archive.
 - `scripts/recon.sh` — **operator recon**: the canonical round-start state check
   (read-only: localhost API + file reads + `git -C`; never writes, never
   spawns, never trades). Encodes the paths operators kept re-deriving from
