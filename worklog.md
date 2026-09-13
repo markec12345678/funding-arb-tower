@@ -2941,3 +2941,22 @@ Work Log:
 Stage Summary:
 - Fire #65 landed on-time and on-remote; the boundary read's full dependency chain (command, venv, analyzer, scripts, tmp/disk, state baseline, arithmetic, UI surface) is verified green 5 hours ahead. The boundary checklist stands as sealed in Task 82, with the UI pre-state now ALSO proven live (the boundary round verifies only the flip: "in 5h" → "read recorded").
 - Shipped state: this worklog entry (commit follows; verification only, no code changed). Next owned events: Day-3 boundary read TODAY 14:36Z (fire ≥14:36:00Z → report day 3.0XX/INTERIM → interim.sh + templated comparison vs day-2.568 → recon "recorded" → UI card "read recorded" = the liveness acceptance test) → snapshot fire ~15:23Z ships the boundary row to GitHub → lane fire #2 ~04:13Z Sep 14 → Day-7 final read Sep 17 (fire ≥ 14:36:00Z — the precision rule) → A/B/C (stop recipe armed at next tower boot). Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 85
+Agent: main (Z.ai Code)
+Date: 2026-09-13 11:02–11:25 UTC (session 8, continuation 48)
+Task: User: "odlicno nadaljuj" — autonomous continuation, quiet point (Day-3 boundary in ~3h 33m). Round = the dry-run verification of the boundary-round toolchain (interim.sh end-to-end, read-only) + live watch of the snapshot lane through TWO fires, with one self-caught cadence slip.
+
+Work Log:
+- CALIBRATION: recon ALL GREEN — tower 1ff947c 0-dirty, engine fe49627, funding-arb 0373f5d LOCK INTACT, runner 2d20h, lanes healthy, Day-3 boundary in 3h 32m.
+- SELF-CAUGHT SLIP (same class as Tasks 79/81, corrected from source): the round-opening statement said "fire #66 due ~11:23Z" — an off-by-one fire INDEX. The lane's own meta showed fire #66 had ALREADY landed 10:23:14Z (between Task 84's close and this round's start); the correctly derived next fire was #67 at last_ok(10:23:17.538Z) + 3,600,000 ms = 11:23:17.538Z. The standing fix held again: due-times come from the lane's persisted last_ok + the module constant, never from memory.
+- FIRE #66, verified on remote (landed between rounds): d7e18e9 pushed 10:23:15Z to origin/paper-data — 12 journal lines + positions.json + runner/snapshot metas + logs. 66/66 streak held.
+- FIRE #67, verified LIVE: fired 11:23:17Z — EXACTLY the derived due time — pushed b8d95f7 (12 journal lines + positions.json + metas + logs), runs=67 ok=67. The 67/67 streak holds; hourly cadence now proven across 67 consecutive fires.
+- DRY-RUN OF THE BOUNDARY TOOL (interim.sh, strictly read-only — verified from source: no writes anywhere, all jq/ls reads): GREEN end-to-end with current state — experiment day 2.853 of 7 (live-computed), trend renders all 9 archived reports (latest day 2.568 · net −66.91 · W/L 17/60), current-read block: funding share 61.1% · exits edge_below_exit=48 / pair_disappeared=29 · totals self-check 0, LEDGER: 86 total · 3 open · 83 closed → 6 closes since the 04:13Z report (the runner kept cycling — a real measurement for the boundary comparison: the day-3.0 report will capture those closes), integrity all green (the "2 of 9" all-archive findings remain the pre-lock earliest builds, footnoted). The boundary round's tool #2 (after the analyzer command) is now verified live with pre-boundary data.
+- RSS DATAPOINT (Task-82 trend continues): dev server 20h50m uptime · 1.094 GB RSS (was ~1.05–1.08 GB at ~17h45m) — the slow dev-mode drift continues; environment statement holds, no action.
+- funding-arb 0-dirty throughout (all reads); engine untouched @ fe49627.
+
+Stage Summary:
+- Both the boundary toolchain (interim.sh proven live) and the snapshot lane (fires #66 remote-verified, #67 live-verified at the exact derived minute) are green heading into the 14:36Z boundary. The cadence-slip pattern is now 3-for-3 self-caught by the persisted discipline (derive from meta, never memory).
+- Shipped state: this worklog entry (commit follows; verification only, no code changed). Next owned events: Day-3 boundary read TODAY 14:36Z (Task-82 checklist: fire ≥14:36:00Z → report day 3.0XX/INTERIM → interim.sh + comparison vs day-2.568 [net −66.91 · 77 closed · W/L 17/60 · fees −87.15] + note the 6+ closes since → recon "recorded" → UI card "read recorded" acceptance test) → snapshot fire ~15:23:17Z ships the boundary row to GitHub → lane fire #2 ~04:13Z Sep 14 → Day-7 final read 14:36Z Sep 17 (fire ≥ 14:36:00Z) → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
