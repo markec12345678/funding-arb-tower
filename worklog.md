@@ -2923,3 +2923,21 @@ Work Log:
 Stage Summary:
 - Both shas (bf51cf6, abd0c22) verified green on their own runs; the platform incident window is recorded with timestamps. The incident-response recipe is proven against a repeat, not a single occurrence.
 - Shipped state: this entry (commit follows). Next owned events: Day-3 boundary read TODAY 14:36Z (Task-82 checklist) → snapshot fire ~15:23Z ships the boundary row → lane fire #2 ~04:13Z Sep 14 → Day-7 final read Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 84
+Agent: main (Z.ai Code)
+Date: 2026-09-13 09:27–09:40 UTC (session 8, continuation 47)
+Task: User: "odlicno nadaljuj" — autonomous continuation, quiet point (Day-3 boundary in ~5h 05m). Round = the FULL pre-flight of today's owned event (the 14:36Z Day-3 boundary read) + live verification of snapshot fire #65 (due 09:23Z, landed during the round).
+
+Work Log:
+- FIRE #65 VERIFIED ON REMOTE (not just locally): 09:23:17Z pushed 72db690 to origin/paper-data — 12 new journal lines + runner/snapshot metas + gh-heartbeat log; GitHub-actions paper cycle correctly interleaved below it (09:12/09:17 runs). runs=65 ok=65 — the 65/65 streak holds, hourly cadence exact (…07:23→08:23→09:23).
+- PRE-FLIGHT, ALL READ-ONLY (no report written, no trend row, funding-arb touched only by reads; lock 0-dirty before AND after): sealed command re-confirmed verbatim from README (`cd /home/z/funding-arb && setsid nohup /home/z/.venv/bin/python scripts/analysis/phase2_report.py > /tmp/phase2-boundary-d3.log 2>&1 &`, fire ≥ 14:36:00Z, target ~14:36:05Z) · venv Python 3.12.14 present · analyzer mtime 2026-09-10 17:19 (unchanged since lock) · interim.sh unchanged since rehearsed commit 6a3b9cd · recon.sh changed only by the Task-83 comment · /tmp writable · 7.0G free.
+- STATE BASELINE RE-VERIFIED: report-latest = day 2.568 · INTERIM · generated 04:13:33Z · net −66.91 / closed 77 / wins 17 / fees −87.15 (the comparison baseline intact); journal 823 lines, last ts 09:26:39Z (~3.5 min fresh — the 15-min tick cadence healthy); archive holds 3 timestamped reports — the boundary fire creates the 4th (report-20260913-1436).
+- BOUNDARY ARITHMETIC RE-DERIVED (not remembered): baseline 2026-09-10 14:36Z → Day-3 = 2026-09-13 14:36:00Z; recon independently renders "in 5h 05m" — two independent derivations agree.
+- UI PRE-BOUNDARY ACCEPTANCE (the pre-half of Task 82's built-in test, agent-browser live): monitor view renders the Day-3 card exactly in the designed pre-boundary state — "2026-09-13T14:36:00.000Z · in 5h 4m" countdown, Day-7 "in 4d 5h", window "day 2.57 of 7 · INTERIM · daily check fresh", integrity chips matching the analyzer's own verdicts (parse 0 · dup ts 0 · back-jumps 0 · gaps>15m 0 · dup ids 0 · coverage 100.9%). The "collector gaps>10m (inspect): 2" chip chased to source: both entries are Sep 10 15:53–16:32Z — startup-era, known, unchanged since the previous reports; inspect-level by design, NOT a new finding. dev.log clean through the session (all 200s, no hydration/console errors). Screenshot: download/pre-boundary-d3-ui-check.png.
+- Net effect: the 14:36Z round is now pure one-shot execution — every dependency verified green within 4 minutes of the round, nothing left to discover at the boundary.
+
+Stage Summary:
+- Fire #65 landed on-time and on-remote; the boundary read's full dependency chain (command, venv, analyzer, scripts, tmp/disk, state baseline, arithmetic, UI surface) is verified green 5 hours ahead. The boundary checklist stands as sealed in Task 82, with the UI pre-state now ALSO proven live (the boundary round verifies only the flip: "in 5h" → "read recorded").
+- Shipped state: this worklog entry (commit follows; verification only, no code changed). Next owned events: Day-3 boundary read TODAY 14:36Z (fire ≥14:36:00Z → report day 3.0XX/INTERIM → interim.sh + templated comparison vs day-2.568 → recon "recorded" → UI card "read recorded" = the liveness acceptance test) → snapshot fire ~15:23Z ships the boundary row to GitHub → lane fire #2 ~04:13Z Sep 14 → Day-7 final read Sep 17 (fire ≥ 14:36:00Z — the precision rule) → A/B/C (stop recipe armed at next tower boot). Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
