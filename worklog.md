@@ -2713,3 +2713,23 @@ Stage Summary:
 - **MILESTONE: the phase2-daily lane's first autonomous cycle is COMPLETE and VERIFIED LIVE** — fire at the designed tick, <60 s runtime, ok result, fresh report, archive row, trend row, zero integrity findings, zero lock impact. The automation thesis of Tasks 59-63 (the discipline no longer depends on an operator session being active) is now PROVEN by the first real cycle, not by rehearsal.
 - The night's environment statement (Tasks 64/70/71) held in practice: the pair kept the host alive, the runner ran 2d12h+ unattended, and the first thing the lane did on its own clock was exactly what the rehearsal said it would (<30 s claimed, <60 s observed including cold caches).
 - Shipped state: funding-arb-tower worklog commit (this entry — no code changed; the round was pure observation and verification). Next owned events: Day-3 boundary read TODAY 14:36Z (the documented procedure: manual analyzer run at the boundary for a true day-3.00 row, then interim.sh — compare against day-2.568: net −66.91 / 77 closes / W/L 17/60 / fees −87.15) → lane fire #2 ~04:13Z Sep 14 (anchored on the lane's own clock now) → Day-7 final read 14:36Z Sep 17 → A/B/C (user decision). Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 73
+Agent: main (Z.ai Code)
+Date: 2026-09-13 04:35–04:55 UTC (session 8, continuation 36)
+Task: User: "odlicno nadaljuj" — autonomous continuation, ~22 min after the first autonomous fire (Task 72 verified the backend chain live). Gap: the one surface NOT yet observed post-fire was the USER-FACING UI — the phase-2 supervisor row's promised flip from "seeded (pre-automation run)" to real run counts had never been seen rendered. Round = the browser-level post-fire verification, via a targeted agent-browser pass (not the full e2e — that ran clean 4 h earlier on this tree, Task 71; this pass targets the state transition only).
+
+Work Log:
+- API semantics re-read before the pass: the phase-2 lane's last_activity_ago_s anchors on last_ok (activityMs = lastOk ?? lastRun) — so the row would show a fresh age, and healthy = ok within 26 h grace → LIVE badge expected.
+- TARGETED BROWSER PASS (agent-browser): opened / , waited networkidle, clicked through to the live-monitor/paper view. OBSERVED: the phase-2 window progress bar renders **2.568** (the fresh fired report's own day — the UI consumes the new data end-to-end); the supervisor rows render:
+    · snapshot: "pushed · 13m ago · every 1 h · 60/60 ok"
+    · **phase-2: "ok · 22m ago · every 24 h · 1/1 ok"** — THE FLIP, exactly as designed: seeded text gone, real run counts (1 run, 1 ok), LIVE badge, fresh age from the lane's own last_ok
+    · watchdog: "ok · 10s ago · probe every 15 s · 1 respawn"
+- The whole honesty family still renders around them (per-close decomposition text now reads "over 77 closes — experiment-lifetime", the 9.9h window funnel card, the A/B/C discipline card) — the fired report's numbers flow through every labeled surface.
+- QUALITY: 0 page errors, 0 console errors; browser closed cleanly, 0 stray Chromium processes (Task-55 hygiene), no memory impact.
+- No code changed this round; the observation seals the last unverified claim of the automation thesis: the UI the user sees reflects the automation's own first cycle within minutes of it happening, with no operator involvement.
+
+Stage Summary:
+- The first autonomous cycle is now verified on EVERY surface: backend (lane meta runs=1/ok=1), artifact (archive row + report-latest), tooling (recon invariant held, interim trend row), and now the USER-FACING UI (supervisor row flipped to "ok · 1/1 ok", progress bar at day 2.568) — with zero JS errors.
+- Shipped state: funding-arb-tower worklog commit (this entry) · quant-arb-engine @ fe49627 · funding-arb @ 0373f5d (LOCK INTACT, 0-dirty, runner ~2d13h). Next owned events: Day-3 boundary read TODAY 14:36Z (manual analyzer run at the boundary → interim.sh; compare day-2.568: net −66.91 / 77 closes / fees −87.15) → lane fire #2 ~04:13Z Sep 14 → Day-7 final read 14:36Z Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
