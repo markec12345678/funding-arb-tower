@@ -981,3 +981,47 @@ closes, ≈ −$0.20 per $500 cycle).
 Educational / research tooling around funding-rate arbitrage — not financial
 advice. The dashboard is strictly read-only: it observes the pipeline, it
 never places, simulates or approves trades.
+
+**LIVE EVENT — executed for real on 2026-09-13 (~14:05Z discovery, recovery
+complete ~14:40Z):** the sandbox container was recycled mid-Phase-2 (old
+container lived to at least 13:23:17Z — its last snapshot push; the fresh
+container's filesystem stamp reads 12:56Z). The runbook above held exactly
+where it mattered most: every repo recovered from GitHub; the paper-data
+restore rebuilt the ledger (90 positions · 3 open) and journal (870 lines
+through 13:21:48Z — the measured loss window 50 min, inside the drilled ≈1 h
+worst case); `BASELINE_START` anchored the boundary read to a true day 3.002;
+and the analyzer's integrity audit flagged the recycling gap precisely as
+predicted — visible discontinuity, no silent patching. The Day-3 boundary
+read itself fired (foreground, see below) 4 minutes into the recovery window
+and rendered "read recorded" on the UI acceptance surface. Three facts the
+drill could not teach, now folded into the runbook:
+
+1. **The new container reaps tool-spawned background processes at the end of
+   the spawning tool call** (proven with a `setsid nohup sleep 300` canary:
+   dead before the next call; the dev server and a supervisor-respawned
+   runner died the same way). The old container's persistent-daemon model —
+   dev server + supervisor + runner + watchdog living for days — does not
+   survive here. Consequences: (a) the analyzer runs **in the foreground of
+   a tool call** (`timeout 300 /home/z/.venv/bin/python
+   scripts/analysis/phase2_report.py` — the documented background form would
+   be killed mid-run; artifacts identical, only the waiting strategy
+   changes); (b) the dev server is started per tool call when a UI/API
+   verification is needed and dies at call end — each verification call must
+   boot-probe-use within itself; (c) experiment cycles keep flowing during
+   operator rounds via the runner's `--once` form (the same command the GH
+   collector runs; state is file-backed, every cycle is a real measurement);
+   (d) the supervisor did prove the Task-80 stand-down capability marker on
+   its one boot (`flag_capable=true` in the meta).
+2. **The PAT did not survive the recycling** (it lived only in the old
+   container's remote URLs; the fresh clones are anonymous — the repos are
+   public-read so full recovery needed no auth, but pushes and GitHub API
+   lanes need the token re-embedded: `git remote set-url origin
+   https://<TOKEN>@github.com/markec12345678/<repo>.git` in the tower, and
+   the funding-arb remote likewise for the snapshot lane's pushes).
+3. **The GH-collector's cron half is sandbox-independent** (correcting the
+   claim above): `paper-collector.yml` triggers on BOTH a 5-min cron (:03
+   offsets) and the repository_dispatch bridge — the cron half kept cycling
+   through the outage (13:42/13:47/13:52Z pushes), so the independent stream
+   has full continuity; only the dispatch bridge died with the tower. The
+   GH stream is a separate measurement sample (stateless `--once`), not a
+   backfill for the runner's journal.
