@@ -2907,3 +2907,19 @@ Work Log:
 Stage Summary:
 - First RED CI of the session root-caused (GitHub runner-acquisition blip, zero steps, no machine), remediated (workflow re-run → SUCCESS), and the diagnostic recipe persisted in both recon.sh and the README. The evidence chain for bf51cf6 is now green-on-its-own-sha.
 - Shipped state: recon.sh (comment) + README (note) + this entry (commit follows). Next owned events: Day-3 boundary read TODAY 14:36Z (checklist per Task 82: fire ≥ 14:36:00Z → report day 3.0XX/INTERIM → interim.sh + templated comparison → recon "recorded" → UI card "read recorded" acceptance test) → snapshot fire ~15:23Z ships the boundary row to GitHub → lane fire #2 ~04:13Z Sep 14 → Day-7 final read Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 83b
+Agent: main (Z.ai Code)
+Date: 2026-09-13 09:08–09:16 UTC (session 8, continuation 46b)
+Task: Continuation of Task 83 — the infra blip REPEATED on the next push.
+
+Work Log:
+- abd0c22 CI → concl=startup_failure (GitHub's OWN label this time — runner startup, zero steps again). Two consecutive failures = a GitHub Actions PLATFORM INCIDENT window, not repo noise; the tree itself was already proven green (bf51cf6 re-run success; abd0c22 adds only comments/docs).
+- RESPONSE: re-run (HTTP 201) → completed concl=SUCCESS within ~2 min. The window apparently passed.
+- Pattern record: 08:52Z (failure #1, worklog-only commit) and ~09:05Z (failure #2, startup_failure) — both re-run-green immediately. Consistent with a transient regional runner-acquisition incident; nothing repo-side changed between the failing and passing executions of the SAME shas.
+- No further action: the Task-83 recipe (check steps → empty runner → re-run) handled the repeat exactly as designed — the knowledge was persisted BEFORE it was needed a second time.
+
+Stage Summary:
+- Both shas (bf51cf6, abd0c22) verified green on their own runs; the platform incident window is recorded with timestamps. The incident-response recipe is proven against a repeat, not a single occurrence.
+- Shipped state: this entry (commit follows). Next owned events: Day-3 boundary read TODAY 14:36Z (Task-82 checklist) → snapshot fire ~15:23Z ships the boundary row → lane fire #2 ~04:13Z Sep 14 → Day-7 final read Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
