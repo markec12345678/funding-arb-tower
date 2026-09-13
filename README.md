@@ -605,6 +605,22 @@ What the card shows:
   indicative only). `interim.sh` itself always labels the report's own
   day and age honestly, so a read WITHOUT the manual run is not wrong —
   it is simply one boundary-anchored row behind.
+  **Boundary-fire precision** (code-grounded, audited 2026-09-13 against
+  the locked analyzer source, read-only): the analyzer stamps the
+  experiment day at report-assembly time — the END of the run, the same
+  `now` that becomes `generated_at` (~20 s after process start at this
+  journal size; Task-72 fire: start 04:13:14Z → stamp 04:13:33Z). The
+  json carries `day` rounded to 3 decimals (`_round(day, 3)`), but the
+  stage threshold `day < 7` compares the FULL float — it does not round.
+  Therefore fire the manual boundary run **at or a few seconds after the
+  boundary minute (14:36:00Z), never before it**: a fire at 14:36:05Z
+  stamps day ≈ X.0003 → the trend row reads X.000 and the Day-7 stage
+  flip to FINAL-WINDOW holds. A fire even 30 s early would stamp
+  6.9998 → the row still *labels* 7.000 (rounding) while the stage
+  stays INTERIM — the flip the boundary read exists to capture, missed
+  by a sub-minute timing error, leaving an internally inconsistent
+  artifact behind. Same rule at Day-3: fire ≥ 14:36:00Z → row 3.000,
+  stage correctly still INTERIM.
 - **Integrity chips** — the analyzer's own continuity audit (parse errors,
   duplicate timestamps, ts back-jumps, journal gaps > 15 min, duplicate
   position ids, opens↔last-cycle consistency, GH-collector coverage,
