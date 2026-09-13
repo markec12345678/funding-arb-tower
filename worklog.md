@@ -2855,3 +2855,21 @@ Work Log:
 Stage Summary:
 - The A/B/C decision now has an executable stop: decision = flag, execution = one-liner, resume = rm, and every state is recon-visible with a capability proof that prevents the silent-failure mode. Day-7's "operator recipe" line in the end-of-experiment semantics is no longer a promise — it is a tested procedure.
 - Shipped state: instrumentation-node.ts + recon.sh + README (commit follows; TS change → e2e re-sealed 69/69). Next owned events: Day-3 boundary read TODAY 14:36Z (sealed Task-74 plan + Task-79 template; compare day-2.568: net −66.91 / 77 closed / W/L 17/60 / fees −87.15) → lane fire #2 ~04:13Z Sep 14 → Day-7 final read 14:36Z Sep 17 (fire ≥ 14:36:00Z; the stop recipe above is the execution arm for whatever the user decides) → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 81
+Agent: main (Z.ai Code)
+Date: 2026-09-13 07:25–08:27 UTC (session 8, continuation 44)
+Task: User: "odlicno nadaljuj" — autonomous continuation, quiet point (Day-3 boundary in ~7h). Round = live watch of snapshot fires #63→#64 — with an honest correction of the round's own first hypothesis.
+
+Work Log:
+- CALIBRATION: 07:25Z ALL GREEN @ 9f16cb9; snapshot lane runs=63/ok=63, last_ok 07:23:17Z.
+- FIRST HYPOTHESIS (WRONG): "fire 64 is due ~07:53Z" — derived by misapplying the 24 h cadence arithmetic to the snapshot lane. Observed 07:45/07:54/07:56/08:01/08:07/08:12/08:21 all showing runs=63 → suspicion of a missed fire.
+- THE FACTS, checked from source and history (not assumption): INTERVAL_MS = 3_600_000 (hourly — src/server/paper-snapshot.ts:35); the full push history shows exact hourly steps for 62+ consecutive pushes (…22:23→23:23→00:23→…→08:23). The due time was 08:23:17Z, and every observation before it was correctly pre-fire.
+- FIRE 64, LANDED EXACTLY ON TIME: 08:23:17Z pushed fed99ca, runs=64 ok=64, phase2-archive count 18 on the branch, github-actions bot cycle 08:22 correctly interleaved below it. THE LANE NEVER MISSED ANYTHING.
+- OBSERVATION, real and worth recording: while watching, confirmed the tower's dev server has been up ~17h 45m — it predates Tasks 75 (milestone three-state cards) and 80 (stand-down capability marker: recon's meta line still shows flag_capable=false, the honest current truth). Neither is a fault; both activate at the next tower boot. No intervention made: the runner is healthy (up 2d16h+), the boundary read needs no new server code, and a tower restart is not my call to make casually mid-experiment (it is the documented Task-55 recovery/bootstrap recipe, and the Task-80 README documents the restart as the arming step for the stand-down capability — an operator decision, not a quiet-point default).
+- Discipline note (self-caught, same class as Task 79's boundary-arithmetic slip): two cadence-misreading slips in two days — the fix is the one already applied: derive due-times from the lane's OWN persisted last_ok + the module constant, never from memory. The snapshot lane's next fire: ~09:23:17Z.
+
+Stage Summary:
+- Fire #64 verified live and on-time (hourly cadence, 64/64 ok streak); the false alarm was the round's own arithmetic, corrected from source. The stand-down capability marker remains dormant until the next tower boot (honest, documented, operator-owned decision to restart).
+- Shipped state: this worklog entry (commit follows; observation + correction only, no code changed). Next owned events: Day-3 boundary read TODAY 14:36Z (sealed plan + template; compare day-2.568: net −66.91 / 77 closed / W/L 17/60 / fees −87.15) → snapshot fire #65 ~09:23Z → lane fire #2 ~04:13Z Sep 14 → Day-7 final read 14:36Z Sep 17 → A/B/C (stop recipe armed at next boot). Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
