@@ -1017,11 +1017,74 @@ drill could not teach, now folded into the runbook:
    public-read so full recovery needed no auth, but pushes and GitHub API
    lanes need the token re-embedded: `git remote set-url origin
    https://<TOKEN>@github.com/markec12345678/<repo>.git` in the tower, and
-   the funding-arb remote likewise for the snapshot lane's pushes).
-3. **The GH-collector's cron half is sandbox-independent** (correcting the
-   claim above): `paper-collector.yml` triggers on BOTH a 5-min cron (:03
-   offsets) and the repository_dispatch bridge — the cron half kept cycling
-   through the outage (13:42/13:47/13:52Z pushes), so the independent stream
-   has full continuity; only the dispatch bridge died with the tower. The
-   GH stream is a separate measurement sample (stateless `--once`), not a
-   backfill for the runner's journal.
+   the funding-arb remote likewise for the snapshot lane's pushes — PLUS
+   `git -C /home/z/funding-arb remote set-url --push origin
+   https://<TOKEN>@github.com/markec12345678/funding-arb.git`: the GH
+   heartbeat reads its token from `remote.origin.pushurl` specifically,
+   and plain `set-url` sets only `remote.origin.url` — the heartbeat sat
+   at "no-token" for hours after the recovery until this was caught and
+   fixed, Task 89).
+3. **The GH-collector's real driver is the heartbeat, NOT the cron half**
+   (correcting the correction — Task 89, from the run-event evidence): of
+   the last 40 collector runs only ONE was a `schedule` event; the rest
+   were `repository_dispatch` from the sandbox heartbeat. The runs that
+   kept the GH stream flowing through the outage window (13:21–13:51Z)
+   were the OLD container's heartbeat dispatches — that dev server lived
+   until ~13:52Z, longer than estimated — not the fork's cron, which
+   fired exactly once in the whole visible window (14:28:28Z). GitHub's
+   fork-cron scheduling delivers the */5 cadence only in principle: in
+   practice this lane is heartbeat-driven, and under the new regime that
+   means it advances on operator-round verification boots (one dispatch
+   per boot + every 5 min of uptime). The GH stream remains a separate
+   stateless measurement sample — data-wise independent, cadence-wise
+   round-anchored, exactly like everything else under reaping. After the
+   pushurl fix above, the chain was proven live again: boot → dispatch
+   http 204 → collector run success → `github-actions paper cycle`
+   commit on paper-data (15:32–15:33Z, `30e8133`).
+
+### OPERATOR ROUNDS under the new regime (Task 89 codification)
+
+Everything above folds into ONE command — `scripts/round.sh` — which is a
+round's whole duty in the discipline-critical ORDER:
+
+1. **CYCLE** — one `--once` paper cycle, foreground, `timeout 240`
+   (the reaping-safe form; the GH collector's own command).
+2. **PUSH** — `push-paper-snapshot.sh` as a MANUAL fire (does not touch
+   the lane's meta — lane counters stay automated-only). The snapshot
+   carries the fresh journal row + positions + any new analyzer reports
+   (`report-latest.json` + the archive pair) + op-meta to `paper-data`.
+3. **INTERIM** — `interim.sh`, the decision-grade readout (read-only).
+4. **RECON** — family health, advisory: between tool calls the runner is
+   dead and the status API is down — that is the regime's honest steady
+   state, and the script's DEGRADED verdict names exactly that, never a
+   round failure.
+
+The order IS the discipline: pushing before the cycle would carry a stale
+journal row. Exit 0 = cycle and push both landed.
+
+**Three automation lanes still fire on their own** — anchored to dev-server
+boots (the `/api/status` route import activates all modules; the immediate
+first tick fires whatever is overdue):
+
+- The **GH heartbeat** (`gh-heartbeat.ts`, 5-min throttle): fires a
+  repository_dispatch on any boot more than 5 min after the last one —
+  the GH-collector cycle that follows IS the independent stream's
+  advance (proven post-fix: dispatch #316 → run success → paper-data
+  `30e8133`, 15:32–15:33Z).
+
+- The **hourly snapshot lane** (`paper-snapshot.ts`): any boot more than
+  1 h after the lane's last run gets a catch-up fire (proven live: fire
+  #69, `c28e767`, 2026-09-13 15:12Z — 3 h overdue, fired on the round's
+  verification boot, 69/69). Lane fires update `paper_snapshot.meta.json`
+  and ARE the automated durability path; `round.sh`'s stage-2 manual fires
+  are the operator's belt-and-braces between them.
+- The **daily analyzer lane** (`phase2-daily.ts`, 24 h since last ok; the
+  phase2_check meta's next fire after the incident: ~04:13Z Sep 14): a
+  qualifying boot fires the analyzer as a child of that dev server — it
+  must COMPLETE inside the call's uptime window (~1–3 min; the analyzer
+  takes 47–97 s, and a browser-verification round keeps the server up
+  exactly that long). If the call ends first the meta is simply not
+  updated and the next qualifying boot retries. THE DAILY-READ PROTOCOL:
+  run a verification round (boot + browser check), then `round.sh` — its
+  stage 2 carries the fresh report to GitHub; the interim stage then
+  shows the new trend row and the lane reset.
