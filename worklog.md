@@ -2821,3 +2821,19 @@ Work Log:
 Stage Summary:
 - The boundary round at 14:36Z now has zero unverified prerequisites: procedure sealed (Task 74), pre-flight done, e2e proven state-independent through the transition, cross-plane consistency verified, environment healthy. The only thing left is the execution itself.
 - Shipped state: this worklog entry (commit follows). quant-arb-engine fe49627 · funding-arb 0373f5d LOCK INTACT. Next owned events: Day-3 boundary read TODAY 14:36Z (fire ≥ 14:36:00Z → verify day 3.0/INTERIM → interim.sh → recon "recorded" flip; compare day-2.568: net −66.91 / 77 closed / W/L 17/60 / fees −87.15) → lane fire #2 ~04:13Z Sep 14 → Day-7 final read 14:36Z Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 79
+Agent: main (Z.ai Code)
+Date: 2026-09-13 07:04–07:08 UTC (session 8, continuation 42)
+Task: User: "odlicno nadaljuj" — autonomous continuation, quiet point (Day-3 boundary in 7h 32m, ALL GREEN @ 2af6d9b). Round = the "who fires at the boundary" audit (the last ambiguity a reader could have) + sealing the Day-3 comparison template.
+
+Work Log:
+- WHO-FIRES-AT-THE-BOUNDARY AUDIT (read-only, from lane metas + module constants): phase2 lane next fire 2026-09-14T04:13:33Z — 13.5 h AFTER the boundary, anchored on its own clock; snapshot lane fires hourly (next 07:23:17Z) and NEVER runs the analyzer (file pushes only); heartbeat fires every 300 s (last 07:01:45Z, http 204) and dispatches to the github-actions COLLECTOR — the funnel plane, not the analyzer; dev-server watchdog probes localhost every 15 s; the paper runner trades paper, never runs the analyzer. ⇒ NO tower actor fires the analyzer at 14:36Z. The boundary read is OPERATOR-ROUND-owned (first "nadaljuj" at/after 14:36Z) — by design: the automation owns the daily cadence on its own clock, the operator owns the boundary. No hidden scheduled actor exists for the boundary (and none may — every scheduled actor must be recon-visible).
+- DAY-3 COMPARISON TEMPLATE SEALED (execution prep for the 14:36Z round): state the row-to-row deltas (Δnet · Δfees · Δfunding · Δcloses · ΔW/L) against the day-2.568 reference (closed 77 · W/L 17/60 · net −66.91 · ret −309.7 · fund 12.36 · fees −87.15) WITH the window span stated (04:13:33Z → ~14:36:2xZ ≈ 10.4 h = 0.43 d); coverage labels stay (experiment-lifetime economics, report-day-stamped closes); stage verdict INTERIM — measurement, not interpretation, A/B/C only after Day 7.
+- Watchman datapoint: environment healthy (recon ALL GREEN); next-server RSS trend unchanged from the 06:42Z datapoint (1059 MB top process, 2354 MB available).
+- No code changed (audit + template only).
+
+Stage Summary:
+- The 14:36Z round is now fully pre-staged: procedure (Task 74), pre-flight (Task 74), e2e state-independence (Task 78), cross-plane consistency (Task 78), actor-clarity (this round), comparison template (this round). Nothing else remains but the fire itself.
+- Shipped state: this worklog entry (commit follows). quant-arb-engine fe49627 · funding-arb 0373f5d LOCK INTACT · runner ~2d16h. Next owned events: Day-3 boundary read TODAY 14:36Z (operator-round-owned; fire ≥ 14:36:00Z → verify day 3.0/INTERIM → interim.sh → recon "recorded" flip → templated comparison) → lane fire #2 ~04:13Z Sep 14 → Day-7 final read 14:36Z Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
