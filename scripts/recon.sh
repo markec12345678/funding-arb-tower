@@ -203,6 +203,12 @@ if [ -n "$api_json" ] && printf '%s' "$api_json" | jq empty 2>/dev/null; then
     # degradation; the print above already shows "RUNNING <sha>" so the
     # operator sees the true state either way. Before this distinction the
     # verdict said DEGRADED on every recon within ~3 min of a push.
+    # NB 2 (observed 2026-09-13, run 34748626776): a RED can be a GitHub
+    # INFRA blip — the jobs API shows zero steps and runner_name="" (no
+    # machine was ever assigned; logs endpoint returns BlobNotFound). Our
+    # code never even checked out. The honest response is a workflow
+    # re-run for that sha (POST .../actions/runs/<id>/rerun), not a code
+    # hunt: check the job steps FIRST, panic second.
     printf '%s' "$api_json" | jq -e --arg lane "$lane" '
       .pipeline[$lane].latest != null and
       ( (.pipeline[$lane].latest.status == "completed" and

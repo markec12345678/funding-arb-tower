@@ -2889,3 +2889,21 @@ Work Log:
 Stage Summary:
 - Every shipped change is now classified by activation model, with the one honest correction: the UI milestone liveness proof arrives AT the boundary itself (the "read recorded" render doubles as the acceptance test). Nothing dormant blocks the boundary read.
 - Shipped state: this worklog entry (commit follows; inventory + correction only, no code changed). Next owned events: Day-3 boundary read TODAY 14:36Z — checklist now: fire ≥ 14:36:00Z → verify report (day 3.0XX · stage INTERIM · generated ≈14:36:2xZ) → interim.sh (trend row + official read; compare day-2.568: net −66.91 / 77 closed / W/L 17/60 / fees −87.15 · window ≈10.4 h) → recon (milestone line "recorded (report day 3.0XX)" + lane meta untouched + lock 0-dirty) → UI card check ("read recorded" — the acceptance test) → trend row durable on GitHub ≤1 h later (15:23Z fire) → lane fire #2 ~04:13Z Sep 14 → Day-7 final read Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 83
+Agent: main (Z.ai Code)
+Date: 2026-09-13 08:57–09:07 UTC (session 8, continuation 46)
+Task: User: "odlicno nadaljuj" — the round opened on the session's FIRST RED tower CI (bf51cf6, a worklog-only commit — suspicious on its face). Round = the incident response, root-caused and closed.
+
+Work Log:
+- THE RED: recon showed tower_ci RED on bf51cf6 (1 file changed: worklog.md — typecheck+lint cannot plausibly fail on that; suspicion of infra).
+- ROOT CAUSE, from the jobs API (token picked up the documented way — from the funding-arb remote, as the app's own GitHub client does): job "verify" concl=failure with ZERO steps, runner_name="" runner_id=0, 80 s in the acquisition window, logs endpoint → BlobNotFound (Azure blob never existed — nothing ever executed). ⇒ GitHub never assigned a machine to the job. Our code was never even checked out. Pure GitHub-hosted-runner infra blip.
+- THE RESPONSE (honest remediation, not a code hunt): POST .../actions/runs/34748626776/rerun → HTTP 201 → queued → completed concl=SUCCESS. bf51cf6 verified GREEN on its own sha via the re-run.
+- KNOWLEDGE PERSISTED (same commit): recon.sh's CI-lane comment gains NB 2 — "a RED can be a GitHub INFRA blip: zero steps + empty runner_name + BlobNotFound logs = no machine was ever assigned; re-run the workflow for that sha; check the job steps FIRST, panic second" — and the README's recon section documents the same with the observed run id.
+- Note: the incident itself validated the recon discipline — the lane went red and the verdict degraded exactly as designed (honest: the lane WAS red); the new knowledge only distinguishes the RESPONSE (infra re-run vs code hunt).
+- Boundary countdown: ~5h 30m. All other lanes green throughout; runner/lanes untouched by the incident.
+
+Stage Summary:
+- First RED CI of the session root-caused (GitHub runner-acquisition blip, zero steps, no machine), remediated (workflow re-run → SUCCESS), and the diagnostic recipe persisted in both recon.sh and the README. The evidence chain for bf51cf6 is now green-on-its-own-sha.
+- Shipped state: recon.sh (comment) + README (note) + this entry (commit follows). Next owned events: Day-3 boundary read TODAY 14:36Z (checklist per Task 82: fire ≥ 14:36:00Z → report day 3.0XX/INTERIM → interim.sh + templated comparison → recon "recorded" → UI card "read recorded" acceptance test) → snapshot fire ~15:23Z ships the boundary row to GitHub → lane fire #2 ~04:13Z Sep 14 → Day-7 final read Sep 17 → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.

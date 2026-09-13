@@ -229,7 +229,12 @@ elsewhere:
   manual run — the README's one-row-behind case) or `PAST DUE by Xh —
   no day-N report yet` + degrade (the read is owed). Without this,
   every recon from Day-3 to Day-7 would carry a false red, and the
-  Day-7 PAST DUE would fire exactly at the A/B/C decision moment. The
+  Day-7 PAST DUE would fire exactly at the A/B/C decision moment. A RED
+  CI lane is not always a code signal: check the run's jobs FIRST —
+  zero steps and an empty `runner_name` (logs endpoint BlobNotFound)
+  means GitHub never assigned a machine to the job (observed 2026-09-13,
+  run 34748626776 on a worklog-only commit); the honest response is a
+  workflow re-run for that sha, not a code hunt. The
   PAPER RUNNER section renders the stand-down states (Task 80): a
   stopped-on-decision runner is `STOOD DOWN (operator decision —
   respawn suppressed)` — GREEN, not a false `paper runner dead` red —
