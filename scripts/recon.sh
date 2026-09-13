@@ -134,13 +134,36 @@ fi
 # ───────────────────────── paper runner + supervisor meta ─────────────────────────
 hr "PAPER RUNNER"
 runner_pids=$(pgrep -f 'run_pure_futures_spread[.]py' || true)
+# Stand-down state (Task 80, the A/B/C stop recipe): the operator's flag file
+# is authoritative WHEN the live supervisor is capability-marked; the meta's
+# own standdown key is the fallback (it needs one tick to land). The
+# capability marker is the proof the RUNNING supervisor honors the flag —
+# a tower that has not restarted since Task 80 still runs the pre-flag tick
+# and would respawn right over the operator's decision.
+sd_flag=0; [ -f "$FARB/data/paper_runner.standdown" ] && sd_flag=1
+sd_capable=$(jq -r '.supervisor_standdown_capable // false' "$RUNNER_META" 2>/dev/null || echo false)
+sd_meta=$(jq -r '.standdown // false' "$RUNNER_META" 2>/dev/null || echo false)
 if [ -n "$runner_pids" ]; then
   for pid in $runner_pids; do
     printf '  alive pid %s   uptime %s\n' "$pid" \
       "$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')"
   done
+  if [ "$sd_flag" = "1" ]; then
+    echo "  stand-down flagged, runner still alive — operator kill pending"
+    echo "  (stop recipe: pkill -f 'run_pure_futures_spread[.]py')"
+  fi
 else
-  echo "  ERROR: no runner process (supervisor should respawn within 20 s while the tower lives)"; degrade "paper runner dead"
+  if { [ "$sd_flag" = "1" ] && [ "$sd_capable" = "true" ]; } || [ "$sd_meta" = "true" ]; then
+    echo "  STOOD DOWN (operator decision — respawn suppressed; rm the flag to resume supervision)"
+  else
+    echo "  ERROR: no runner process (supervisor should respawn within 20 s while the tower lives)"; degrade "paper runner dead"
+  fi
+fi
+# the safety net: flag present but the RUNNING supervisor predates the
+# feature — the flag alone would NOT stop a respawn (old tick has no check)
+if [ "$sd_flag" = "1" ] && [ "$sd_capable" != "true" ]; then
+  echo "  !! standdown flag present but the live supervisor predates Task 80 (no capability marker) — restart the tower before relying on the flag !!"
+  degrade "standdown flag ineffective (old supervisor running)"
 fi
 if [ -f "$RUNNER_META" ]; then
   # last_spawn=0 renders as "none recorded" — epoch zero as 1970-01-01
@@ -149,7 +172,7 @@ if [ -f "$RUNNER_META" ]; then
   # runner's own uptime above still dates the current process honestly).
   # last_check=0 (the sub-second boot gap before the first tick) guards
   # the same way instead of printing a ~1.79e9 s age.
-  jq -r '"  supervisor meta: respawns=\(.respawns)  last_check_age=\(if .last_check > 0 then (((now*1000)-.last_check)/1000|floor) else 0 end)s  last_spawn=\(if .last_spawn > 0 then (.last_spawn*0.001|todate) else "none recorded" end)"' \
+  jq -r '"  supervisor meta: respawns=\(.respawns)  last_check_age=\(if .last_check > 0 then (((now*1000)-.last_check)/1000|floor) else 0 end)s  last_spawn=\(if .last_spawn > 0 then (.last_spawn*0.001|todate) else "none recorded" end)  standdown=\(.standdown // false)  flag_capable=\(.supervisor_standdown_capable // false)"' \
     "$RUNNER_META" 2>/dev/null || { echo "  ERROR: runner meta unreadable"; degrade "runner meta unreadable"; }
 else
   echo "  (no $RUNNER_META yet — supervisor has not run since boot)"; degrade "runner meta absent"

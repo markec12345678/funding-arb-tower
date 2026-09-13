@@ -45,6 +45,12 @@ if (!g.__fundingArbPaperSupervisor && existsSync("/home/z/funding-arb")) {
   const REPO = "/home/z/funding-arb";
   const LOG = `${REPO}/data/paper_runner.log`;
   const META = `${REPO}/data/paper_runner.meta.json`;
+  // Operator stand-down flag (Task 80, the A/B/C stop recipe): while this
+  // file exists the supervisor does NOT respawn the runner. The automation
+  // never kills anything — the DECISION is this flag (operator-owned), the
+  // kill itself stays a one-liner in the operator's hands; removing the
+  // file resumes supervision within one tick (the "continue" recipe).
+  const STOPFILE = `${REPO}/data/paper_runner.standdown`;
   const PYTHON = "/home/z/.venv/bin/python";
   const RUNNER = `${REPO}/scripts/execution/run_pure_futures_spread.py`;
   const CONFIG = `${REPO}/templates/config.pure_futures.spread.json`;
@@ -106,7 +112,11 @@ if (!g.__fundingArbPaperSupervisor && existsSync("/home/z/funding-arb")) {
 
   const tick = () => {
     state.last_check = Date.now();
-    if (!runnerAlive()) spawnRunner();
+    // Stand-down: the flag suppresses respawn; the runner itself is the
+    // operator's to stop (pkill one-liner). Computed per tick so removing
+    // the flag re-arms supervision on the next tick — no state to forget.
+    const standdown = existsSync(STOPFILE);
+    if (!standdown && !runnerAlive()) spawnRunner();
     try {
       // read-modify-write: preserve fields owned by other writers
       // (the gh-heartbeat module persists gh_* keys in the same file).
@@ -119,6 +129,12 @@ if (!g.__fundingArbPaperSupervisor && existsSync("/home/z/funding-arb")) {
         /* treat as empty */
       }
       Object.assign(meta, state);
+      // standdown: the live decision state; supervisor_standdown_capable:
+      // the RUNNING supervisor's proof it honors the flag (a tower that has
+      // not restarted since Task 80 still runs the pre-flag tick — recon
+      // reads this marker to warn before the recipe is relied upon).
+      meta.standdown = standdown;
+      meta.supervisor_standdown_capable = true;
       writeFileSync(META, JSON.stringify(meta));
     } catch {
       /* non-fatal */

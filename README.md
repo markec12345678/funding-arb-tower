@@ -229,7 +229,14 @@ elsewhere:
   manual run — the README's one-row-behind case) or `PAST DUE by Xh —
   no day-N report yet` + degrade (the read is owed). Without this,
   every recon from Day-3 to Day-7 would carry a false red, and the
-  Day-7 PAST DUE would fire exactly at the A/B/C decision moment.
+  Day-7 PAST DUE would fire exactly at the A/B/C decision moment. The
+  PAPER RUNNER section renders the stand-down states (Task 80): a
+  stopped-on-decision runner is `STOOD DOWN (operator decision —
+  respawn suppressed)` — GREEN, not a false `paper runner dead` red —
+  the kill-pending transition is informational, and a flag set under a
+  pre-Task-80 supervisor degrades `standdown flag ineffective` (the old
+  tick would respawn right over the decision; the capability marker in
+  the meta line is the proof mechanism).
   Exit `0` = all
   green, `1` = degraded with named reasons; failure paths (dead API, lock
   drift) verified by test, not assumption.
@@ -626,6 +633,36 @@ What the card shows:
   stage label; the stop is part of executing the user's A/B/C decision
   (operator recipe / W1 sealing / continue), and the timestamped day-7.0
   read cannot be retroactively polluted by post-decision cycles.
+  **The A/B/C stop/continue recipe** (Task 80 — the executable half of
+  that promise; the tower supervisor respawns a killed runner within
+  20 s, so a bare kill is NOT a stop):
+  ```bash
+  # capability check FIRST (see below): the running supervisor must be
+  #   flag-capable before the flag means anything
+  jq .supervisor_standdown_capable /home/z/funding-arb/data/paper_runner.meta.json
+  # stop (B/C, or any "end the experiment" decision):
+  touch /home/z/funding-arb/data/paper_runner.standdown   # suppress respawn
+  pkill -f 'run_pure_futures_spread[.]py'                 # stop the runner
+  # continue / resume supervision (A kept running, or a reversal):
+  rm /home/z/funding-arb/data/paper_runner.standdown      # re-arms within 20 s
+  ```
+  The automation never kills anything: the DECISION is the flag
+  (operator-owned), the kill stays a one-liner in the operator's hands,
+  and recon renders the states honestly — `STOOD DOWN (operator
+  decision — respawn suppressed)` when stopped, `stand-down flagged,
+  runner still alive — operator kill pending` in the transition, and a
+  hard degrade (`standdown flag ineffective (old supervisor running)`)
+  if the flag is set while the RUNNING supervisor predates the feature
+  — that is the capability check's purpose: a tower that has not
+  restarted since Task 80 still runs the pre-flag tick and would
+  respawn right over the decision. Fix it by restarting the tower (kill
+  the dev server; the watchdog respawns it; the detached runner keeps
+  running through the restart — zero experiment downtime; the meta key
+  flips to `true` within one tick). After a stop, the daily analyzer
+  lane and the snapshot pusher keep their clocks (read-only by design —
+  they keep archiving reports of the frozen dataset; harmless evidence,
+  and removing the flag never happened implicitly: resuming requires
+  the explicit `rm`).
   **Day-3 interim boundary** (same mismatch, same fix): the lane's Sep 13
   04:12Z report reads day 2.57, so at the Day-3 boundary (Sep 13 14:36Z)
   the freshest lane row is ~10.4 h old — for a true day-3.00 trend row,
