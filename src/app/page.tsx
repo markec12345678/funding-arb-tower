@@ -351,13 +351,23 @@ const pct = (n: number | undefined | null, d = 4) =>
 const usd = (n: number | undefined | null) =>
   n === undefined || n === null ? "—" : `${n < 0 ? "−" : "+"}$${Math.abs(n).toFixed(2)}`;
 
-// Time-until formatter for the Phase-2 milestones (re-evaluated on every
-// 10s status poll — good enough for hour/day-scale countdowns).
-const until = (iso: string | null | undefined) => {
+// Phase-2 milestone formatter (re-evaluated on every 10s status poll —
+// good enough for hour/day-scale countdowns). Milestones are READ
+// boundaries, not deadlines: once the boundary passes, the honest state is
+// "read recorded" (a report with day >= the milestone exists — the signal is
+// data-grounded, not a claim about operator intent) or "passed Xh ago" (the
+// read is still owed). Never a stuck "due now" for days.
+const milestoneWhen = (iso: string | null | undefined, recorded: boolean) => {
   if (!iso) return "—";
   const s = (new Date(iso).getTime() - Date.now()) / 1000;
   if (Number.isNaN(s)) return "—";
-  if (s <= 0) return "due now";
+  if (s > 0) return `in ${dur(s)}`;
+  return recorded ? "read recorded" : `passed ${dur(-s)} ago`;
+};
+
+// Duration part of the above: "moments" / "42m" / "3h 06m" / "2d 3h".
+const dur = (s: number) => {
+  if (s < 60) return "moments";
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
   return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
@@ -877,14 +887,18 @@ export default function Home() {
                         Day-3 interim read
                       </div>
                       <div className="mt-1 font-mono text-zinc-200">{ph.day3_at ?? "—"}</div>
-                      <div className="mt-0.5 text-zinc-500">in {until(ph.day3_at)}</div>
+                      <div className="mt-0.5 text-zinc-500">
+                        {milestoneWhen(ph.day3_at, (ph.day ?? 0) >= 3)}
+                      </div>
                     </div>
                     <div className="rounded-lg border border-zinc-800/70 bg-zinc-900/40 p-3">
                       <div className="text-[10px] uppercase tracking-wider text-zinc-500">
                         Day-7 A/B/C decision
                       </div>
                       <div className="mt-1 font-mono text-zinc-200">{ph.day7_at ?? "—"}</div>
-                      <div className="mt-0.5 text-zinc-500">in {until(ph.day7_at)}</div>
+                      <div className="mt-0.5 text-zinc-500">
+                        {milestoneWhen(ph.day7_at, (ph.day ?? 0) >= 7)}
+                      </div>
                     </div>
                   </div>
 

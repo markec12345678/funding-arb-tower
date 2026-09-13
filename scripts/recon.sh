@@ -56,6 +56,30 @@ countdown() {
     printf '  %-22s in %s\n' "$label" "$(fmt_age "$diff")"
   fi
 }
+# milestone <target_epoch_s> <label> <threshold_day>
+# Phase-2 milestones are READ boundaries, not deadlines (countdown is for
+# lanes whose missed fire IS notable). Once the boundary passes, the
+# milestone only stays PAST DUE (degrade — the read is owed) until a report
+# with day >= threshold exists; then it reads "recorded" and stays green.
+# The recorded signal is data-grounded (report-latest's own day), never a
+# claim about operator intent. Without this, every recon from Day-3 to Day-7
+# would carry a false red, and the Day-7 PAST DUE would fire exactly at the
+# A/B/C decision moment.
+milestone() {
+  local target=$1 label=$2 thresh=$3 diff day
+  diff=$(( target - now_epoch ))
+  if [ "$diff" -gt 0 ]; then
+    printf '  %-22s in %s\n' "$label" "$(fmt_age "$diff")"
+    return
+  fi
+  day=$(jq -r '.day // empty' "$FARB/scripts/data/phase2/report-latest.json" 2>/dev/null || true)
+  if [ -n "$day" ] && awk -v d="$day" -v t="$thresh" 'BEGIN { exit !(d >= t) }'; then
+    printf '  %-22s recorded (report day %s)\n' "$label" "$day"
+  else
+    printf '  %-22s PAST DUE by %s — no day-%s report yet\n' "$label" "$(fmt_age $(( -diff )))" "$thresh"
+    degrade "$label past due"
+  fi
+}
 # fmt_age <seconds> → "3d 4h" / "5h 06m" / "42m"
 fmt_age() {
   local s=$1 d h m
@@ -232,8 +256,8 @@ if [ -n "$api_json" ] && printf '%s' "$api_json" | jq empty 2>/dev/null; then
     || degrade "phase2 check overdue"
   day3=$(printf '%s' "$api_json" | jq -r '.phase2.day3_at // empty')
   day7=$(printf '%s' "$api_json" | jq -r '.phase2.day7_at // empty')
-  [ -n "$day3" ] && countdown "$(iso_to_epoch "$day3")" "Day-3 interim"
-  [ -n "$day7" ] && countdown "$(iso_to_epoch "$day7")" "Day-7 / A-B-C"
+  [ -n "$day3" ] && milestone "$(iso_to_epoch "$day3")" "Day-3 interim" 3
+  [ -n "$day7" ] && milestone "$(iso_to_epoch "$day7")" "Day-7 / A-B-C" 7
 
   if [ -f "$PHASE2_META" ]; then
     lane_next=$(python3 - "$PHASE2_META" <<'PYEOF'

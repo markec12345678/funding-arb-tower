@@ -2751,3 +2751,21 @@ Work Log:
 Stage Summary:
 - The Day-3/Day-7 boundary procedures are now footgun-proof: the one failure mode that could silently miss the FINAL-WINDOW flip (early fire) is documented with its code-grounded cause and the at-or-after rule.
 - Shipped state: README precision addendum + this worklog entry (commit follows). quant-arb-engine fe49627 · funding-arb 0373f5d LOCK INTACT · runner ~2d14h. Next owned events: Day-3 boundary read TODAY 14:36Z (plan above; compare day-2.568: net −66.91 / 77 closes / W/L 17/60 / fees −87.15) → lane fire #2 ~04:13Z Sep 14 → Day-7 final read 14:36Z Sep 17 (fire ≥ 14:36:00Z — the new rule matters most there) → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.
+
+---
+Task ID: 75
+Agent: main (Z.ai Code)
+Date: 2026-09-13 05:25–06:00 UTC (session 8, continuation 38)
+Task: User: "odlicno nadaljuj" — autonomous continuation, quiet point before the Day-3 boundary (14:36Z, ~9h out). Gap-hunt found a REAL labeling-honestness defect that would have fired exactly at today's boundary: the milestone countdowns had no "past" state.
+
+Work Log:
+- CALIBRATION: 05:25Z, pre-boundary (9h 10m). interim.sh found ALREADY honest (fmt_delta renders "3h ago" — correct past semantics, no change needed there).
+- THE DEFECT, both surfaces: (1) UI `until()` returned "due now" for any past timestamp and `day3_at` never goes null → the Day-3 card would have read "in due now" — grammatically broken AND semantically stale — for the ~4 days until Day-7; (2) recon `countdown()` degrades PAST DUE unconditionally → every recon from Day-3 to Day-7 would carry a FALSE red, and the Day-7 PAST DUE would fire exactly at the A/B/C decision moment — destroying the "ALL GREEN = nothing needs eyes" signal precisely when it matters most.
+- THE FIX, three-state and data-grounded (signal = the report's own day, never a claim about operator intent): before the boundary → "in Xh"; after it → "read recorded" / "recorded (report day X.XXX)" (day ≥ threshold → GREEN, no degrade — flips the moment the boundary read or the next lane fire lands, honestly covering the README's one-row-behind case) or "passed Xh ago" / "PAST DUE by Xh — no day-N report yet" + degrade (the read is OWED). `countdown()` itself untouched — its missed-fire PAST DUE degrade is the CORRECT semantics for the lane next-fire line; only the two milestone call sites switched to the new `milestone()`.
+- Files: page.tsx (until → milestoneWhen + dur, 3-state, used by both milestone cards; no other consumers), recon.sh (new milestone() function, 2 call sites), README (recon section + phase-2 card section document the semantics and the false-red it prevents).
+- VERIFICATION CHAIN: bash -n clean · isolated 5-branch test of milestone() (future / past+recorded / past+owed / day-7 recorded / missing report file) — all five behave exactly as designed, degrade only in the two owed branches · lint clean · typecheck clean · e2e GOLDEN PATH GREEN with tally EXACTLY 69 (nothing missing/added — the sealed count) · live recon: future branch renders identically ("in 9h 02m"), ALL GREEN intact · targeted agent-browser pass on the rendered cards: "Day-3 … in 9h 0m" / "Day-7 … in 4d 9h", 0 page errors, 0 console errors · post-run hygiene: browser closed, 0 stray Chromium processes.
+- funding-arb untouched (read-only jq on report-latest from recon — LOCK INTACT @ 0373f5d); engine untouched @ fe49627.
+
+Stage Summary:
+- The last countdown surface that could lie is now three-state honest on every instrument: interim.sh (already was), recon.sh (fixed — false red removed from the entire Day-3→Day-7 window AND the A/B/C moment), UI cards (fixed — no stuck "due now"). The milestone semantics are now uniform: read boundaries, not deadlines.
+- Shipped state: this worklog entry + the three files (commit follows; TS change → e2e re-sealed at 69/69). Next owned events: Day-3 boundary read TODAY 14:36Z (sealed Task-74 plan: fire ≥ 14:36:00Z → verify day 3.0 → interim.sh → recon — the recon line will now flip to "recorded (report day 3.0XX)" instead of a false PAST DUE) → lane fire #2 ~04:13Z Sep 14 → Day-7 final read 14:36Z Sep 17 (fire ≥ 14:36:00Z — Task-74 rule) → A/B/C. Still user-owned: cron-job.org gh-pages lane, real feed connection, W1 sealing, PAT rotation.

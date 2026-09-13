@@ -206,7 +206,18 @@ elsewhere:
   epoch-zero 1970 next to a nonzero respawn counter — the supervisor
   now carries the spawn timestamp across boots like its counter; the
   pre-fix resets lost the pre-Sep-12 record, and the runner's own
-  printed uptime still dates the current process). Exit `0` = all
+  printed uptime still dates the current process). The milestone
+  countdowns are **read boundaries, not deadlines** (Task 75):
+  `milestone()` (not `countdown()`, whose missed-fire PAST DUE degrade
+  is the correct semantics for the lane line) — before the boundary:
+  `in Xh`; after it, the state is data-grounded on the report's own
+  day: `recorded (report day X.XXX)` (day ≥ threshold → green, even
+  when the boundary row came from the next lane fire instead of the
+  manual run — the README's one-row-behind case) or `PAST DUE by Xh —
+  no day-N report yet` + degrade (the read is owed). Without this,
+  every recon from Day-3 to Day-7 would carry a false red, and the
+  Day-7 PAST DUE would fire exactly at the A/B/C decision moment.
+  Exit `0` = all
   green, `1` = degraded with named reasons; failure paths (dead API, lock
   drift) verified by test, not assumption.
 - `scripts/e2e.sh` — **browser-level golden path**: recon's sibling for the
@@ -562,7 +573,12 @@ What the card shows:
 
 - **Window state** — day X.XX of 7 (progress bar), stage `INTERIM` /
   `FINAL-WINDOW`, baseline start, and the two fixed milestones: the Day-3
-  interim read and the Day-7 A/B/C decision (with countdowns).
+  interim read and the Day-7 A/B/C decision. The milestone cards are
+  three-state (Task 75), data-grounded on the report's own day — before
+  the boundary: `in Xh Ym`; after it: `read recorded` (report day ≥ the
+  milestone — flips the moment the boundary read or the next lane fire
+  lands) or `passed Xh ago` (no post-boundary report yet — the read is
+  owed). Never a stuck `due now` for days.
 - **Daily-check discipline, enforced by visibility** — the report's age is
   always shown; older than 26 h → an amber **DAILY CHECK OVERDUE** chip. A
   skipped day is visible, not silent. The check itself is **automated**: the
